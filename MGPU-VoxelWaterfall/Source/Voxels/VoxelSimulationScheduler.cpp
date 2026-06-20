@@ -1,8 +1,8 @@
 #include "Source/Voxels/VoxelSimulationScheduler.h"
 
-#include "CrossAdapterVoxelEmitter.h"
+#include "Source/Voxels/CrossAdapterVoxelEmitter.h"
 #include "GCommandList.h"
-#include "VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelWaterfallEmitter.h"
 
 #include <algorithm>
 

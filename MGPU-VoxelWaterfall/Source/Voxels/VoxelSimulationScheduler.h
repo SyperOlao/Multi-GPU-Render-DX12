@@ -1,7 +1,7 @@
 #pragma once
 
 #include "GCommandQueue.h"
-#include "VoxelBenchmarkProfiler.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Voxels/VoxelTypes.h"
 
 #include <wrl.h>

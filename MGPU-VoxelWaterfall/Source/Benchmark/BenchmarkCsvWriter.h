@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VoxelBenchmarkProfiler.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 
 #include <filesystem>
 #include <vector>
@@ -11,4 +11,3 @@ public:
     static bool WriteAutomaticSummary(const std::filesystem::path& outputPath,
                                       const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries);
 };
-

@@ -65,23 +65,23 @@
   <ItemGroup>
     <ClCompile Include="Source.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="FrameResource.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="VoxelBenchmarkProfiler.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="VoxelWaterfallApp.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="VoxelWaterfallEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="CrossAdapterVoxelEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Source\Assets\SampleAssetManifest.cpp"><Filter>Source Files\Assets</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
     <ClCompile Include="Source\Platform\Win32InputRouter.cpp"><Filter>Source Files\Platform</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\RenderPipeline.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Scene\SceneFactory.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\CrossAdapterVoxelEmitter.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelEmitterGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelWaterfallEmitter.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
@@ -92,24 +92,24 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="FrameResource.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="VoxelBenchmarkProfiler.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="VoxelWaterfallApp.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="VoxelWaterfallEmitter.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="CrossAdapterVoxelEmitter.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Source\Assets\SampleAssetManifest.h"><Filter>Header Files\Assets</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkController.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>
     <ClInclude Include="Source\Platform\Win32InputRouter.h"><Filter>Header Files\Platform</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\RenderPipeline.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Scene\SceneFactory.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\CrossAdapterVoxelEmitter.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelEmitterGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelWaterfallEmitter.h"><Filter>Header Files\Voxels</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />

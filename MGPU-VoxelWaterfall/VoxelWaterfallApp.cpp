@@ -21,7 +21,7 @@
 #include "imgui_impl_win32.h"
 #include "MathHelper.h"
 #include "ModelRenderer.h"
-#include "VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelWaterfallEmitter.h"
 #include "Rotater.h"
 #include "SkyBox.h"
 #include "Transform.h"
@@ -691,8 +691,8 @@ void VoxelWaterfallApp::InitFrameResource()
     for (int i = 0; i < globalCountFrameResources; ++i)
     {
         frameResources.push_back(std::make_unique<FrameResource>(primeDevice,
-                                                                 primeDevice, 2,
-                                                                 assets->GetMaterials().size()));
+                                                                  primeDevice, 2,
+                                                                  static_cast<UINT>(assets->GetMaterials().size())));
     }
     logQueue.Push(std::wstring(L"\nInit FrameResource "));
 }
@@ -705,7 +705,7 @@ void VoxelWaterfallApp::InitRootSignature()
     texParam[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, StandardShaderSlot::ShadowMap - 3, 0); //ShadowMap
     texParam[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, StandardShaderSlot::AmbientMap - 3, 0); //SsaoMap
     texParam[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-                     assets->GetLoadTexturesCount() > 0 ? assets->GetLoadTexturesCount() : 1,
+                     static_cast<UINT>(assets->GetLoadTexturesCount() > 0 ? assets->GetLoadTexturesCount() : 1),
                      StandardShaderSlot::TexturesMap - 3, 0);
 
 
@@ -803,7 +803,9 @@ void VoxelWaterfallApp::InitPipeLineResource()
         },
     };
 
-    const D3D12_INPUT_LAYOUT_DESC desc = {defaultInputLayout.data(), defaultInputLayout.size()};
+    const D3D12_INPUT_LAYOUT_DESC desc = {
+        defaultInputLayout.data(), static_cast<UINT>(defaultInputLayout.size())
+    };
 
     defaultPrimePipelineResources = RenderModeFactory();
     defaultPrimePipelineResources.LoadDefaultShaders();
@@ -843,11 +845,12 @@ void VoxelWaterfallApp::CreateMaterials()
 void VoxelWaterfallApp::InitSRVMemoryAndMaterials()
 {
     srvTexturesMemory =
-        primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, assets->GetTextures().size());
+        primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                                         static_cast<uint32_t>(assets->GetTextures().size()));
 
     auto materials = assets->GetMaterials();
 
-    for (int j = 0; j < materials.size(); ++j)
+    for (size_t j = 0; j < materials.size(); ++j)
     {
         auto material = materials[j];
 
@@ -1065,7 +1068,7 @@ void VoxelWaterfallApp::CalculateFrameStats()
                 (static_cast<float>(writeStatisticCount) / StatisticsStepSecondsCount) * 100.0f) + L"/" +
             std::to_wstring(100);
 
-        if (writeStatisticCount >= StatisticsStepSecondsCount)
+        if (writeStatisticCount >= static_cast<UINT>(StatisticsStepSecondsCount))
         {
             const std::wstring statisticsText =
                 L"\nUse Cross Adapter: " + std::to_wstring(UseCrossAdapter) +

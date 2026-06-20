@@ -2,7 +2,7 @@
 #include "Emitter.h"
 #include "GCrossAdapterResource.h"
 #include "GDescriptor.h"
-#include "VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelWaterfallEmitter.h"
 
 class CrossAdapterVoxelEmitter : public Emitter
 {

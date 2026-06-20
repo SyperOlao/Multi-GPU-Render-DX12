@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Source/Benchmark/AutomaticBenchmarkRunner.h"
-#include "VoxelBenchmarkProfiler.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 
 #include <filesystem>
 #include <functional>
@@ -55,4 +55,3 @@ private:
                                    int nearCount, int mediumCount, int farCount) const;
     void WriteAutomaticSummary(const BenchmarkControllerContext& context);
 };
-

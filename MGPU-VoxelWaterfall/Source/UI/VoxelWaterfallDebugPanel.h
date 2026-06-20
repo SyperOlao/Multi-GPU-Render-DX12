@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Source/Voxels/VoxelTypes.h"
-#include "VoxelBenchmarkProfiler.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 
 #include <filesystem>
 #include <functional>

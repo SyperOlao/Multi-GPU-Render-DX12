@@ -1,9 +1,9 @@
 #include "pch.h"
-#include "CrossAdapterVoxelEmitter.h"
+#include "Source/Voxels/CrossAdapterVoxelEmitter.h"
 
 
 #include "MathHelper.h"
-#include "VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelWaterfallEmitter.h"
 
 void CrossAdapterVoxelEmitter::InitPSO(const std::shared_ptr<GDevice>& otherDevice)
 {
@@ -19,20 +19,22 @@ void CrossAdapterVoxelEmitter::InitPSO(const std::shared_ptr<GDevice>& otherDevi
     computeRS->AddDescriptorParameter(&rng[1], 1);
     computeRS->AddDescriptorParameter(&rng[2], 1);
     computeRS->AddDescriptorParameter(&rng[3], 1);
-        computeRS->Initialize(otherDevice, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+    computeRS->Initialize(otherDevice, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
     injectPSO = std::make_shared<ComputePSO>();
     injectPSO->SetShader(injectedShader.get());
-    injectPSO->SetRootSignature(*computeRS.get());
+    injectPSO->SetRootSignature(*computeRS);
     injectPSO->Initialize(secondDevice);
 
 
     updatePSO = std::make_shared<ComputePSO>();
     updatePSO->SetShader(simulatedShader.get());
-    updatePSO->SetRootSignature(*computeRS.get());
+    updatePSO->SetRootSignature(*computeRS);
     updatePSO->Initialize(secondDevice);
 }
 
+#pragma warning(push)
+#pragma warning(disable : 4267)
 void CrossAdapterVoxelEmitter::CreateBuffers()
 {
     if (particlesPool)
@@ -79,11 +81,12 @@ void CrossAdapterVoxelEmitter::CreateBuffers()
 
     auto& emitterData = primeVoxelWaterfallEmitter->GetEmitterData();
 
-    particlesPool = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
+    const auto particleStride = static_cast<UINT>(sizeof(VoxelParticleData));
+    particlesPool = std::make_shared<GBuffer>(secondDevice, particleStride,
                                               emitterData.ParticlesTotalCount,
                                               L"Second Particles Pool Buffer",
                                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    injectedParticles = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
+    injectedParticles = std::make_shared<GBuffer>(secondDevice, particleStride,
                                                   emitterData.ParticleInjectCount,
                                                   L"Second Injected Particle Buffer",
                                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -150,6 +153,7 @@ void CrossAdapterVoxelEmitter::CreateBuffers()
     uavDesc.Buffer.CounterOffsetInBytes = 0;
     injectedParticles->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 3);
 }
+#pragma warning(pop)
 
 CrossAdapterVoxelEmitter::CrossAdapterVoxelEmitter(std::shared_ptr<GDevice> primeDevice,
                                                    const std::shared_ptr<GDevice>& otherDevice,
@@ -245,9 +249,9 @@ void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmd
 
         if (emitterData.ParticlesTotalCount > emitterData.ParticlesAliveCount)
         {
-            const long check = emitterData.ParticlesTotalCount - emitterData.ParticlesAliveCount;
+            const DWORD availableSlots = emitterData.ParticlesTotalCount - emitterData.ParticlesAliveCount;
 
-            if (check >= emitterData.ParticleInjectCount)
+            if (availableSlots >= emitterData.ParticleInjectCount)
             {
                 const DWORD firstSpawnIndex = primeVoxelWaterfallEmitter->ConsumeNextSpawnIndex(
                     emitterData.ParticleInjectCount);
@@ -278,8 +282,8 @@ void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmd
 
         if (emitterData.ParticlesAliveCount > 0)
         {
-            emitterData.SimulatedGroupCount = primeVoxelWaterfallEmitter->CalculateDispatchGroupCount(
-                emitterData.ParticlesAliveCount);
+            emitterData.SimulatedGroupCount = static_cast<DWORD>(
+                primeVoxelWaterfallEmitter->CalculateDispatchGroupCount(emitterData.ParticlesAliveCount));
 
             cmdList->SetRoot32BitConstants(ParticleComputeSlot::EmitterData,
                                            sizeof(VoxelEmitterData) / sizeof(DWORD),

@@ -3,7 +3,7 @@
 #include "AssetsLoader.h"
 #include "Camera.h"
 #include "CameraController.h"
-#include "CrossAdapterVoxelEmitter.h"
+#include "Source/Voxels/CrossAdapterVoxelEmitter.h"
 #include "GameObject.h"
 #include "GModel.h"
 #include "Light.h"
@@ -11,7 +11,7 @@
 #include "Rotater.h"
 #include "SkyBox.h"
 #include "Transform.h"
-#include "VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelWaterfallEmitter.h"
 
 #include <algorithm>
 
@@ -103,17 +103,17 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
     for (int i = 0; i < 11; ++i)
     {
         auto nano = std::make_unique<GameObject>();
-        nano->GetTransform()->SetPosition(Vector3::Right * -15 + Vector3::Forward * 12 * i);
-        nano->GetTransform()->SetEulerRotate(Vector3(0, -90, 0));
+        nano->GetTransform()->SetPosition(Vector3::Right * -15.0f + Vector3::Forward * 12.0f * static_cast<float>(i));
+        nano->GetTransform()->SetEulerRotate(Vector3(0.0f, -90.0f, 0.0f));
         auto renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"nano"]);
         nano->AddComponent(renderer);
         AddRenderer(context, RenderMode::Opaque, renderer);
         context.GameObjects.push_back(std::move(nano));
 
         auto doom = std::make_unique<GameObject>();
-        doom->SetScale(0.08);
-        doom->GetTransform()->SetPosition(Vector3::Right * 15 + Vector3::Forward * 12 * i);
-        doom->GetTransform()->SetEulerRotate(Vector3(0, 90, 0));
+        doom->SetScale(0.08f);
+        doom->GetTransform()->SetPosition(Vector3::Right * 15.0f + Vector3::Forward * 12.0f * static_cast<float>(i));
+        doom->GetTransform()->SetEulerRotate(Vector3(0.0f, 90.0f, 0.0f));
         renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"doom"]);
         doom->AddComponent(renderer);
         AddRenderer(context, RenderMode::Opaque, renderer);
@@ -126,7 +126,8 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
         {
             auto atlas = std::make_unique<GameObject>();
             atlas->GetTransform()->SetPosition(
-                Vector3::Right * -60 + Vector3::Right * -30 * j + Vector3::Up * 11 + Vector3::Forward * 10 * i);
+                Vector3::Right * -60.0f + Vector3::Right * -30.0f * static_cast<float>(j) + Vector3::Up * 11.0f +
+                Vector3::Forward * 10.0f * static_cast<float>(i));
             auto renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"atlas"]);
             atlas->AddComponent(renderer);
             AddRenderer(context, RenderMode::Opaque, renderer);
@@ -134,7 +135,8 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
 
             auto pbody = std::make_unique<GameObject>();
             pbody->GetTransform()->SetPosition(
-                Vector3::Right * 130 + Vector3::Right * -30 * j + Vector3::Up * 11 + Vector3::Forward * 10 * i);
+                Vector3::Right * 130.0f + Vector3::Right * -30.0f * static_cast<float>(j) + Vector3::Up * 11.0f +
+                Vector3::Forward * 10.0f * static_cast<float>(i));
             renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"pbody"]);
             pbody->AddComponent(renderer);
             AddRenderer(context, RenderMode::Opaque, renderer);
@@ -186,18 +188,18 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
     context.GameObjects.push_back(std::move(voxelFloor));
 
     auto platform = std::make_unique<GameObject>();
-    platform->SetScale(0.2);
-    platform->GetTransform()->SetEulerRotate(Vector3(90, 90, 0));
-    platform->GetTransform()->SetPosition(Vector3::Backward * -130);
+    platform->SetScale(0.2f);
+    platform->GetTransform()->SetEulerRotate(Vector3(90.0f, 90.0f, 0.0f));
+    platform->GetTransform()->SetPosition(Vector3::Backward * -130.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"platform"]);
     platform->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
 
     auto rotater = std::make_unique<GameObject>();
     rotater->GetTransform()->SetParent(platform->GetTransform().get());
-    rotater->GetTransform()->SetPosition(Vector3::Forward * 325 + Vector3::Left * 625);
-    rotater->GetTransform()->SetEulerRotate(Vector3(0, -90, 90));
-    rotater->AddComponent(std::make_shared<Rotater>(10));
+    rotater->GetTransform()->SetPosition(Vector3::Forward * 325.0f + Vector3::Left * 625.0f);
+    rotater->GetTransform()->SetEulerRotate(Vector3(0.0f, -90.0f, 90.0f));
+    rotater->AddComponent(std::make_shared<Rotater>(10.0f));
 
     auto camera = std::make_unique<GameObject>("MainCamera");
     camera->AddComponent(std::make_shared<CameraController>(35.0f, 80.0f, 60.0f));
@@ -210,26 +212,26 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
 
     auto stair = std::make_unique<GameObject>();
     stair->GetTransform()->SetParent(platform->GetTransform().get());
-    stair->SetScale(0.2);
-    stair->GetTransform()->SetEulerRotate(Vector3(0, 0, 90));
-    stair->GetTransform()->SetPosition(Vector3::Left * 700);
+    stair->SetScale(0.2f);
+    stair->GetTransform()->SetEulerRotate(Vector3(0.0f, 0.0f, 90.0f));
+    stair->GetTransform()->SetPosition(Vector3::Left * 700.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"stair"]);
     stair->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
 
     auto columns = std::make_unique<GameObject>();
     columns->GetTransform()->SetParent(stair->GetTransform().get());
-    columns->SetScale(0.8);
-    columns->GetTransform()->SetEulerRotate(Vector3(0, 0, 90));
-    columns->GetTransform()->SetPosition(Vector3::Up * 2000 + Vector3::Forward * 900);
+    columns->SetScale(0.8f);
+    columns->GetTransform()->SetEulerRotate(Vector3(0.0f, 0.0f, 90.0f));
+    columns->GetTransform()->SetPosition(Vector3::Up * 2000.0f + Vector3::Forward * 900.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"columns"]);
     columns->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
 
     auto fountain = std::make_unique<GameObject>();
-    fountain->SetScale(0.005);
-    fountain->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    fountain->GetTransform()->SetPosition(Vector3::Up * 35 + Vector3::Backward * 77);
+    fountain->SetScale(0.005f);
+    fountain->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
+    fountain->GetTransform()->SetPosition(Vector3::Up * 35.0f + Vector3::Backward * 77.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"fountain"]);
     fountain->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
@@ -240,37 +242,36 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
     context.GameObjects.push_back(std::move(fountain));
 
     auto mountDragon = std::make_unique<GameObject>();
-    mountDragon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    mountDragon->GetTransform()->SetPosition(Vector3::Right * -960 + Vector3::Up * 45 + Vector3::Backward * 775);
+    mountDragon->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
+    mountDragon->GetTransform()->SetPosition(Vector3::Right * -960.0f + Vector3::Up * 45.0f + Vector3::Backward * 775.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"mountDragon"]);
     mountDragon->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
     context.GameObjects.push_back(std::move(mountDragon));
 
     auto desertDragon = std::make_unique<GameObject>();
-    desertDragon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    desertDragon->GetTransform()->SetPosition(Vector3::Right * 960 + Vector3::Up * -5 + Vector3::Backward * 775);
+    desertDragon->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
+    desertDragon->GetTransform()->SetPosition(Vector3::Right * 960.0f + Vector3::Up * -5.0f + Vector3::Backward * 775.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"desertDragon"]);
     desertDragon->AddComponent(renderer);
     AddRenderer(context, RenderMode::Opaque, renderer);
     context.GameObjects.push_back(std::move(desertDragon));
 
     auto griffon = std::make_unique<GameObject>();
-    griffon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    griffon->SetScale(0.8);
-    griffon->GetTransform()->SetPosition(Vector3::Right * -355 + Vector3::Up * -7 + Vector3::Backward * 17);
+    griffon->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
+    griffon->SetScale(0.8f);
+    griffon->GetTransform()->SetPosition(Vector3::Right * -355.0f + Vector3::Up * -7.0f + Vector3::Backward * 17.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"griffon"]);
     griffon->AddComponent(renderer);
     AddRenderer(context, RenderMode::OpaqueAlphaDrop, renderer);
     context.GameObjects.push_back(std::move(griffon));
 
     griffon = std::make_unique<GameObject>();
-    griffon->SetScale(0.8);
-    griffon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    griffon->GetTransform()->SetPosition(Vector3::Right * 355 + Vector3::Up * -7 + Vector3::Backward * 17);
+    griffon->SetScale(0.8f);
+    griffon->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
+    griffon->GetTransform()->SetPosition(Vector3::Right * 355.0f + Vector3::Up * -7.0f + Vector3::Backward * 17.0f);
     renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"griffon"]);
     griffon->AddComponent(renderer);
     AddRenderer(context, RenderMode::OpaqueAlphaDrop, renderer);
     context.GameObjects.push_back(std::move(griffon));
 }
-
