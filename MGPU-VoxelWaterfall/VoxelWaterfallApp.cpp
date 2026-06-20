@@ -44,7 +44,23 @@ namespace
             GetExecutableDirectory() / L"..\\.." / L"MGPU-VoxelWaterfall" / relativePath
         };
 
+        const std::array<std::filesystem::path, 4> sharedAssetCandidates =
+        {
+            std::filesystem::path(L"..\\MGPU-Particles") / relativePath,
+            std::filesystem::path(L"MGPU-Particles") / relativePath,
+            GetExecutableDirectory() / L"..\\.." / L"MGPU-Particles" / relativePath,
+            GetExecutableDirectory() / L"..\\.." / L"MGPU-VoxelWaterfall" / L"..\\MGPU-Particles" / relativePath
+        };
+
         for (const auto& candidate : candidates)
+        {
+            if (std::filesystem::exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        for (const auto& candidate : sharedAssetCandidates)
         {
             if (std::filesystem::exists(candidate))
             {

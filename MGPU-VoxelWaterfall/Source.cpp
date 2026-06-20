@@ -26,8 +26,7 @@ namespace
 
         for (const auto& candidate : candidates)
         {
-            if (std::filesystem::exists(candidate / L"Shaders") &&
-                std::filesystem::exists(candidate / L"Data"))
+            if (std::filesystem::exists(candidate / L"Shaders"))
             {
                 SetCurrentDirectoryW(candidate.c_str());
                 return;

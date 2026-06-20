@@ -589,6 +589,8 @@ references/*
 
 !**/Data/**
 !**/Data/
+MGPU-VoxelWaterfall/Data/**
+MGPU-VoxelWaterfall/Data.zip
 
 **LogData*.txt
 **.txt
