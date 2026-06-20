@@ -2,25 +2,16 @@
 
 #include "Emitter.h"
 #include "GDescriptor.h"
+#include "Source/Voxels/VoxelEmitterGpuResources.h"
 #include "Source/Voxels/VoxelTypes.h"
 
 class VoxelWaterfallEmitter : public Emitter
 {
-    std::shared_ptr<ConstantUploadBuffer<ObjectConstants>> objectPositionBuffer;
-    std::shared_ptr<GBuffer> ParticlesPool;
-    std::shared_ptr<CounteredStructBuffer<DWORD>> ParticlesAlive;
-    std::shared_ptr<CounteredStructBuffer<DWORD>> ParticlesDead;
-    std::shared_ptr<GBuffer> InjectedParticles;
-
-    std::vector<VoxelParticleData> newParticles;
-    GDescriptor particlesComputeDescriptors;
-    GDescriptor particlesRenderDescriptors;
-
+    VoxelEmitterGpuResources gpuResources;
     VoxelEmitterData emitterData{};
     VoxelSimulationParameters parameters{};
     ObjectConstants objectWorldData{};
 
-    DWORD injectionCapacity = 1;
     DWORD nextSpawnIndex = 0;
     bool isWorked = false;
     bool enabled = true;

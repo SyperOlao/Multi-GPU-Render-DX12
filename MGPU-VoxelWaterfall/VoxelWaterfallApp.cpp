@@ -1,7 +1,6 @@
 #include "VoxelWaterfallApp.h"
 #include "GDescriptorHeap.h"
 #include "Source/Assets/SampleAssetManifest.h"
-#include "Source/Benchmark/BenchmarkCsvWriter.h"
 #include "Source/Devices/DeviceSelectionPolicy.h"
 
 #include <array>
@@ -155,181 +154,13 @@ void VoxelWaterfallApp::Update(const GameTimer& gt)
     UpdateSsaoCB(gt);
 }
 
-void VoxelWaterfallApp::PopulateShadowMapCommands(std::shared_ptr<GCommandList> cmdList)
-{
-    cmdList->SetRootSignature(*primeDeviceSignature.get());
-    cmdList->SetRootShaderResourceView(StandardShaderSlot::MaterialData,
-                                       *currentFrameResource->MaterialBuffer, 1);
-    cmdList->SetRootDescriptorTable(StandardShaderSlot::TexturesMap, &srvTexturesMemory);
-    cmdList->SetRootConstantBufferView(StandardShaderSlot::CameraData,
-                                       *currentFrameResource->PrimePassConstantUploadBuffer, 1);
-
-    shadowPath->PopulatePreRenderCommands(cmdList);
-
-    cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::ShadowMapOpaque));
-    PopulateDrawCommands(cmdList, RenderMode::Opaque);
-    PopulateDrawCommands(cmdList, RenderMode::OpaqueAlphaDrop);
-
-    cmdList->TransitionBarrier(shadowPath->GetTexture(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    cmdList->FlushResourceBarriers();
-}
-
-void VoxelWaterfallApp::PopulateNormalMapCommands(const std::shared_ptr<GCommandList>& cmdList)
-{
-    //Draw Normals
-    {
-        cmdList->SetDescriptorsHeap(&srvTexturesMemory);
-        cmdList->SetRootSignature(*primeDeviceSignature.get());
-        cmdList->SetRootShaderResourceView(StandardShaderSlot::MaterialData,
-                                           *currentFrameResource->MaterialBuffer);
-        cmdList->SetRootDescriptorTable(StandardShaderSlot::TexturesMap, &srvTexturesMemory);
-
-        cmdList->SetViewports(&fullViewport, 1);
-        cmdList->SetScissorRects(&fullRect, 1);
-
-        const auto normalMap = ambientPrimePath->NormalMap();
-        const auto normalDepthMap = ambientPrimePath->NormalDepthMap();
-        const auto normalMapRtv = ambientPrimePath->NormalMapRtv();
-        const auto normalMapDsv = ambientPrimePath->NormalMapDSV();
-
-        cmdList->TransitionBarrier(normalMap, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        cmdList->TransitionBarrier(normalDepthMap, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->FlushResourceBarriers();
-        float clearValue[] = {0.0f, 0.0f, 1.0f, 0.0f};
-        cmdList->ClearRenderTarget(normalMapRtv, 0, clearValue);
-        cmdList->ClearDepthStencil(normalMapDsv, 0,
-                                   D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0);
-
-        cmdList->SetRenderTargets(1, normalMapRtv, 0, normalMapDsv);
-        cmdList->SetRootConstantBufferView(1, *currentFrameResource->PrimePassConstantUploadBuffer);
-
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::DrawNormalsOpaque));
-        PopulateDrawCommands(cmdList, RenderMode::Opaque);
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::DrawNormalsOpaqueDrop));
-        PopulateDrawCommands(cmdList, RenderMode::OpaqueAlphaDrop);
-
-
-        cmdList->TransitionBarrier(normalMap, D3D12_RESOURCE_STATE_COMMON);
-        cmdList->TransitionBarrier(normalDepthMap, D3D12_RESOURCE_STATE_COMMON);
-        cmdList->FlushResourceBarriers();
-    }
-}
-
-void VoxelWaterfallApp::PopulateAmbientMapCommands(const std::shared_ptr<GCommandList>& cmdList)
-{
-    //Draw Ambient
-    {
-        cmdList->SetDescriptorsHeap(&srvTexturesMemory);
-        cmdList->SetRootSignature(*primeDeviceSignature.get());
-        cmdList->SetRootShaderResourceView(StandardShaderSlot::MaterialData,
-                                           *currentFrameResource->MaterialBuffer);
-        cmdList->SetRootDescriptorTable(StandardShaderSlot::TexturesMap, &srvTexturesMemory);
-
-        cmdList->SetRootSignature(*ssaoPrimeRootSignature.get());
-        ambientPrimePath->ComputeSsao(cmdList, currentFrameResource->SsaoConstantUploadBuffer, 3);
-    }
-}
-
-void VoxelWaterfallApp::PopulateForwardPathCommands(const std::shared_ptr<GCommandList>& cmdList)
-{
-    //Forward Path with SSAA
-    {
-        cmdList->SetDescriptorsHeap(&srvTexturesMemory);
-        cmdList->SetRootSignature(*primeDeviceSignature.get());
-        cmdList->SetRootShaderResourceView(StandardShaderSlot::MaterialData,
-                                           *currentFrameResource->MaterialBuffer);
-        cmdList->SetRootDescriptorTable(StandardShaderSlot::TexturesMap, &srvTexturesMemory);
-
-        cmdList->SetViewports(&antiAliasingPrimePath->GetViewPort(), 1);
-        cmdList->SetScissorRects(&antiAliasingPrimePath->GetRect(), 1);
-
-        cmdList->TransitionBarrier((antiAliasingPrimePath->GetRenderTarget()), D3D12_RESOURCE_STATE_RENDER_TARGET);
-        cmdList->TransitionBarrier(antiAliasingPrimePath->GetDepthMap(), D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->FlushResourceBarriers();
-
-        cmdList->ClearRenderTarget(antiAliasingPrimePath->GetRTV(), 0, Colors::Black);
-        cmdList->ClearDepthStencil(antiAliasingPrimePath->GetDSV(), 0,
-                                   D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0);
-
-        cmdList->SetRenderTargets(1, antiAliasingPrimePath->GetRTV(), 0,
-                                  antiAliasingPrimePath->GetDSV());
-
-
-        cmdList->
-            SetRootConstantBufferView(StandardShaderSlot::CameraData,
-                                      *currentFrameResource->PrimePassConstantUploadBuffer);
-
-        cmdList->SetRootDescriptorTable(StandardShaderSlot::ShadowMap, shadowPath->GetSrv());
-        cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, ambientPrimePath->AmbientMapSrv(), 0);
-
-
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::SkyBox));
-        PopulateDrawCommands(cmdList, (RenderMode::SkyBox));
-
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::Opaque));
-        PopulateDrawCommands(cmdList, (RenderMode::Opaque));
-
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::OpaqueAlphaDrop));
-        PopulateDrawCommands(cmdList, (RenderMode::OpaqueAlphaDrop));
-
-        cmdList->SetPipelineState(*defaultPrimePipelineResources.GetPSO(RenderMode::Transparent));
-        PopulateDrawCommands(cmdList, (RenderMode::Transparent));
-
-
-        cmdList->SetRootConstantBufferView(StandardShaderSlot::CameraData,
-                                           *currentFrameResource->PrimePassConstantUploadBuffer.get(), 0);
-        PopulateDrawCommands(cmdList, RenderMode::Particle);
-
-
-        cmdList->TransitionBarrier(antiAliasingPrimePath->GetRenderTarget(),
-                                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        cmdList->TransitionBarrier((antiAliasingPrimePath->GetDepthMap()), D3D12_RESOURCE_STATE_DEPTH_READ);
-        cmdList->FlushResourceBarriers();
-    }
-}
-
-void VoxelWaterfallApp::PopulateDrawCommands(std::shared_ptr<GCommandList> cmdList,
-                                             RenderMode type)
-{
-    for (auto&& renderer : typedRenderer[static_cast<int>(type)])
-    {
-        renderer->Draw(cmdList);
-    }
-}
-
-void VoxelWaterfallApp::PopulateInitRenderTarget(const std::shared_ptr<GCommandList>& cmdList, GTexture& renderTarget,
-                                                 GDescriptor* rtvMemory, const UINT offsetRTV)
-{
-    cmdList->SetViewports(&fullViewport, 1);
-    cmdList->SetScissorRects(&fullRect, 1);
-
-    cmdList->TransitionBarrier(renderTarget, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    cmdList->FlushResourceBarriers();
-    cmdList->ClearRenderTarget(rtvMemory, offsetRTV, Colors::Black);
-
-    cmdList->SetRenderTargets(1, rtvMemory, offsetRTV);
-}
-
-void VoxelWaterfallApp::PopulateDrawFullQuadTexture(const std::shared_ptr<GCommandList>& cmdList,
-                                                    GDescriptor* renderTextureSRVMemory,
-                                                    const UINT renderTextureMemoryOffset, GraphicPSO& pso)
-{
-    cmdList->SetRootSignature(*primeDeviceSignature.get());
-    cmdList->SetDescriptorsHeap(renderTextureSRVMemory);
-
-    cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, renderTextureSRVMemory, renderTextureMemoryOffset);
-
-    cmdList->SetPipelineState(pso);
-    PopulateDrawCommands(cmdList, (RenderMode::Quad));
-}
-
-
 void VoxelWaterfallApp::Draw(const GameTimer& gt)
 {
     if (isResizing) return;
 
     ApplyPendingVoxelSettings();
-    UpdateAutomaticBenchmark();
+    auto benchmarkContext = BuildBenchmarkControllerContext();
+    benchmarkController.UpdateAutomatic(benchmarkContext);
     const bool benchmarkWasActive = benchmarkProfiler.IsActive();
     benchmarkProfiler.BeginFrame(BuildBenchmarkMetadata());
 
@@ -365,55 +196,46 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
 
     benchmarkProfiler.UpdateCurrentFrameMetadata(BuildBenchmarkMetadata());
 
-    {
-        const auto cmdList = renderQueue->GetCommandList();
-
-
-        cmdList->EndQuery(timestampHeapIndex);
-        benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::Graphics,
-                                     VoxelBenchmarkProfiler::RangeId::Graphics);
-        PopulateNormalMapCommands(cmdList);
-        PopulateAmbientMapCommands(cmdList);
-        PopulateShadowMapCommands(cmdList);
-        PopulateForwardPathCommands(cmdList);
-        PopulateInitRenderTarget(cmdList, MainWindow->GetCurrentBackBuffer(),
-                                 &currentFrameResource->BackBufferRTVMemory, 0);
-        PopulateDrawFullQuadTexture(cmdList, antiAliasingPrimePath->GetSRV(),
-                                    0, *defaultPrimePipelineResources.GetPSO(RenderMode::Quad));
-
-        DrawUserInterface(cmdList);
-
-
-        cmdList->TransitionBarrier(MainWindow->GetCurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT);
-        cmdList->FlushResourceBarriers();
-        benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::Graphics,
-                                   VoxelBenchmarkProfiler::RangeId::Graphics);
-        benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::Graphics,
-                                       VoxelBenchmarkProfiler::RangeId::Graphics);
-        cmdList->EndQuery(timestampHeapIndex + 1);
-        cmdList->ResolveQuery(timestampHeapIndex, 2, timestampHeapIndex * sizeof(UINT64));
-
-        renderQueue->Wait(primaryComputeQueue);
-        if (simulationResult.SecondaryWorkThisFrame)
-            renderQueue->Wait(crossAdapterCopyQueue);
-
-        currentFrameResource->PrimeRenderFenceValue = renderQueue->ExecuteCommandList(cmdList);
-        graphicsPassFenceValue = currentFrameResource->PrimeRenderFenceValue;
-        benchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::Graphics,
-                                        graphicsPassFenceValue);
-        if (simulationResult.UsedSplitMultiGpu)
+    RenderPipelineContext renderContext{
+        renderQueue,
+        primaryComputeQueue,
+        crossAdapterCopyQueue,
+        simulationResult.SecondaryWorkThisFrame,
+        simulationResult.UsedSplitMultiGpu,
+        timestampHeapIndex,
+        *currentFrameResource,
+        benchmarkProfiler,
+        primeRenderFence,
+        sharedRenderFenceValue,
+        graphicsPassFenceValue,
+        [this](const std::shared_ptr<GCommandList>& cmdList)
         {
-            sharedRenderFenceValue = currentFrameResource->PrimeRenderFenceValue;
-            renderQueue->Signal(primeRenderFence, sharedRenderFenceValue);
+            VoxelRenderPassContext passContext{
+                primeDeviceSignature,
+                ssaoPrimeRootSignature,
+                srvTexturesMemory,
+                *currentFrameResource,
+                fullViewport,
+                fullRect,
+                *shadowPath,
+                *ambientPrimePath,
+                *antiAliasingPrimePath,
+                defaultPrimePipelineResources,
+                typedRenderer,
+                MainWindow->GetCurrentBackBuffer()
+            };
+            voxelRenderPasses.RecordFrame(cmdList, passContext);
+            DrawUserInterface(cmdList);
+            cmdList->TransitionBarrier(MainWindow->GetCurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT);
+            cmdList->FlushResourceBarriers();
         }
-
-    }
+    };
+    renderPipeline.RenderFrame(renderContext);
 
     currentFrameResourceIndex = MainWindow->Present();
     benchmarkProfiler.EndFrameCpu();
     benchmarkProfiler.ProcessCompletedFrames();
-    if (benchmarkWasActive && !benchmarkProfiler.IsActive())
-        MainWindow->SetVSync(benchmarkVSyncWasEnabled);
+    benchmarkController.RestoreVSyncAfterManualCompletion(benchmarkContext, benchmarkWasActive);
     ++simulationFrameIndex;
 }
 
@@ -555,12 +377,12 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         splitMultiGpuAvailable && secondDevice ? secondDevice->GetName() : L"unavailable",
         simulationFrameIndex,
         benchmarkProfiler,
-        benchmarkVSyncWasEnabled,
-        automaticBenchmarkActive,
-        !automaticBenchmarkConfigs.empty(),
-        automaticBenchmarkIndex,
-        automaticBenchmarkConfigs.size(),
-        automaticBenchmarkSummaryPath,
+        benchmarkController.WasVSyncEnabled(),
+        benchmarkController.IsAutomaticActive(),
+        benchmarkController.HasAutomaticConfigs(),
+        benchmarkController.GetAutomaticIndex(),
+        benchmarkController.GetAutomaticCount(),
+        benchmarkController.GetAutomaticSummaryPath(),
         [this] { DrawVoxelWaterfallSceneLabels(); },
         [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
         [this] { StartManualBenchmark(); },
@@ -575,21 +397,12 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
 
 void VoxelWaterfallApp::StartManualBenchmark()
 {
-    benchmarkVSyncWasEnabled = MainWindow->IsVSync();
-    if (benchmarkVSyncWasEnabled)
-        MainWindow->SetVSync(false);
-
-    if (benchmarkProfiler.Start(benchmarkDirectory, BuildBenchmarkMetadata()))
-        logQueue.Push(L"\nVoxel benchmark started: " + benchmarkProfiler.GetCsvPath().wstring());
-    else
-        logQueue.Push(L"\nVoxel benchmark failed to start");
+    benchmarkController.StartManual(BuildBenchmarkControllerContext());
 }
 
 void VoxelWaterfallApp::StopManualBenchmark()
 {
-    benchmarkProfiler.Stop();
-    MainWindow->SetVSync(benchmarkVSyncWasEnabled);
-    logQueue.Push(L"\nVoxel benchmark stopped");
+    benchmarkController.StopManual(BuildBenchmarkControllerContext());
 }
 
 void VoxelWaterfallApp::SetVoxelLodEnabled(const size_t lodIndex, const bool enabled)
@@ -736,113 +549,32 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
     return metadata;
 }
 
+BenchmarkControllerContext VoxelWaterfallApp::BuildBenchmarkControllerContext()
+{
+    return BenchmarkControllerContext{
+        benchmarkProfiler,
+        [this] { return BuildBenchmarkMetadata(); },
+        [this](const std::wstring& message) { logQueue.Push(message); },
+        [this] { return MainWindow->IsVSync(); },
+        [this](const bool enabled) { MainWindow->SetVSync(enabled); },
+        [this] { Flush(); },
+        [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
+        [this](const int nearCount, const int mediumCount, const int farCount)
+        {
+            ApplyBenchmarkVoxelCounts(nearCount, mediumCount, farCount);
+        },
+        splitMultiGpuAvailable
+    };
+}
+
 void VoxelWaterfallApp::StartAutomaticBenchmark()
 {
-    StopAutomaticBenchmark();
-
-    automaticBenchmarkConfigs.clear();
-    automaticBenchmarkSummaries.clear();
-    automaticBenchmarkIndex = 0;
-    automaticBenchmarkStopRequested = false;
-    automaticBenchmarkConfigs = AutomaticBenchmarkRunner::BuildDefaultConfigs();
-
-    benchmarkVSyncWasEnabled = MainWindow->IsVSync();
-    if (benchmarkVSyncWasEnabled)
-        MainWindow->SetVSync(false);
-
-    automaticBenchmarkSummaryPath = benchmarkDirectory / "VoxelBenchmark_Summary.csv";
-    automaticBenchmarkActive = true;
-    logQueue.Push(L"\nAutomatic voxel benchmark started");
+    benchmarkController.StartAutomatic(BuildBenchmarkControllerContext());
 }
 
 void VoxelWaterfallApp::StopAutomaticBenchmark()
 {
-    const bool shouldRestoreVSync = automaticBenchmarkActive || benchmarkProfiler.IsActive();
-    if (benchmarkProfiler.IsActive())
-        benchmarkProfiler.Stop();
-
-    if (automaticBenchmarkActive)
-    {
-        logQueue.Push(L"\nAutomatic voxel benchmark stop requested");
-        if (!automaticBenchmarkSummaries.empty())
-            WriteAutomaticBenchmarkSummary();
-    }
-
-    automaticBenchmarkStopRequested = true;
-    automaticBenchmarkActive = false;
-    if (shouldRestoreVSync)
-        MainWindow->SetVSync(benchmarkVSyncWasEnabled);
-}
-
-void VoxelWaterfallApp::UpdateAutomaticBenchmark()
-{
-    if (!automaticBenchmarkActive)
-        return;
-
-    if (benchmarkProfiler.HasCompletedSummary())
-    {
-        auto summary = benchmarkProfiler.ConsumeCompletedSummary();
-        if (automaticBenchmarkIndex < automaticBenchmarkConfigs.size())
-        {
-            const auto& config = automaticBenchmarkConfigs[automaticBenchmarkIndex];
-            summary.Mode = config.ModeName;
-            summary.Preset = config.Preset;
-            summary.TotalVoxelCount = config.TotalCount;
-        }
-        automaticBenchmarkSummaries.push_back(summary);
-        logQueue.Push(L"\nFinished benchmark CSV: " + summary.CsvPath.wstring());
-        ++automaticBenchmarkIndex;
-    }
-
-    if (benchmarkProfiler.IsActive())
-        return;
-
-    if (automaticBenchmarkStopRequested || automaticBenchmarkIndex >= automaticBenchmarkConfigs.size())
-    {
-        WriteAutomaticBenchmarkSummary();
-        automaticBenchmarkActive = false;
-        automaticBenchmarkStopRequested = false;
-        MainWindow->SetVSync(benchmarkVSyncWasEnabled);
-        logQueue.Push(L"\nAutomatic voxel benchmark finished");
-        return;
-    }
-
-    StartAutomaticBenchmarkTest();
-}
-
-void VoxelWaterfallApp::StartAutomaticBenchmarkTest()
-{
-    if (automaticBenchmarkIndex >= automaticBenchmarkConfigs.size())
-        return;
-
-    const auto& config = automaticBenchmarkConfigs[automaticBenchmarkIndex];
-    if (config.Mode != VoxelExecutionMode::PrimaryOnly && !splitMultiGpuAvailable)
-    {
-        logQueue.Push(L"\nSkipped benchmark " + std::wstring(config.ModeName, config.ModeName + strlen(config.ModeName)) +
-            L" / " + std::wstring(config.Preset, config.Preset + strlen(config.Preset)) +
-            L": secondary hardware adapter unavailable");
-        ++automaticBenchmarkIndex;
-        return;
-    }
-
-    Flush();
-    ApplyExecutionMode(config.Mode);
-    ApplyBenchmarkVoxelCounts(config.NearCount, config.MediumCount, config.FarCount);
-    Flush();
-
-    const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +
-        config.Preset + "_" + std::to_string(config.TotalCount) + ".csv";
-    if (!benchmarkProfiler.Start(benchmarkDirectory, BuildBenchmarkMetadata(), fileName, config.Preset))
-    {
-        logQueue.Push(L"\nFailed to start benchmark " +
-            std::wstring(config.ModeName, config.ModeName + strlen(config.ModeName)));
-        ++automaticBenchmarkIndex;
-        return;
-    }
-
-    logQueue.Push(L"\nStarted benchmark: " + std::wstring(config.ModeName, config.ModeName + strlen(config.ModeName)) +
-        L" / " + std::wstring(config.Preset, config.Preset + strlen(config.Preset)) +
-        L" / " + std::to_wstring(config.TotalCount) + L" voxels");
+    benchmarkController.StopAutomatic(BuildBenchmarkControllerContext());
 }
 
 void VoxelWaterfallApp::ApplyBenchmarkVoxelCounts(const int nearCount, const int mediumCount, const int farCount)
@@ -871,15 +603,6 @@ void VoxelWaterfallApp::ApplyBenchmarkVoxelCounts(const int nearCount, const int
             lod.Emitter->SetEnabled(true);
         }
     }
-}
-
-void VoxelWaterfallApp::WriteAutomaticBenchmarkSummary()
-{
-    if (automaticBenchmarkSummaries.empty())
-        return;
-
-    if (BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries))
-        logQueue.Push(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());
 }
 
 void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMode)
@@ -1270,266 +993,26 @@ void VoxelWaterfallApp::SortGO()
     }
 }
 
-void VoxelWaterfallApp::CreateVoxelLod(const char* displayName, const char* objectName, const size_t lodIndex,
-                                       const Vector3& position, const int count,
-                                       const VoxelSimulationParameters& parameters)
-{
-    auto voxelObject = std::make_unique<GameObject>(objectName);
-    voxelObject->GetTransform()->SetPosition(position);
-
-    std::shared_ptr<VoxelWaterfallEmitter> emitter;
-    std::shared_ptr<CrossAdapterVoxelEmitter> crossEmitter;
-    if (lodIndex != NearVoxelWaterfall && splitMultiGpuAvailable)
-    {
-        crossEmitter = std::make_shared<CrossAdapterVoxelEmitter>(primeDevice, secondDevice,
-                                                                  static_cast<DWORD>(std::max(1, count)), parameters);
-        crossEmitter->SetEnabled(true);
-        voxelObject->AddComponent(crossEmitter);
-        typedRenderer[static_cast<int>(RenderMode::Particle)].push_back(crossEmitter);
-    }
-    else
-    {
-        emitter = std::make_shared<VoxelWaterfallEmitter>(primeDevice, static_cast<DWORD>(std::max(1, count)),
-                                                          parameters);
-        emitter->SetEnabled(true);
-        voxelObject->AddComponent(emitter);
-        typedRenderer[static_cast<int>(RenderMode::Particle)].push_back(emitter);
-    }
-
-    voxelLods[lodIndex].DisplayName = displayName;
-    voxelLods[lodIndex].ObjectName = objectName;
-    voxelLods[lodIndex].Enabled = true;
-    voxelLods[lodIndex].SettingsPending = false;
-    voxelLods[lodIndex].VoxelCount = std::max(1, count);
-    voxelLods[lodIndex].Parameters = parameters;
-    voxelLods[lodIndex].Position = position;
-    voxelLods[lodIndex].Emitter = emitter;
-    voxelLods[lodIndex].CrossEmitter = crossEmitter;
-
-    gameObjects.push_back(std::move(voxelObject));
-}
-
 void VoxelWaterfallApp::CreateGO()
 {
     logQueue.Push(std::wstring(L"\nStart Create GO"));
-    auto skySphere = std::make_unique<GameObject>("Sky");
-    skySphere->GetTransform()->SetScale({500, 500, 500});
-    {
-        const auto renderer = std::make_shared<SkyBox>(primeDevice,
-                                                       models[L"sphere"],
-                                                       *assets->GetTexture(
-                                                           assets->
-                                                           GetTextureIndex(L"skyTex")).get(),
-                                                       &srvTexturesMemory,
-                                                       assets->GetTextureIndex(L"skyTex"));
 
-        skySphere->AddComponent(renderer);
-        typedRenderer[static_cast<int>(RenderMode::SkyBox)].push_back((renderer));
-    }
-    gameObjects.push_back(std::move(skySphere));
-
-    auto quadRitem = std::make_unique<GameObject>("Quad");
-    {
-        auto renderer = std::make_shared<ModelRenderer>(primeDevice,
-                                                        models[L"quad"]);
-        renderer->SetModel(models[L"quad"]);
-        quadRitem->AddComponent(renderer);
-        typedRenderer[static_cast<int>(RenderMode::Debug)].push_back(renderer);
-        typedRenderer[static_cast<int>(RenderMode::Quad)].push_back(renderer);
-    }
-    gameObjects.push_back(std::move(quadRitem));
-
-
-    auto sun1 = std::make_unique<GameObject>("Directional Light");
-    auto light = std::make_shared<Light>(Directional);
-    light->Direction({0.57735f, -0.57735f, 0.57735f});
-    light->Strength({0.8f, 0.8f, 0.8f});
-    sun1->AddComponent(light);
-    gameObjects.push_back(std::move(sun1));
-
-    for (int i = 0; i < 11; ++i)
-    {
-        auto nano = std::make_unique<GameObject>();
-        nano->GetTransform()->SetPosition(Vector3::Right * -15 + Vector3::Forward * 12 * i);
-        nano->GetTransform()->SetEulerRotate(Vector3(0, -90, 0));
-        auto renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"nano"]);
-        nano->AddComponent(renderer);
-        typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-        gameObjects.push_back(std::move(nano));
-
-
-        auto doom = std::make_unique<GameObject>();
-        doom->SetScale(0.08);
-        doom->GetTransform()->SetPosition(Vector3::Right * 15 + Vector3::Forward * 12 * i);
-        doom->GetTransform()->SetEulerRotate(Vector3(0, 90, 0));
-        renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"doom"]);
-        doom->AddComponent(renderer);
-        typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-        gameObjects.push_back(std::move(doom));
-    }
-
-    for (int i = 0; i < 12; ++i)
-    {
-        for (int j = 0; j < 3; ++j)
-        {
-            auto atlas = std::make_unique<GameObject>();
-            atlas->GetTransform()->SetPosition(
-                Vector3::Right * -60 + Vector3::Right * -30 * j + Vector3::Up * 11 + Vector3::Forward * 10 * i);
-            auto renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"atlas"]);
-            atlas->AddComponent(renderer);
-            typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-            gameObjects.push_back(std::move(atlas));
-
-
-            auto pbody = std::make_unique<GameObject>();
-            pbody->GetTransform()->SetPosition(
-                Vector3::Right * 130 + Vector3::Right * -30 * j + Vector3::Up * 11 + Vector3::Forward * 10 * i);
-            renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"pbody"]);
-            pbody->AddComponent(renderer);
-            typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-            gameObjects.push_back(std::move(pbody));
-        }
-    }
-
-    VoxelSimulationParameters nearParameters{};
-    nearParameters.VoxelSize = 0.50f;
-    nearParameters.SpawnHeight = 45.0f;
-    nearParameters.WaterfallWidth = 22.0f;
-    nearParameters.WaterfallDepth = 3.0f;
-    nearParameters.InitialFallSpeed = 7.0f;
-    nearParameters.Gravity = 34.0f;
-    nearParameters.Seed = 1337;
-
-    VoxelSimulationParameters mediumParameters = nearParameters;
-    mediumParameters.VoxelSize = nearParameters.VoxelSize * 2.0f;
-    mediumParameters.SpawnHeight = 42.0f;
-    mediumParameters.WaterfallWidth = 26.0f;
-    mediumParameters.WaterfallDepth = 3.6f;
-    mediumParameters.Seed = 7331;
-
-    VoxelSimulationParameters farParameters = nearParameters;
-    farParameters.VoxelSize = nearParameters.VoxelSize * 4.0f;
-    farParameters.SpawnHeight = 38.0f;
-    farParameters.WaterfallWidth = 32.0f;
-    farParameters.WaterfallDepth = 4.8f;
-    farParameters.Seed = 9001;
-
-    CreateVoxelLod("NearVoxelWaterfall", "NearVoxelWaterfall", NearVoxelWaterfall,
-                   Vector3(-34.0f, 0.0f, 24.0f), 18432, nearParameters);
-    CreateVoxelLod("MediumVoxelWaterfall", "MediumVoxelWaterfall", MediumVoxelWaterfall,
-                   Vector3(0.0f, 0.0f, 24.0f), 4608, mediumParameters);
-    CreateVoxelLod("FarVoxelWaterfall", "FarVoxelWaterfall", FarVoxelWaterfall,
-                   Vector3(36.0f, 0.0f, 24.0f), 1152, farParameters);
-
-    voxelLods[NearVoxelWaterfall].UpdateInterval = 1;
-    voxelLods[MediumVoxelWaterfall].UpdateInterval = 2;
-    voxelLods[FarVoxelWaterfall].UpdateInterval = 4;
-
-    auto voxelFloor = std::make_unique<GameObject>();
-    voxelFloor->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
-    voxelFloor->GetTransform()->SetPosition(Vector3(0.0f, nearParameters.FloorHeight, 28.0f));
-    voxelFloor->GetTransform()->SetScale(Vector3(3.0f, 1.0f, 3.0f));
-    auto floorRenderer = std::make_shared<ModelRenderer>(primeDevice, models[L"quad"]);
-    voxelFloor->AddComponent(floorRenderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(floorRenderer);
-    gameObjects.push_back(std::move(voxelFloor));
-
-    auto platform = std::make_unique<GameObject>();
-    platform->SetScale(0.2);
-    platform->GetTransform()->SetEulerRotate(Vector3(90, 90, 0));
-    platform->GetTransform()->SetPosition(Vector3::Backward * -130);
-    auto renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"platform"]);
-    platform->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-
-
-    auto rotater = std::make_unique<GameObject>();
-    rotater->GetTransform()->SetParent(platform->GetTransform().get());
-    rotater->GetTransform()->SetPosition(Vector3::Forward * 325 + Vector3::Left * 625);
-    rotater->GetTransform()->SetEulerRotate(Vector3(0, -90, 90));
-    rotater->AddComponent(std::make_shared<Rotater>(10));
-
-    auto camera = std::make_unique<GameObject>("MainCamera");
-    camera->AddComponent(std::make_shared<CameraController>(35.0f, 80.0f, 60.0f));
-    camera->GetTransform()->SetEulerRotate(Vector3(-8.0f, 180.0f, 0.0f));
-    camera->GetTransform()->SetPosition(Vector3(0.0f, 24.0f, -72.0f));
-    camera->AddComponent(std::make_shared<Camera>(AspectRatio()));
-
-    gameObjects.push_back(std::move(camera));
-    gameObjects.push_back(std::move(rotater));
-
-
-    auto stair = std::make_unique<GameObject>();
-    stair->GetTransform()->SetParent(platform->GetTransform().get());
-    stair->SetScale(0.2);
-    stair->GetTransform()->SetEulerRotate(Vector3(0, 0, 90));
-    stair->GetTransform()->SetPosition(Vector3::Left * 700);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"stair"]);
-    stair->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-
-
-    auto columns = std::make_unique<GameObject>();
-    columns->GetTransform()->SetParent(stair->GetTransform().get());
-    columns->SetScale(0.8);
-    columns->GetTransform()->SetEulerRotate(Vector3(0, 0, 90));
-    columns->GetTransform()->SetPosition(Vector3::Up * 2000 + Vector3::Forward * 900);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"columns"]);
-    columns->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-
-    auto fountain = std::make_unique<GameObject>();
-    fountain->SetScale(0.005);
-    fountain->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    fountain->GetTransform()->SetPosition(Vector3::Up * 35 + Vector3::Backward * 77);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"fountain"]);
-    fountain->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-
-    gameObjects.push_back(std::move(platform));
-    gameObjects.push_back(std::move(stair));
-    gameObjects.push_back(std::move(columns));
-    gameObjects.push_back(std::move(fountain));
-
-
-    auto mountDragon = std::make_unique<GameObject>();
-    mountDragon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    mountDragon->GetTransform()->SetPosition(Vector3::Right * -960 + Vector3::Up * 45 + Vector3::Backward * 775);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"mountDragon"]);
-    mountDragon->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-    gameObjects.push_back(std::move(mountDragon));
-
-
-    auto desertDragon = std::make_unique<GameObject>();
-    desertDragon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    desertDragon->GetTransform()->SetPosition(Vector3::Right * 960 + Vector3::Up * -5 + Vector3::Backward * 775);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"desertDragon"]);
-    desertDragon->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::Opaque)].push_back(renderer);
-    gameObjects.push_back(std::move(desertDragon));
-
-    auto griffon = std::make_unique<GameObject>();
-    griffon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    griffon->SetScale(0.8);
-    griffon->GetTransform()->SetPosition(Vector3::Right * -355 + Vector3::Up * -7 + Vector3::Backward * 17);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"griffon"]);
-    griffon->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::OpaqueAlphaDrop)].push_back(renderer);
-    gameObjects.push_back(std::move(griffon));
-
-    griffon = std::make_unique<GameObject>();
-    griffon->SetScale(0.8);
-    griffon->GetTransform()->SetEulerRotate(Vector3(90, 0, 0));
-    griffon->GetTransform()->SetPosition(Vector3::Right * 355 + Vector3::Up * -7 + Vector3::Backward * 17);
-    renderer = std::make_shared<ModelRenderer>(primeDevice, models[L"griffon"]);
-    griffon->AddComponent(renderer);
-    typedRenderer[static_cast<int>(RenderMode::OpaqueAlphaDrop)].push_back(renderer);
-    gameObjects.push_back(std::move(griffon));
+    SceneFactoryContext sceneContext{
+        primeDevice,
+        secondDevice,
+        *assets,
+        models,
+        srvTexturesMemory,
+        gameObjects,
+        typedRenderer,
+        voxelLods,
+        splitMultiGpuAvailable,
+        AspectRatio()
+    };
+    sceneFactory.CreateScene(sceneContext);
 
     logQueue.Push(std::wstring(L"\nFinish create GO"));
 }
-
 void VoxelWaterfallApp::CalculateFrameStats()
 {
     static float minFps = std::numeric_limits<float>::max();
@@ -1714,8 +1197,7 @@ int VoxelWaterfallApp::Run()
         }
     }
 
-    benchmarkProfiler.Stop();
-    MainWindow->SetVSync(benchmarkVSyncWasEnabled);
+    benchmarkController.Shutdown(BuildBenchmarkControllerContext());
     return static_cast<int>(msg.wParam);
 }
 
@@ -1964,141 +1446,10 @@ LRESULT VoxelWaterfallApp::MsgProc(const HWND hwnd, const UINT msg, const WPARAM
     if (imguiInitialized && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
         return true;
 
-    switch (msg)
-    {
-    case WM_INPUT:
-        {
-            UINT dataSize;
-            GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &dataSize,
-                            sizeof(RAWINPUTHEADER));
-            //Need to populate data size first
-
-            if (dataSize > 0)
-            {
-                const auto rawdata = std::make_unique<BYTE[]>(dataSize);
-                if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, rawdata.get(), &dataSize,
-                                    sizeof(RAWINPUTHEADER)) == dataSize)
-                {
-                    auto raw = reinterpret_cast<RAWINPUT*>(rawdata.get());
-                    if (raw->header.dwType == RIM_TYPEMOUSE)
-                    {
-                        mouse.OnMouseMoveRaw(raw->data.mouse.lLastX, raw->data.mouse.lLastY);
-                    }
-                }
-            }
-
-            return DefWindowProc(hwnd, msg, wParam, lParam);
-        }
-    //Mouse Messages
-    case WM_MOUSEMOVE:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnMouseMove(x, y);
-            return 0;
-        }
-    case WM_LBUTTONDOWN:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnLeftPressed(x, y);
-            return 0;
-        }
-    case WM_RBUTTONDOWN:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnRightPressed(x, y);
-            return 0;
-        }
-    case WM_MBUTTONDOWN:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnMiddlePressed(x, y);
-            return 0;
-        }
-    case WM_LBUTTONUP:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnLeftReleased(x, y);
-            return 0;
-        }
-    case WM_RBUTTONUP:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnRightReleased(x, y);
-            return 0;
-        }
-    case WM_MBUTTONUP:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            mouse.OnMiddleReleased(x, y);
-            return 0;
-        }
-    case WM_MOUSEWHEEL:
-        {
-            const int x = LOWORD(lParam);
-            const int y = HIWORD(lParam);
-            if (GET_WHEEL_DELTA_WPARAM(wParam) > 0)
-            {
-                mouse.OnWheelUp(x, y);
-            }
-            else if (GET_WHEEL_DELTA_WPARAM(wParam) < 0)
-            {
-                mouse.OnWheelDown(x, y);
-            }
-            return 0;
-        }
-    case WM_KEYUP:
-
-        {
-            const unsigned char keycode = static_cast<unsigned char>(wParam);
-            keyboard.OnKeyReleased(keycode);
-
-
-            return 0;
-        }
-    case WM_KEYDOWN:
-        {
-            {
-                const unsigned char keycode = static_cast<unsigned char>(wParam);
-                if (keyboard.IsKeysAutoRepeat())
-                {
-                    keyboard.OnKeyPressed(keycode);
-                }
-                else
-                {
-                    const bool wasPressed = lParam & 0x40000000;
-                    if (!wasPressed)
-                    {
-                        keyboard.OnKeyPressed(keycode);
-                    }
-                }
-            }
-        }
-
-    case WM_CHAR:
-        {
-            const unsigned char ch = static_cast<unsigned char>(wParam);
-            if (keyboard.IsCharsAutoRepeat())
-            {
-                keyboard.OnChar(ch);
-            }
-            else
-            {
-                const bool wasPressed = lParam & 0x40000000;
-                if (!wasPressed)
-                {
-                    keyboard.OnChar(ch);
-                }
-            }
-            return 0;
-        }
-    }
+    bool inputHandled = false;
+    const LRESULT inputResult = inputRouter.Route(hwnd, msg, wParam, lParam, keyboard, mouse, inputHandled);
+    if (inputHandled)
+        return inputResult;
 
     return D3DApp::MsgProc(hwnd, msg, wParam, lParam);
 }

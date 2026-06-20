@@ -13,7 +13,11 @@
 #include "GDeviceFactory.h"
 #include "Light.h"
 #include "VoxelBenchmarkProfiler.h"
-#include "Source/Benchmark/AutomaticBenchmarkRunner.h"
+#include "Source/Benchmark/BenchmarkController.h"
+#include "Source/Platform/Win32InputRouter.h"
+#include "Source/Rendering/RenderPipeline.h"
+#include "Source/Rendering/VoxelRenderPasses.h"
+#include "Source/Scene/SceneFactory.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
 #include "Source/Voxels/VoxelSimulationScheduler.h"
 
@@ -35,17 +39,6 @@ public:
 
 protected:
     void Update(const GameTimer& gt) override;
-    void PopulateShadowMapCommands(std::shared_ptr<GCommandList> cmdList);
-    void PopulateNormalMapCommands(const std::shared_ptr<GCommandList>& cmdList);
-    void PopulateAmbientMapCommands(const std::shared_ptr<GCommandList>& cmdList);
-    void PopulateForwardPathCommands(const std::shared_ptr<GCommandList>& cmdList);
-    void PopulateDrawCommands(std::shared_ptr<GCommandList> cmdList,
-                              RenderMode type);
-    void PopulateInitRenderTarget(const std::shared_ptr<GCommandList>& cmdList, GTexture& renderTarget, GDescriptor* rtvMemory,
-                                  UINT offsetRTV);
-    void PopulateDrawFullQuadTexture(const std::shared_ptr<GCommandList>& cmdList,
-                                     GDescriptor* renderTextureSRVMemory, UINT renderTextureMemoryOffset,
-                                     GraphicPSO& pso);
     void Draw(const GameTimer& gt) override;
 
     void InitDevices();
@@ -61,14 +54,10 @@ protected:
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
     std::string GetExecutionModeName() const;
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
+    BenchmarkControllerContext BuildBenchmarkControllerContext();
     void StartAutomaticBenchmark();
     void StopAutomaticBenchmark();
-    void UpdateAutomaticBenchmark();
-    void StartAutomaticBenchmarkTest();
     void ApplyBenchmarkVoxelCounts(int nearCount, int mediumCount, int farCount);
-    void WriteAutomaticBenchmarkSummary();
-    void CreateVoxelLod(const char* displayName, const char* objectName, size_t lodIndex,
-                        const Vector3& position, int count, const VoxelSimulationParameters& parameters);
     void InitFrameResource();
     void InitRootSignature();
     void InitPipeLineResource();
@@ -144,21 +133,17 @@ protected:
     UINT64 graphicsPassFenceValue = 0;
     uint64_t simulationFrameIndex = 0;
     VoxelSimulationScheduler voxelScheduler;
+    RenderPipeline renderPipeline;
+    VoxelRenderPasses voxelRenderPasses;
     VoxelWaterfallDebugPanel debugPanel;
+    SceneFactory sceneFactory;
+    Win32InputRouter inputRouter;
 
     VoxelBenchmarkProfiler benchmarkProfiler;
+    BenchmarkController benchmarkController;
     std::chrono::steady_clock::time_point cpuFrameStart{};
     double currentPrimaryWaitMs = 0.0;
     double currentSecondaryWaitMs = 0.0;
-    bool benchmarkVSyncWasEnabled = true;
-    std::filesystem::path benchmarkDirectory = L"VoxelBenchmarkResults";
-
-    std::vector<AutomaticBenchmarkConfig> automaticBenchmarkConfigs;
-    std::vector<VoxelBenchmarkProfiler::BenchmarkSummary> automaticBenchmarkSummaries;
-    size_t automaticBenchmarkIndex = 0;
-    bool automaticBenchmarkActive = false;
-    bool automaticBenchmarkStopRequested = false;
-    std::filesystem::path automaticBenchmarkSummaryPath;
 
     GDescriptor imguiSrvMemory;
     bool imguiInitialized = false;

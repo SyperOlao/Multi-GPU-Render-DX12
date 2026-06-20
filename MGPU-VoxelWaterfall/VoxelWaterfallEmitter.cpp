@@ -1,31 +1,13 @@
 #include "pch.h"
 #include "VoxelWaterfallEmitter.h"
 
+#include "Source/Voxels/VoxelParticleSpawner.h"
+
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 
 #include "GameObject.h"
 #include "Transform.h"
-
-namespace
-{
-    DWORD HashVoxel(const DWORD value)
-    {
-        DWORD x = value;
-        x ^= x >> 16;
-        x *= 0x7feb352du;
-        x ^= x >> 15;
-        x *= 0x846ca68bu;
-        x ^= x >> 16;
-        return x;
-    }
-
-    float HashUnitFloat(const DWORD value)
-    {
-        return static_cast<float>(HashVoxel(value) & 0x00ffffffu) / static_cast<float>(0x01000000u);
-    }
-}
 
 double VoxelWaterfallEmitter::CalculateGroupCount(const DWORD particleCount) const
 {
@@ -38,33 +20,7 @@ double VoxelWaterfallEmitter::CalculateGroupCount(const DWORD particleCount) con
 
 VoxelParticleData VoxelWaterfallEmitter::GenerateVoxelParticle(const DWORD index) const
 {
-    const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
-    const DWORD widthCells = std::max<DWORD>(1, static_cast<DWORD>(std::floor(parameters.WaterfallWidth / voxelSize)));
-    const DWORD depthCells = std::max<DWORD>(1, static_cast<DWORD>(std::floor(parameters.WaterfallDepth / voxelSize)));
-    const DWORD horizontalCells = widthCells * depthCells;
-    const DWORD verticalCells = std::max<DWORD>(
-        1, static_cast<DWORD>(std::floor((parameters.SpawnHeight - parameters.FloorHeight) / voxelSize)));
-
-    const DWORD laneCount = std::max<DWORD>(
-        1, std::min<DWORD>(horizontalCells, std::max<DWORD>(3, (horizontalCells * 3) / 4)));
-    const DWORD laneIndex = index % laneCount;
-    const DWORD laneHash = HashVoxel(laneIndex ^ parameters.Seed);
-    const DWORD xIndex = laneHash % widthCells;
-    const DWORD zIndex = HashVoxel(laneHash + parameters.Seed * 17u) % depthCells;
-    const DWORD yPhase = HashVoxel(index + parameters.Seed * 31u) % verticalCells;
-    const DWORD yIndex = ((index / laneCount) + yPhase) % verticalCells;
-
-    const float x = (static_cast<float>(xIndex) - 0.5f * static_cast<float>(widthCells - 1)) * voxelSize;
-    const float y = parameters.SpawnHeight - static_cast<float>(yIndex) * voxelSize;
-    const float z = (static_cast<float>(zIndex) - 0.5f * static_cast<float>(depthCells - 1)) * voxelSize;
-    const float speedVariation = 0.75f + 0.5f * HashUnitFloat(index ^ parameters.Seed ^ 0x9e3779b9u);
-
-    VoxelParticleData particle{};
-    particle.Position = Vector3(x, y, z);
-    particle.ContinuousPosition = particle.Position;
-    particle.Velocity = Vector3(0.0f, -parameters.InitialFallSpeed * speedVariation, 0.0f);
-    particle.VoxelIndex = index;
-    return particle;
+    return VoxelParticleSpawner::Generate(index, parameters);
 }
 
 void VoxelWaterfallEmitter::PSOInitialize()
@@ -133,77 +89,25 @@ void VoxelWaterfallEmitter::PSOInitialize()
 
 void VoxelWaterfallEmitter::DescriptorInitialize()
 {
-    particlesComputeDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4);
-    particlesRenderDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
+    gpuResources.AllocateDescriptors(device);
 }
 
 void VoxelWaterfallEmitter::BufferInitialize()
 {
-    if (!objectPositionBuffer)
-        objectPositionBuffer = std::make_shared<ConstantUploadBuffer<ObjectConstants>>(device, 1, L"Voxel Emitter Position");
+    gpuResources.EnsureObjectPositionBuffer(device);
+    gpuResources.ResetParticleBuffers();
 
-    ParticlesPool.reset();
-    InjectedParticles.reset();
-    ParticlesAlive.reset();
-    ParticlesDead.reset();
-
-    injectionCapacity = std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16);
-    emitterData.ParticleInjectCount = injectionCapacity;
-    emitterData.InjectedGroupCount = static_cast<DWORD>(CalculateGroupCount(injectionCapacity));
+    gpuResources.InjectionCapacity = std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16);
+    emitterData.ParticleInjectCount = gpuResources.InjectionCapacity;
+    emitterData.InjectedGroupCount = static_cast<DWORD>(CalculateGroupCount(gpuResources.InjectionCapacity));
     emitterData.ParticlesAliveCount = 0;
     nextSpawnIndex = 0;
     isWorked = false;
 
-    ParticlesPool = std::make_shared<GBuffer>(device, sizeof(VoxelParticleData), emitterData.ParticlesTotalCount,
-                                              L"Voxel Pool Buffer", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    InjectedParticles = std::make_shared<GBuffer>(device, sizeof(VoxelParticleData), injectionCapacity,
-                                                  L"Injected Voxel Buffer", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    ParticlesAlive = std::make_shared<CounteredStructBuffer<DWORD>>(device, emitterData.ParticlesTotalCount,
-                                                                    L"Voxel Alive Index Buffer");
-    ParticlesDead = std::make_shared<CounteredStructBuffer<DWORD>>(device, emitterData.ParticlesTotalCount,
-                                                                   L"Voxel Dead Index Buffer");
-
-    std::vector<UINT> deadIndices(emitterData.ParticlesTotalCount);
-    std::iota(deadIndices.begin(), deadIndices.end(), 0u);
-    auto queue = device->GetCommandQueue();
-    auto initList = queue->GetCommandList();
-    ParticlesDead->LoadData(deadIndices.data(), initList);
-    ParticlesDead->SetCounterValue(initList, emitterData.ParticlesTotalCount);
-    initList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
-    initList->FlushResourceBarriers();
-    queue->WaitForFenceValue(queue->ExecuteCommandList(initList));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
-    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    uavDesc.Buffer.NumElements = ParticlesPool->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = ParticlesPool->GetStride();
-    ParticlesPool->CreateUnorderedAccessView(&uavDesc, &particlesComputeDescriptors, 0);
-
-    uavDesc.Buffer.NumElements = ParticlesDead->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = ParticlesDead->GetStride();
-    uavDesc.Buffer.CounterOffsetInBytes = ParticlesDead->GetBufferSize() - sizeof(DWORD);
-    ParticlesDead->CreateUnorderedAccessView(&uavDesc, &particlesComputeDescriptors, 1, ParticlesDead->GetD3D12Resource());
-    ParticlesAlive->CreateUnorderedAccessView(&uavDesc, &particlesComputeDescriptors, 2, ParticlesAlive->GetD3D12Resource());
-
-    uavDesc.Buffer.NumElements = InjectedParticles->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = InjectedParticles->GetStride();
-    uavDesc.Buffer.CounterOffsetInBytes = 0;
-    InjectedParticles->CreateUnorderedAccessView(&uavDesc, &particlesComputeDescriptors, 3);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srvDesc.Buffer.NumElements = ParticlesPool->GetElementCount();
-    srvDesc.Buffer.StructureByteStride = ParticlesPool->GetStride();
-    ParticlesPool->CreateShaderResourceView(&srvDesc, &particlesRenderDescriptors, 0);
-
-    srvDesc.Buffer.NumElements = ParticlesAlive->GetElementCount();
-    srvDesc.Buffer.StructureByteStride = ParticlesAlive->GetStride();
-    ParticlesAlive->CreateShaderResourceView(&srvDesc, &particlesRenderDescriptors, 1);
-
-    newParticles.resize(injectionCapacity);
+    gpuResources.CreateParticleBuffers(device, emitterData.ParticlesTotalCount);
+    gpuResources.InitializeDeadParticleList(device, emitterData.ParticlesTotalCount);
+    gpuResources.CreateParticleViews();
+    gpuResources.ResizeInjectionScratch();
 }
 
 VoxelWaterfallEmitter::VoxelWaterfallEmitter(const std::shared_ptr<GDevice>& primeDevice, const DWORD particleCount,
@@ -276,17 +180,17 @@ const VoxelEmitterData& VoxelWaterfallEmitter::GetEmitterData() const
 
 GBuffer& VoxelWaterfallEmitter::GetParticlesPool() const
 {
-    return *ParticlesPool;
+    return *gpuResources.ParticlesPool;
 }
 
 CounteredStructBuffer<DWORD>& VoxelWaterfallEmitter::GetParticlesAlive() const
 {
-    return *ParticlesAlive;
+    return *gpuResources.ParticlesAlive;
 }
 
 CounteredStructBuffer<DWORD>& VoxelWaterfallEmitter::GetParticlesDead() const
 {
-    return *ParticlesDead;
+    return *gpuResources.ParticlesDead;
 }
 
 bool VoxelWaterfallEmitter::HasStartedSimulation() const
@@ -363,7 +267,7 @@ void VoxelWaterfallEmitter::Update()
     {
         objectWorldData.TextureTransform = transform->TextureTransform.Transpose();
         objectWorldData.World = transform->GetWorldMatrix().Transpose();
-        objectPositionBuffer->CopyData(0, objectWorldData);
+        gpuResources.ObjectPositionBuffer->CopyData(0, objectWorldData);
     }
 }
 
@@ -372,25 +276,25 @@ void VoxelWaterfallEmitter::Draw(const std::shared_ptr<GCommandList>& cmdList)
     if (!enabled)
         return;
 
-    cmdList->TransitionBarrier(ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    cmdList->TransitionBarrier(ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->FlushResourceBarriers();
 
     cmdList->SetGraphicsRootSignature(*renderSignature);
     cmdList->SetPipelineState(*renderPSO);
-    cmdList->SetDescriptorsHeap(&particlesRenderDescriptors);
-    cmdList->SetGraphicsRootConstantBufferView(ParticleRenderSlot::ObjectData, *objectPositionBuffer);
+    cmdList->SetDescriptorsHeap(&gpuResources.RenderDescriptors);
+    cmdList->SetGraphicsRootConstantBufferView(ParticleRenderSlot::ObjectData, *gpuResources.ObjectPositionBuffer);
     cmdList->SetGraphicsRoot32BitConstants(ParticleRenderSlot::EmitterData, sizeof(VoxelEmitterData) / sizeof(DWORD),
                                            &emitterData, 0);
-    cmdList->SetGraphicsRootDescriptorTable(ParticleRenderSlot::ParticlesPool, &particlesRenderDescriptors, 0);
-    cmdList->SetGraphicsRootDescriptorTable(ParticleRenderSlot::ParticlesAliveIndex, &particlesRenderDescriptors, 1);
+    cmdList->SetGraphicsRootDescriptorTable(ParticleRenderSlot::ParticlesPool, &gpuResources.RenderDescriptors, 0);
+    cmdList->SetGraphicsRootDescriptorTable(ParticleRenderSlot::ParticlesAliveIndex, &gpuResources.RenderDescriptors, 1);
     cmdList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
     cmdList->SetIBuffer();
     cmdList->SetVBuffer();
     cmdList->Draw(emitterData.ParticlesAliveCount);
 
-    cmdList->TransitionBarrier(ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
 }
 
@@ -400,39 +304,39 @@ void VoxelWaterfallEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmdLis
         return;
 
     isWorked = true;
-    ParticlesAlive->ReadCounter(&emitterData.ParticlesAliveCount);
+    gpuResources.ParticlesAlive->ReadCounter(&emitterData.ParticlesAliveCount);
     emitterData.ParticlesAliveCount = std::min(emitterData.ParticlesAliveCount, emitterData.ParticlesTotalCount);
     lastDispatchVoxelCount = emitterData.ParticlesAliveCount;
 
-    cmdList->TransitionBarrier(ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cmdList->TransitionBarrier(ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cmdList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->SetComputeRootSignature(*computeSignature);
-    cmdList->SetDescriptorsHeap(&particlesComputeDescriptors);
+    cmdList->SetDescriptorsHeap(&gpuResources.ComputeDescriptors);
 
     const DWORD remaining = emitterData.ParticlesTotalCount - emitterData.ParticlesAliveCount;
-    const DWORD spawnCount = std::min(injectionCapacity, remaining);
+    const DWORD spawnCount = std::min(gpuResources.InjectionCapacity, remaining);
     if (spawnCount > 0)
     {
         emitterData.ParticleInjectCount = spawnCount;
         emitterData.InjectedGroupCount = static_cast<DWORD>(CalculateGroupCount(spawnCount));
         for (DWORD i = 0; i < spawnCount; ++i)
-            newParticles[i] = GenerateVoxelParticle(nextSpawnIndex + i);
+            gpuResources.NewParticles[i] = GenerateVoxelParticle(nextSpawnIndex + i);
         nextSpawnIndex += spawnCount;
 
-        InjectedParticles->LoadData(newParticles.data(), cmdList);
-        cmdList->TransitionBarrier(InjectedParticles->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        gpuResources.InjectedParticles->LoadData(gpuResources.NewParticles.data(), cmdList);
+        cmdList->TransitionBarrier(gpuResources.InjectedParticles->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         cmdList->FlushResourceBarriers();
         cmdList->SetPipelineState(*injectedPSO);
         cmdList->SetComputeRoot32BitConstants(ParticleComputeSlot::EmitterData, sizeof(VoxelEmitterData) / sizeof(DWORD),
                                               &emitterData, 0);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticlesPool, &particlesComputeDescriptors, 0);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleDead, &particlesComputeDescriptors, 1);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleAlive, &particlesComputeDescriptors, 2);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleInjection, &particlesComputeDescriptors, 3);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticlesPool, &gpuResources.ComputeDescriptors, 0);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleDead, &gpuResources.ComputeDescriptors, 1);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleAlive, &gpuResources.ComputeDescriptors, 2);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleInjection, &gpuResources.ComputeDescriptors, 3);
         cmdList->Dispatch(emitterData.InjectedGroupCount, emitterData.InjectedGroupCount, 1);
-        cmdList->UAVBarrier(ParticlesPool->GetD3D12Resource());
-        cmdList->UAVBarrier(ParticlesAlive->GetD3D12Resource());
+        cmdList->UAVBarrier(gpuResources.ParticlesPool->GetD3D12Resource());
+        cmdList->UAVBarrier(gpuResources.ParticlesAlive->GetD3D12Resource());
         cmdList->FlushResourceBarriers();
     }
 
@@ -442,16 +346,16 @@ void VoxelWaterfallEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmdLis
         cmdList->SetPipelineState(*simulatedPSO);
         cmdList->SetComputeRoot32BitConstants(ParticleComputeSlot::EmitterData, sizeof(VoxelEmitterData) / sizeof(DWORD),
                                               &emitterData, 0);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticlesPool, &particlesComputeDescriptors, 0);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleDead, &particlesComputeDescriptors, 1);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleAlive, &particlesComputeDescriptors, 2);
-        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleInjection, &particlesComputeDescriptors, 3);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticlesPool, &gpuResources.ComputeDescriptors, 0);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleDead, &gpuResources.ComputeDescriptors, 1);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleAlive, &gpuResources.ComputeDescriptors, 2);
+        cmdList->SetComputeRootDescriptorTable(ParticleComputeSlot::ParticleInjection, &gpuResources.ComputeDescriptors, 3);
         cmdList->Dispatch(emitterData.SimulatedGroupCount, emitterData.SimulatedGroupCount, 1);
     }
 
-    ParticlesAlive->CopyCounterForRead(cmdList);
-    cmdList->TransitionBarrier(ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    gpuResources.ParticlesAlive->CopyCounterForRead(cmdList);
+    cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
 }
