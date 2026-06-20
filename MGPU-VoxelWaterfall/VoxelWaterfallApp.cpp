@@ -1,5 +1,8 @@
 #include "VoxelWaterfallApp.h"
 #include "GDescriptorHeap.h"
+#include "Source/Assets/SampleAssetManifest.h"
+#include "Source/Benchmark/BenchmarkCsvWriter.h"
+#include "Source/Devices/DeviceSelectionPolicy.h"
 
 #include <array>
 #include <algorithm>
@@ -10,12 +13,13 @@
 #include <locale>
 #include <utility>
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #include "CameraController.h"
 #include "GameObject.h"
 #include "GDeviceFactory.h"
 #include "GModel.h"
 #include "imgui.h"
+#include "imgui_impl_dx12.h"
+#include "imgui_impl_win32.h"
 #include "MathHelper.h"
 #include "ModelRenderer.h"
 #include "VoxelWaterfallEmitter.h"
@@ -23,6 +27,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include "SkyBox.h"
 #include "Transform.h"
 #include "Window.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace
 {
@@ -329,187 +335,33 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
 
     const UINT timestampHeapIndex = 2 * currentFrameResourceIndex;
 
-
     const auto primaryComputeQueue = primeDevice->GetCommandQueue(GQueueType::Compute);
     const auto secondaryComputeQueue = secondDevice->GetCommandQueue(GQueueType::Compute);
     const auto crossAdapterCopyQueue = primeDevice->GetCommandQueue(GQueueType::Copy);
     auto renderQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
 
-    const bool useSplitMultiGpu = executionMode != VoxelExecutionMode::PrimaryOnly && splitMultiGpuAvailable;
-
-    for (auto& lod : voxelLods)
-    {
-        lod.UpdatedThisFrame = false;
-        lod.UpdatedVoxelCount = 0;
-    }
-
-    auto effectiveInterval = [this](const size_t lodIndex) -> uint32_t
-    {
-        if (executionMode == VoxelExecutionMode::PrimaryOnly ||
-            executionMode == VoxelExecutionMode::SplitMultiGpu ||
-            lodIndex == NearVoxelWaterfall)
-        {
-            return 1;
-        }
-
-        return std::max<uint32_t>(1, voxelLods[lodIndex].UpdateInterval);
+    VoxelSimulationSchedulerContext schedulerContext{
+        voxelLods,
+        executionMode,
+        splitMultiGpuAvailable,
+        simulationFrameIndex,
+        timestampHeapIndex,
+        primaryComputeQueue,
+        secondaryComputeQueue,
+        crossAdapterCopyQueue,
+        renderQueue,
+        primeComputeFence,
+        secondComputeFence,
+        secondRenderFence,
+        sharedRenderFenceValue,
+        primaryComputeQueueFenceValue,
+        secondaryComputeQueueFenceValue,
+        sharedComputeFenceValue,
+        crossAdapterDataReadyFenceValue,
+        currentFrameResource->ComputeFenceValue,
+        benchmarkProfiler
     };
-
-    auto shouldUpdateLod = [this, &effectiveInterval](const size_t lodIndex) -> bool
-    {
-        const auto& lod = voxelLods[lodIndex];
-        if (!lod.Enabled)
-            return false;
-
-        const uint32_t interval = effectiveInterval(lodIndex);
-        return interval == 1 || simulationFrameIndex % interval == 0;
-    };
-
-    auto prepareLodDispatch = [this, &effectiveInterval](const size_t lodIndex)
-    {
-        auto& lod = voxelLods[lodIndex];
-        const uint32_t interval = effectiveInterval(lodIndex);
-        const float deltaTime = std::min(FixedSimulationDeltaTime * static_cast<float>(interval),
-                                         MaxSimulationDeltaTime);
-
-        if (lod.CrossEmitter)
-        {
-            lod.CrossEmitter->SetUpdateInterval(interval);
-            lod.CrossEmitter->SetSimulationDeltaTime(deltaTime);
-        }
-        else if (lod.Emitter)
-        {
-            lod.Emitter->SetUpdateInterval(interval);
-            lod.Emitter->SetSimulationDeltaTime(deltaTime);
-        }
-    };
-
-    auto markLodUpdated = [this](const size_t lodIndex)
-    {
-        auto& lod = voxelLods[lodIndex];
-        lod.UpdatedThisFrame = true;
-        lod.LastSimulationFrame = simulationFrameIndex;
-
-        if (lod.CrossEmitter)
-        {
-            lod.CrossEmitter->SetLastSimulationFrame(simulationFrameIndex);
-            lod.UpdatedVoxelCount = lod.CrossEmitter->GetLastDispatchVoxelCount();
-        }
-        else if (lod.Emitter)
-        {
-            lod.Emitter->SetLastSimulationFrame(simulationFrameIndex);
-            lod.UpdatedVoxelCount = lod.Emitter->GetLastDispatchVoxelCount();
-        }
-    };
-
-    const bool updateNear = shouldUpdateLod(NearVoxelWaterfall);
-    const bool updateMedium = shouldUpdateLod(MediumVoxelWaterfall);
-    const bool updateFar = shouldUpdateLod(FarVoxelWaterfall);
-    const bool secondaryWorkThisFrame = useSplitMultiGpu && (updateMedium || updateFar);
-
-    primaryComputeQueue->Wait(renderQueue);
-    if (secondaryWorkThisFrame)
-        secondaryComputeQueue->Wait(secondRenderFence, sharedRenderFenceValue);
-
-    {
-        const auto cmdList = primaryComputeQueue->GetCommandList();
-
-        cmdList->EndQuery(timestampHeapIndex);
-
-        if (updateNear && voxelLods[NearVoxelWaterfall].Emitter)
-        {
-            prepareLodDispatch(NearVoxelWaterfall);
-            benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute,
-                                         VoxelBenchmarkProfiler::RangeId::NearCompute);
-            voxelLods[NearVoxelWaterfall].Emitter->Dispatch(cmdList);
-            benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute,
-                                       VoxelBenchmarkProfiler::RangeId::NearCompute);
-            benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute,
-                                           VoxelBenchmarkProfiler::RangeId::NearCompute);
-            markLodUpdated(NearVoxelWaterfall);
-        }
-
-        if (!useSplitMultiGpu)
-        {
-            for (size_t i = MediumVoxelWaterfall; i <= FarVoxelWaterfall; ++i)
-            {
-                if (!shouldUpdateLod(i))
-                    continue;
-
-                prepareLodDispatch(i);
-                const auto range = i == MediumVoxelWaterfall
-                                       ? VoxelBenchmarkProfiler::RangeId::MediumCompute
-                                       : VoxelBenchmarkProfiler::RangeId::FarCompute;
-                benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute, range);
-                if (voxelLods[i].CrossEmitter)
-                    voxelLods[i].CrossEmitter->Dispatch(cmdList);
-                else if (voxelLods[i].Emitter)
-                    voxelLods[i].Emitter->Dispatch(cmdList);
-                benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute, range);
-                benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCompute, range);
-                markLodUpdated(i);
-            }
-        }
-
-        cmdList->EndQuery(timestampHeapIndex + 1);
-        cmdList->ResolveQuery(timestampHeapIndex, 2, timestampHeapIndex * sizeof(UINT64));
-
-        currentFrameResource->ComputeFenceValue = primaryComputeQueue->ExecuteCommandList(cmdList);
-        primaryComputeQueueFenceValue = currentFrameResource->ComputeFenceValue;
-        benchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::PrimaryCompute,
-                                        primaryComputeQueueFenceValue);
-
-    }
-
-    if (secondaryWorkThisFrame)
-    {
-        {
-            const auto cmdList = secondaryComputeQueue->GetCommandList();
-
-            for (size_t i = MediumVoxelWaterfall; i <= FarVoxelWaterfall; ++i)
-            {
-                if (shouldUpdateLod(i) && voxelLods[i].CrossEmitter)
-                {
-                    prepareLodDispatch(i);
-                    const auto range = i == MediumVoxelWaterfall
-                                           ? VoxelBenchmarkProfiler::RangeId::MediumCompute
-                                           : VoxelBenchmarkProfiler::RangeId::FarCompute;
-                    benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCompute, range);
-                    voxelLods[i].CrossEmitter->Dispatch(cmdList);
-                    benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCompute, range);
-                    benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCompute, range);
-                    markLodUpdated(i);
-                }
-            }
-
-            secondaryComputeQueueFenceValue = secondaryComputeQueue->ExecuteCommandList(cmdList);
-            sharedComputeFenceValue = secondaryComputeQueueFenceValue;
-            secondaryComputeQueue->Signal(secondComputeFence, sharedComputeFenceValue);
-            benchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::SecondaryCompute,
-                                            secondaryComputeQueueFenceValue);
-        }
-
-        {
-            crossAdapterCopyQueue->Wait(primeComputeFence, sharedComputeFenceValue);
-
-            const auto cmdList = crossAdapterCopyQueue->GetCommandList();
-            benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::Transfer,
-                                         VoxelBenchmarkProfiler::RangeId::CrossAdapterTransfer);
-            for (size_t i = MediumVoxelWaterfall; i <= FarVoxelWaterfall; ++i)
-            {
-                if (voxelLods[i].CrossEmitter)
-                    voxelLods[i].CrossEmitter->CopySharedToPrimary(cmdList);
-            }
-            benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::Transfer,
-                                       VoxelBenchmarkProfiler::RangeId::CrossAdapterTransfer);
-            benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::Transfer,
-                                           VoxelBenchmarkProfiler::RangeId::CrossAdapterTransfer);
-
-            crossAdapterDataReadyFenceValue = crossAdapterCopyQueue->ExecuteCommandList(cmdList);
-            benchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::Transfer,
-                                            crossAdapterDataReadyFenceValue);
-        }
-    }
+    const auto simulationResult = voxelScheduler.DispatchFrame(schedulerContext);
 
     benchmarkProfiler.UpdateCurrentFrameMetadata(BuildBenchmarkMetadata());
 
@@ -542,14 +394,14 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         cmdList->ResolveQuery(timestampHeapIndex, 2, timestampHeapIndex * sizeof(UINT64));
 
         renderQueue->Wait(primaryComputeQueue);
-        if (secondaryWorkThisFrame)
+        if (simulationResult.SecondaryWorkThisFrame)
             renderQueue->Wait(crossAdapterCopyQueue);
 
         currentFrameResource->PrimeRenderFenceValue = renderQueue->ExecuteCommandList(cmdList);
         graphicsPassFenceValue = currentFrameResource->PrimeRenderFenceValue;
         benchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::Graphics,
                                         graphicsPassFenceValue);
-        if (useSplitMultiGpu)
+        if (simulationResult.UsedSplitMultiGpu)
         {
             sharedRenderFenceValue = currentFrameResource->PrimeRenderFenceValue;
             renderQueue->Signal(primeRenderFence, sharedRenderFenceValue);
@@ -582,7 +434,7 @@ bool VoxelWaterfallApp::Initialize()
     Flush();
     CreateMaterials();
     Flush();
-    MipMasGenerate();
+    GenerateMipMaps();
     Flush();
 
     InitRenderPaths();
@@ -611,23 +463,9 @@ bool VoxelWaterfallApp::Initialize()
 void VoxelWaterfallApp::InitDevices()
 {
     auto allDevices = GDeviceFactory::GetAllDevices(false);
-
-    const auto firstDevice = allDevices[0];
-    const auto otherDevice = allDevices.size() > 1 ? allDevices[1] : nullptr;
-
-    if (otherDevice && !(firstDevice->GetName().find(L"NVIDIA") != std::wstring::npos))
-    {
-        if (otherDevice->GetName().find(L"NVIDIA") != std::wstring::npos)
-        {
-            primeDevice = otherDevice;
-            secondDevice = firstDevice;
-        }
-    }
-    else
-    {
-        primeDevice = firstDevice;
-        secondDevice = otherDevice ? otherDevice : firstDevice;
-    }
+    const auto selectedDevices = DeviceSelectionPolicy::Select(allDevices);
+    primeDevice = selectedDevices.Primary;
+    secondDevice = selectedDevices.Secondary;
 
 
     assets = std::make_shared<AssetsLoader>(primeDevice);
@@ -639,7 +477,7 @@ void VoxelWaterfallApp::InitDevices()
             MemoryAllocator::CreateVector<std::shared_ptr<Renderer>>());
     }
 
-    splitMultiGpuAvailable = otherDevice != nullptr && secondDevice != primeDevice;
+    splitMultiGpuAvailable = allDevices.size() > 1 && secondDevice != primeDevice;
     if (splitMultiGpuAvailable)
     {
         primeDevice->SharedFence(primeComputeFence, secondDevice, secondComputeFence, sharedComputeFenceValue);
@@ -705,164 +543,72 @@ void VoxelWaterfallApp::InitUserInterface()
 
 void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList)
 {
-    if (!imguiInitialized)
+    VoxelWaterfallDebugPanelContext context{
+        imguiInitialized,
+        cmdList,
+        &imguiSrvMemory,
+        voxelLods,
+        executionMode,
+        splitMultiGpuAvailable,
+        splitMultiGpuStatus,
+        primeDevice ? primeDevice->GetName() : L"unavailable",
+        splitMultiGpuAvailable && secondDevice ? secondDevice->GetName() : L"unavailable",
+        simulationFrameIndex,
+        benchmarkProfiler,
+        benchmarkVSyncWasEnabled,
+        automaticBenchmarkActive,
+        !automaticBenchmarkConfigs.empty(),
+        automaticBenchmarkIndex,
+        automaticBenchmarkConfigs.size(),
+        automaticBenchmarkSummaryPath,
+        [this] { DrawVoxelWaterfallSceneLabels(); },
+        [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
+        [this] { StartManualBenchmark(); },
+        [this] { StopManualBenchmark(); },
+        [this] { StartAutomaticBenchmark(); },
+        [this] { StopAutomaticBenchmark(); },
+        [this](const size_t lodIndex, const bool enabled) { SetVoxelLodEnabled(lodIndex, enabled); },
+        [this](const size_t lodIndex) { RequestApplyVoxelLodSettings(lodIndex); }
+    };
+    debugPanel.Draw(context);
+}
+
+void VoxelWaterfallApp::StartManualBenchmark()
+{
+    benchmarkVSyncWasEnabled = MainWindow->IsVSync();
+    if (benchmarkVSyncWasEnabled)
+        MainWindow->SetVSync(false);
+
+    if (benchmarkProfiler.Start(benchmarkDirectory, BuildBenchmarkMetadata()))
+        logQueue.Push(L"\nVoxel benchmark started: " + benchmarkProfiler.GetCsvPath().wstring());
+    else
+        logQueue.Push(L"\nVoxel benchmark failed to start");
+}
+
+void VoxelWaterfallApp::StopManualBenchmark()
+{
+    benchmarkProfiler.Stop();
+    MainWindow->SetVSync(benchmarkVSyncWasEnabled);
+    logQueue.Push(L"\nVoxel benchmark stopped");
+}
+
+void VoxelWaterfallApp::SetVoxelLodEnabled(const size_t lodIndex, const bool enabled)
+{
+    if (lodIndex >= voxelLods.size())
         return;
 
-    ImGui_ImplDX12_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    auto& lod = voxelLods[lodIndex];
+    lod.Enabled = enabled;
+    if (lod.CrossEmitter)
+        lod.CrossEmitter->SetEnabled(lod.Enabled);
+    else if (lod.Emitter)
+        lod.Emitter->SetEnabled(lod.Enabled);
+}
 
-    DrawVoxelWaterfallSceneLabels();
-
-    ImGui::SetNextWindowSize(ImVec2(390.0f, 430.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Voxel Waterfall");
-
-    UINT totalVoxelCount = 0;
-    for (const auto& lod : voxelLods)
-    {
-        if (lod.Enabled)
-            totalVoxelCount += static_cast<UINT>(std::max(0, lod.VoxelCount));
-    }
-
-    UINT updatedVoxelCount = 0;
-    for (const auto& lod : voxelLods)
-        updatedVoxelCount += lod.UpdatedVoxelCount;
-
-    const char* executionModes[] = {"PrimaryOnly", "SplitMultiGpu", "SplitMultiGpuLod"};
-    int selectedMode = 0;
-    if (executionMode == VoxelExecutionMode::SplitMultiGpu)
-        selectedMode = 1;
-    else if (executionMode == VoxelExecutionMode::SplitMultiGpuLod)
-        selectedMode = 2;
-
-    if (!splitMultiGpuAvailable && selectedMode != 0)
-        selectedMode = 0;
-
-    if (!splitMultiGpuAvailable)
-        ImGui::BeginDisabled();
-    if (ImGui::Combo("Execution mode", &selectedMode, executionModes, IM_ARRAYSIZE(executionModes)))
-    {
-        VoxelExecutionMode requestedMode = VoxelExecutionMode::PrimaryOnly;
-        if (selectedMode == 1)
-            requestedMode = VoxelExecutionMode::SplitMultiGpu;
-        else if (selectedMode == 2)
-            requestedMode = VoxelExecutionMode::SplitMultiGpuLod;
-        ApplyExecutionMode(requestedMode);
-    }
-    if (!splitMultiGpuAvailable)
-        ImGui::EndDisabled();
-
-    ImGui::Text("Primary adapter: %S", primeDevice->GetName().c_str());
-    if (splitMultiGpuAvailable)
-        ImGui::Text("Secondary adapter: %S", secondDevice->GetName().c_str());
-    else
-        ImGui::Text("Secondary adapter: unavailable");
-    ImGui::Text("Split status: %S", splitMultiGpuStatus.c_str());
-    ImGui::Text("Total enabled elements: %u", totalVoxelCount);
-    ImGui::Text("Updated elements this frame: %u", updatedVoxelCount);
-    ImGui::Text("Simulation frame: %llu", simulationFrameIndex);
-    ImGui::Separator();
-    if (!benchmarkProfiler.IsActive() && !automaticBenchmarkActive)
-    {
-        if (ImGui::Button("Start Benchmark"))
-        {
-            benchmarkVSyncWasEnabled = MainWindow->IsVSync();
-            if (benchmarkVSyncWasEnabled)
-                MainWindow->SetVSync(false);
-
-            if (benchmarkProfiler.Start(benchmarkDirectory, BuildBenchmarkMetadata()))
-                logQueue.Push(L"\nVoxel benchmark started: " + benchmarkProfiler.GetCsvPath().wstring());
-            else
-                logQueue.Push(L"\nVoxel benchmark failed to start");
-        }
-    }
-    else if (!automaticBenchmarkActive)
-    {
-        if (ImGui::Button("Stop Benchmark"))
-        {
-            benchmarkProfiler.Stop();
-            MainWindow->SetVSync(benchmarkVSyncWasEnabled);
-            logQueue.Push(L"\nVoxel benchmark stopped");
-        }
-    }
-    if (!automaticBenchmarkActive)
-    {
-        if (ImGui::Button("Start Auto Benchmark"))
-            StartAutomaticBenchmark();
-    }
-    else
-    {
-        if (ImGui::Button("Stop Auto Benchmark"))
-            StopAutomaticBenchmark();
-    }
-    ImGui::Text("Auto benchmark: %s", automaticBenchmarkActive ? "running" : "idle");
-    if (!automaticBenchmarkConfigs.empty())
-    {
-        ImGui::Text("Auto test: %u/%u",
-                    static_cast<unsigned>(std::min(automaticBenchmarkIndex + 1, automaticBenchmarkConfigs.size())),
-                    static_cast<unsigned>(automaticBenchmarkConfigs.size()));
-    }
-    ImGui::TextWrapped("Summary CSV: %S", automaticBenchmarkSummaryPath.wstring().c_str());
-    ImGui::Text("Benchmark progress: %.1f%%", benchmarkProfiler.GetProgress() * 100.0f);
-    ImGui::Text("Warm-up: %u/%u", benchmarkProfiler.GetWarmupFramesSeen(),
-                VoxelBenchmarkProfiler::WarmupFrameCount);
-    ImGui::Text("Recorded rows: %u/%u", benchmarkProfiler.GetRowsWritten(),
-                VoxelBenchmarkProfiler::RecordedFrameCount);
-    ImGui::TextWrapped("CSV: %S", benchmarkProfiler.GetCsvPath().wstring().c_str());
-    if (benchmarkProfiler.IsActive() && !benchmarkVSyncWasEnabled)
-        ImGui::Text("VSync was already disabled");
-    else if (benchmarkProfiler.IsActive())
-        ImGui::Text("VSync disabled during benchmark");
-    ImGui::Separator();
-
-    for (size_t i = 0; i < voxelLods.size(); ++i)
-    {
-        auto& lod = voxelLods[i];
-        if (ImGui::TreeNodeEx(lod.DisplayName, ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            bool enabled = lod.Enabled;
-            if (ImGui::Checkbox("Enabled", &enabled))
-            {
-                lod.Enabled = enabled;
-                if (lod.CrossEmitter)
-                    lod.CrossEmitter->SetEnabled(lod.Enabled);
-                else if (lod.Emitter)
-                    lod.Emitter->SetEnabled(lod.Enabled);
-            }
-
-            ImGui::Text("Elements: %d", lod.Enabled ? lod.VoxelCount : 0);
-            ImGui::SliderInt("Element count", &lod.VoxelCount, 128, 262144);
-            ImGui::SliderFloat("Voxel size", &lod.Parameters.VoxelSize, 0.1f, 4.0f, "%.2f");
-            ImGui::SliderFloat("Gravity", &lod.Parameters.Gravity, 1.0f, 40.0f, "%.1f");
-            ImGui::SliderFloat("Waterfall height", &lod.Parameters.SpawnHeight, 5.0f, 80.0f, "%.1f");
-            ImGui::SliderFloat("Waterfall width", &lod.Parameters.WaterfallWidth, 1.0f, 40.0f, "%.1f");
-            ImGui::SliderFloat("Waterfall depth", &lod.Parameters.WaterfallDepth, 0.5f, 12.0f, "%.1f");
-            if (i == MediumVoxelWaterfall || i == FarVoxelWaterfall)
-            {
-                int interval = static_cast<int>(lod.UpdateInterval);
-                if (ImGui::SliderInt("Update interval", &interval, 1, 16))
-                    lod.UpdateInterval = static_cast<uint32_t>(std::max(1, interval));
-            }
-            ImGui::Text("Updated this frame: %s", lod.UpdatedThisFrame ? "yes" : "no");
-            ImGui::Text("Last simulation frame: %llu", lod.LastSimulationFrame);
-            ImGui::Text("Updated elements: %u", lod.UpdatedVoxelCount);
-            ImGui::Text("Transform: %.1f, %.1f, %.1f", lod.Position.x, lod.Position.y, lod.Position.z);
-            ImGui::Text("Seed: %u", lod.Parameters.Seed);
-
-            std::string buttonLabel = "Apply and reset##";
-            buttonLabel += lod.DisplayName;
-            if (ImGui::Button(buttonLabel.c_str()))
-                lod.SettingsPending = true;
-
-            ImGui::TreePop();
-        }
-    }
-
-    ImGui::End();
-
-    ImGui::Render();
-    cmdList->SetDescriptorsHeap(&imguiSrvMemory);
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList->GetGraphicsCommandList().Get());
+void VoxelWaterfallApp::RequestApplyVoxelLodSettings(const size_t lodIndex)
+{
+    if (lodIndex < voxelLods.size())
+        voxelLods[lodIndex].SettingsPending = true;
 }
 
 bool VoxelWaterfallApp::ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const
@@ -998,43 +744,7 @@ void VoxelWaterfallApp::StartAutomaticBenchmark()
     automaticBenchmarkSummaries.clear();
     automaticBenchmarkIndex = 0;
     automaticBenchmarkStopRequested = false;
-
-    struct Preset
-    {
-        const char* Name;
-        int Near;
-        int Medium;
-        int Far;
-    };
-
-    constexpr Preset presets[] = {
-        {"Low", 76000, 19000, 5000},
-        {"Medium", 190000, 47500, 12500},
-        {"High", 380000, 95000, 25000},
-        {"VeryHigh", 760000, 190000, 50000}
-    };
-
-    constexpr std::pair<VoxelExecutionMode, const char*> modes[] = {
-        {VoxelExecutionMode::PrimaryOnly, "PrimaryOnly"},
-        {VoxelExecutionMode::SplitMultiGpu, "SplitMultiGpu"},
-        {VoxelExecutionMode::SplitMultiGpuLod, "SplitMultiGpuLod"}
-    };
-
-    for (const auto& mode : modes)
-    {
-        for (const auto& preset : presets)
-        {
-            automaticBenchmarkConfigs.push_back({
-                mode.first,
-                mode.second,
-                preset.Name,
-                preset.Near,
-                preset.Medium,
-                preset.Far,
-                static_cast<uint32_t>(preset.Near + preset.Medium + preset.Far)
-            });
-        }
-    }
+    automaticBenchmarkConfigs = AutomaticBenchmarkRunner::BuildDefaultConfigs();
 
     benchmarkVSyncWasEnabled = MainWindow->IsVSync();
     if (benchmarkVSyncWasEnabled)
@@ -1168,36 +878,8 @@ void VoxelWaterfallApp::WriteAutomaticBenchmarkSummary()
     if (automaticBenchmarkSummaries.empty())
         return;
 
-    std::filesystem::create_directories(benchmarkDirectory);
-    std::ofstream summary(automaticBenchmarkSummaryPath, std::ios::out | std::ios::trunc);
-    if (!summary.is_open())
-        return;
-
-    summary.imbue(std::locale::classic());
-    summary << "mode,preset,total_voxel_count,average_frame_ms,median_frame_ms,p95_frame_ms,"
-        << "average_primary_compute_ms,average_secondary_compute_ms,average_transfer_ms,"
-        << "average_sync_ms,average_graphics_ms,target_60_fps_reached\n";
-
-    summary << std::fixed << std::setprecision(6);
-    for (const auto& row : automaticBenchmarkSummaries)
-    {
-        summary << row.Mode << ','
-            << row.Preset << ','
-            << row.TotalVoxelCount << ','
-            << row.AverageFrameMs << ','
-            << row.MedianFrameMs << ','
-            << row.P95FrameMs << ','
-            << row.AveragePrimaryComputeMs << ','
-            << row.AverageSecondaryComputeMs << ','
-            << row.AverageTransferMs << ','
-            << row.AverageSyncMs << ','
-            << row.AverageGraphicsMs << ','
-            << (row.Target60FpsReached ? "true" : "false") << '\n';
-    }
-
-    summary.flush();
-    summary.close();
-    logQueue.Push(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());
+    if (BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries))
+        logQueue.Push(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());
 }
 
 void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMode)
@@ -1480,61 +1162,14 @@ void VoxelWaterfallApp::LoadStudyTexture()
 
     const auto cmdList = queue->GetCommandList();
 
-    auto bricksTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\bricks2.dds"), cmdList);
-    bricksTex->SetName(L"bricksTex");
-    assets->AddTexture(bricksTex);
-
-    auto stoneTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\stone.dds"), cmdList);
-    stoneTex->SetName(L"stoneTex");
-    assets->AddTexture(stoneTex);
-
-    auto tileTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\tile.dds"), cmdList);
-    tileTex->SetName(L"tileTex");
-    assets->AddTexture(tileTex);
-
-    auto fenceTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\WireFence.dds"), cmdList);
-    fenceTex->SetName(L"fenceTex");
-    assets->AddTexture(fenceTex);
-
-    auto waterTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\water1.dds"), cmdList);
-    waterTex->SetName(L"waterTex");
-    assets->AddTexture(waterTex);
-
-    auto skyTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\skymap.dds"), cmdList);
-    skyTex->SetName(L"skyTex");
-    assets->AddTexture(skyTex);
-
-    auto grassTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\grass.dds"), cmdList);
-    grassTex->SetName(L"grassTex");
-    assets->AddTexture(grassTex);
-
-    auto treeArrayTex = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\treeArray2.dds"), cmdList);
-    treeArrayTex->SetName(L"treeArrayTex");
-    assets->AddTexture(treeArrayTex);
-
-    auto seamless = GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\seamless_grass.jpg"), cmdList);
-    seamless->SetName(L"seamless");
-    assets->AddTexture(seamless);
-
-
-    std::vector<std::wstring> texNormalNames =
+    for (const auto& entry : SampleAssetManifest::Textures())
     {
-        L"bricksNormalMap",
-        L"tileNormalMap",
-        L"defaultNormalMap"
-    };
-
-    std::vector<std::wstring> texNormalFilenames =
-    {
-        ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\bricks2_nmap.dds"),
-        ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\tile_nmap.dds"),
-        ResolveVoxelWaterfallAssetPathW(L"Data\\Textures\\default_nmap.dds")
-    };
-
-    for (int j = 0; j < texNormalNames.size(); ++j)
-    {
-        auto texture = GTexture::LoadTextureFromFile(texNormalFilenames[j], cmdList, TextureUsage::Normalmap);
-        texture->SetName(texNormalNames[j]);
+        auto texture = entry.IsNormalMap
+                           ? GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(entry.RelativePath.c_str()),
+                                                           cmdList, TextureUsage::Normalmap)
+                           : GTexture::LoadTextureFromFile(ResolveVoxelWaterfallAssetPathW(entry.RelativePath.c_str()),
+                                                           cmdList);
+        texture->SetName(entry.Name);
         assets->AddTexture(texture);
     }
 
@@ -1548,27 +1183,12 @@ void VoxelWaterfallApp::LoadModels()
     auto queue = primeDevice->GetCommandQueue(GQueueType::Compute);
     const auto cmdList = queue->GetCommandList();
 
-    auto nano = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Nanosuit\\Nanosuit.obj"));
-    models[L"nano"] = std::move(nano);
-
-    auto atlas = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Atlas\\Atlas.obj"));
-    models[L"atlas"] = std::move(atlas);
-    auto pbody = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\P-Body\\P-Body.obj"));
-    models[L"pbody"] = std::move(pbody);
-
-    auto griffon = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Griffon\\Griffon.FBX"));
-    griffon->scaleMatrix = Matrix::CreateScale(0.1);
-    models[L"griffon"] = std::move(griffon);
-
-    auto mountDragon = assets->CreateModelFromFile(
-        cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\MOUNTAIN_DRAGON\\MOUNTAIN_DRAGON.FBX"));
-    mountDragon->scaleMatrix = Matrix::CreateScale(0.1);
-    models[L"mountDragon"] = std::move(mountDragon);
-
-    auto desertDragon = assets->CreateModelFromFile(
-        cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\DesertDragon\\DesertDragon.FBX"));
-    desertDragon->scaleMatrix = Matrix::CreateScale(0.1);
-    models[L"desertDragon"] = std::move(desertDragon);
+    for (const auto& entry : SampleAssetManifest::Models())
+    {
+        auto model = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA(entry.RelativePath.c_str()));
+        model->scaleMatrix = entry.Scale;
+        models[entry.Name] = std::move(model);
+    }
 
     auto sphere = assets->GenerateSphere(cmdList);
     models[L"sphere"] = std::move(sphere);
@@ -1576,32 +1196,13 @@ void VoxelWaterfallApp::LoadModels()
     auto quad = assets->GenerateQuad(cmdList, -15.0f, -15.0f, 30.0f, 30.0f, 0.0f);
     models[L"quad"] = std::move(quad);
 
-    auto stair = assets->CreateModelFromFile(
-        cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Temple\\SM_AsianCastle_A.FBX"));
-    models[L"stair"] = std::move(stair);
-
-    auto columns = assets->CreateModelFromFile(
-        cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Temple\\SM_AsianCastle_E.FBX"));
-    models[L"columns"] = std::move(columns);
-
-    auto fountain = assets->
-        CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Temple\\SM_Fountain.FBX"));
-    models[L"fountain"] = std::move(fountain);
-
-    auto platform = assets->CreateModelFromFile(
-        cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\Temple\\SM_PlatformSquare.FBX"));
-    models[L"platform"] = std::move(platform);
-
-    auto doom = assets->CreateModelFromFile(cmdList, ResolveVoxelWaterfallAssetPathA("Data\\Objects\\DoomSlayer\\doommarine.obj"));
-    models[L"doom"] = std::move(doom);
-
     queue->WaitForFenceValue(queue->ExecuteCommandList(cmdList));
     queue->Flush();
 
     logQueue.Push(std::wstring(L"\nLoad Models Data"));
 }
 
-void VoxelWaterfallApp::MipMasGenerate()
+void VoxelWaterfallApp::GenerateMipMaps()
 {
     try
     {
@@ -1647,7 +1248,7 @@ void VoxelWaterfallApp::MipMasGenerate()
     }
     catch (...)
     {
-        logQueue.Push(L"\nWTF???? How It Fix");
+        logQueue.Push(L"\nUnexpected error during mip-map generation");
     }
 }
 
@@ -1935,7 +1536,7 @@ void VoxelWaterfallApp::CalculateFrameStats()
     static float minMspf = std::numeric_limits<float>::max();
     static float maxFps = std::numeric_limits<float>::min();
     static float maxMspf = std::numeric_limits<float>::min();
-    static UINT writeStaticticCount = 0;
+    static UINT writeStatisticCount = 0;
     static UINT64 primeGPUTimeMax = std::numeric_limits<UINT64>::min();
     static UINT64 primeGPUTimeMin = std::numeric_limits<UINT64>::max();
     static UINT64 secondGPUTimeMax = std::numeric_limits<UINT64>::min();
@@ -1978,12 +1579,12 @@ void VoxelWaterfallApp::CalculateFrameStats()
         else if (executionMode == VoxelExecutionMode::SplitMultiGpuLod)
             modeName = L"SplitMultiGpuLod";
         const std::wstring title = L"FPS " + std::to_wstring(fps) + L" Mode:" + modeName + L" Progress: " + std::to_wstring(
-                (static_cast<float>(writeStaticticCount) / StatisticStepSecondsCount) * 100.0f) + L"/" +
+                (static_cast<float>(writeStatisticCount) / StatisticsStepSecondsCount) * 100.0f) + L"/" +
             std::to_wstring(100);
 
-        if (writeStaticticCount >= StatisticStepSecondsCount)
+        if (writeStatisticCount >= StatisticsStepSecondsCount)
         {
-            const std::wstring staticticStr =
+            const std::wstring statisticsText =
                 L"\nUse Cross Adapter: " + std::to_wstring(UseCrossAdapter) +
                 L"\nUse Cross Sync: " + std::to_wstring(UseCrossSync)
                 + L"\n\tMin FPS:" + std::to_wstring(minFps)
@@ -1999,10 +1600,10 @@ void VoxelWaterfallApp::CalculateFrameStats()
                 +L"\n\tMax Second GPU Computing Time:" + std::to_wstring(secondGPUComputingTimeMax)
                 + L"\n\tMin Second GPU Computing Time:" + std::to_wstring(secondGPUComputingTimeMin);
 
-            logQueue.Push(staticticStr);
+            logQueue.Push(statisticsText);
 
 
-            writeStaticticCount = 0;
+            writeStatisticCount = 0;
             minFps = std::numeric_limits<float>::max();
             minMspf = std::numeric_limits<float>::max();
             maxFps = std::numeric_limits<float>::min();
@@ -2019,7 +1620,7 @@ void VoxelWaterfallApp::CalculateFrameStats()
         }
         else
         {
-            const std::wstring staticticStr =
+            const std::wstring statisticsText =
                 L"\n\tFPS:" + std::to_wstring(fps)
                 + L"\n\tMSPF:" + std::to_wstring(mspf)
                 + L"\n\tPrime GPU Rendering Time:" + std::to_wstring(primeGPURenderingTime)
@@ -2027,9 +1628,9 @@ void VoxelWaterfallApp::CalculateFrameStats()
                 + L"\n\tPrime GPU Computing Time:" + std::to_wstring(primeGPUComputingTime)
                 + L"\n\tSecond GPU Computing Time:" + std::to_wstring(secondGPUComputingTime);
 
-            logQueue.Push(staticticStr);
+            logQueue.Push(statisticsText);
 
-            writeStaticticCount++;
+            writeStatisticCount++;
         }
 
 
@@ -2051,7 +1652,7 @@ void VoxelWaterfallApp::LogWriting()
     if (fileSteam.is_open())
     {
         fileSteam << L"Information" << std::endl << L"Statistic step seconds:" << std::to_wstring(
-            StatisticStepSecondsCount) << std::endl;
+            StatisticsStepSecondsCount) << std::endl;
     }
 
     std::wstring line;
@@ -2087,7 +1688,7 @@ int VoxelWaterfallApp::Run()
         // Otherwise, do animation/game stuff.
         else
         {
-            if (IsStop)
+            if (isStopRequested)
             {
                 MainWindow->SetWindowTitle(MainWindow->GetWindowName() + L" Finished. Wait...");
                 LogWriting();

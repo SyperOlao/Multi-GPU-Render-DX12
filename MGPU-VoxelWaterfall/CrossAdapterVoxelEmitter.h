@@ -8,10 +8,10 @@ class CrossAdapterVoxelEmitter : public Emitter
 {
     std::shared_ptr<VoxelWaterfallEmitter> primeVoxelWaterfallEmitter;
 
-    std::shared_ptr<GBuffer> ParticlesPool = nullptr;
-    std::shared_ptr<CounteredStructBuffer<DWORD>> ParticlesAlive = nullptr;
-    std::shared_ptr<CounteredStructBuffer<DWORD>> ParticlesDead = nullptr;
-    std::shared_ptr<GBuffer> InjectedParticles = nullptr;
+    std::shared_ptr<GBuffer> particlesPool = nullptr;
+    std::shared_ptr<CounteredStructBuffer<DWORD>> particlesAlive = nullptr;
+    std::shared_ptr<CounteredStructBuffer<DWORD>> particlesDead = nullptr;
+    std::shared_ptr<GBuffer> injectedParticles = nullptr;
 
     std::shared_ptr<GCrossAdapterResource> CrossAdapterAliveIndexes;
     std::shared_ptr<GCrossAdapterResource> CrossAdapterDeadIndexes;
@@ -25,7 +25,7 @@ class CrossAdapterVoxelEmitter : public Emitter
 
     std::vector<VoxelParticleData> newParticles;
 
-    bool UseSharedCompute = false;
+    bool useSharedCompute = false;
     bool enabled = true;
 
 
@@ -38,14 +38,14 @@ class CrossAdapterVoxelEmitter : public Emitter
         Disable = 1
     };
 
-    Status DirtyActivated = None;
+    Status pendingSharedStateChange = None;
 
 public:
     void InitPSO(const std::shared_ptr<GDevice>& otherDevice);
     void CreateBuffers();
     CrossAdapterVoxelEmitter(std::shared_ptr<GDevice> primeDevice, const std::shared_ptr<GDevice>& otherDevice,
                              DWORD particleCount, const VoxelSimulationParameters& initialParameters = {});
-    void Update() override;;
+    void Update() override;
     void Draw(const std::shared_ptr<GCommandList>& cmdList) override;
     void Dispatch(const std::shared_ptr<GCommandList>& cmdList) override;
 
@@ -67,7 +67,7 @@ public:
     uint32_t UpdateInterval = 1;
     uint64_t LastSimulationFrame = 0;
 
-    void EnableShared();;
+    void EnableShared();
 
-    void DisableShared();;
+    void DisableShared();
 };

@@ -1,5 +1,7 @@
 #include "FrameResource.h"
 
+using namespace PEPEngine::Graphics;
+
 FrameResource::FrameResource(std::shared_ptr<GDevice> primeDevices, std::shared_ptr<GDevice> secondDevice,
                              UINT passCount, UINT materialCount)
 {

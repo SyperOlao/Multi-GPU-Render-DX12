@@ -13,6 +13,36 @@
     <Filter Include="IMGUI">
       <UniqueIdentifier>{9B609F1F-6CB2-4A80-A68A-4F2AA0EFCC68}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Assets">
+      <UniqueIdentifier>{59605A69-94C1-449B-A5C0-98D9667B260C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Benchmark">
+      <UniqueIdentifier>{E6F54D13-B95D-4985-8DD8-B4DAE97DB946}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Devices">
+      <UniqueIdentifier>{CF608ABF-FD95-44F6-9167-47949ACAA688}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\UI">
+      <UniqueIdentifier>{34380DC0-2B26-4721-97BF-485FF55569BD}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Voxels">
+      <UniqueIdentifier>{8E8B6E5E-42A8-4386-8C76-76583F062856}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Assets">
+      <UniqueIdentifier>{8C87D6D6-3FD1-4376-9522-1F6A534C27E3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Benchmark">
+      <UniqueIdentifier>{A67D8611-1F96-4175-85B7-7893A76D48CB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Devices">
+      <UniqueIdentifier>{476F128F-1D3E-4E53-9757-4315E4EED557}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\UI">
+      <UniqueIdentifier>{9DA2B091-C47F-4C1D-B0FC-8FA69CA71BEA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Voxels">
+      <UniqueIdentifier>{C7FA1F54-783A-4D77-B08B-B220B76DB6BA}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -21,6 +51,12 @@
     <ClCompile Include="VoxelWaterfallApp.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="VoxelWaterfallEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="CrossAdapterVoxelEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Source\Assets\SampleAssetManifest.cpp"><Filter>Source Files\Assets</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
+    <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
@@ -35,6 +71,13 @@
     <ClInclude Include="VoxelWaterfallApp.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="VoxelWaterfallEmitter.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="CrossAdapterVoxelEmitter.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Source\Assets\SampleAssetManifest.h"><Filter>Header Files\Assets</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>
+    <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />

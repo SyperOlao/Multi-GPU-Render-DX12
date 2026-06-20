@@ -8,6 +8,7 @@
 #include <sstream>
 
 using Microsoft::WRL::ComPtr;
+using namespace PEPEngine::Graphics;
 
 namespace
 {

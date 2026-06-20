@@ -4,24 +4,21 @@
 #include "ShaderBuffersData.h"
 #include "GTexture.h"
 
-using namespace PEPEngine;
-using namespace Graphics;
-
-
 struct FrameResource
 {
-    FrameResource(std::shared_ptr<GDevice> primeDevices, std::shared_ptr<GDevice> secondDevice, UINT passCount,
+    FrameResource(std::shared_ptr<PEPEngine::Graphics::GDevice> primeDevices,
+                  std::shared_ptr<PEPEngine::Graphics::GDevice> secondDevice, UINT passCount,
                   UINT materialCount);
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
     ~FrameResource();
 
 
-    GDescriptor BackBufferRTVMemory;
+    PEPEngine::Graphics::GDescriptor BackBufferRTVMemory;
 
-    std::shared_ptr<ConstantUploadBuffer<PassConstants>> PrimePassConstantUploadBuffer;
-    std::shared_ptr<ConstantUploadBuffer<SsaoConstants>> SsaoConstantUploadBuffer;
-    std::shared_ptr<StructuredUploadBuffer<MaterialConstants>> MaterialBuffer;
+    std::shared_ptr<PEPEngine::Graphics::ConstantUploadBuffer<PassConstants>> PrimePassConstantUploadBuffer;
+    std::shared_ptr<PEPEngine::Graphics::ConstantUploadBuffer<SsaoConstants>> SsaoConstantUploadBuffer;
+    std::shared_ptr<PEPEngine::Graphics::StructuredUploadBuffer<MaterialConstants>> MaterialBuffer;
 
 
     UINT64 PrimeRenderFenceValue = 0;

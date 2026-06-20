@@ -13,8 +13,9 @@
 #include "GDeviceFactory.h"
 #include "Light.h"
 #include "VoxelBenchmarkProfiler.h"
-#include "imgui_impl_dx12.h"
-#include "imgui_impl_win32.h"
+#include "Source/Benchmark/AutomaticBenchmarkRunner.h"
+#include "Source/UI/VoxelWaterfallDebugPanel.h"
+#include "Source/Voxels/VoxelSimulationScheduler.h"
 
 #include <array>
 #include <chrono>
@@ -25,23 +26,16 @@ class VoxelWaterfallApp :
     public Common::D3DApp
 {
 public:
-    enum class VoxelExecutionMode
-    {
-        PrimaryOnly,
-        SplitMultiGpu,
-        SplitMultiGpuLod
-    };
-
     VoxelWaterfallApp(HINSTANCE hInstance);
     ~VoxelWaterfallApp() override;
 
-    bool Initialize() override;;
+    bool Initialize() override;
 
     int Run() override;
 
 protected:
     void Update(const GameTimer& gt) override;
-    void PopulateShadowMapCommands(std::shared_ptr<GCommandList> cmdList);;
+    void PopulateShadowMapCommands(std::shared_ptr<GCommandList> cmdList);
     void PopulateNormalMapCommands(const std::shared_ptr<GCommandList>& cmdList);
     void PopulateAmbientMapCommands(const std::shared_ptr<GCommandList>& cmdList);
     void PopulateForwardPathCommands(const std::shared_ptr<GCommandList>& cmdList);
@@ -57,6 +51,10 @@ protected:
     void InitDevices();
     void InitUserInterface();
     void DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList);
+    void StartManualBenchmark();
+    void StopManualBenchmark();
+    void SetVoxelLodEnabled(size_t lodIndex, bool enabled);
+    void RequestApplyVoxelLodSettings(size_t lodIndex);
     bool ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const;
     void DrawVoxelWaterfallSceneLabels();
     void ApplyPendingVoxelSettings();
@@ -79,7 +77,7 @@ protected:
     void InitRenderPaths();
     void LoadStudyTexture();
     void LoadModels();
-    void MipMasGenerate();
+    void GenerateMipMaps();
     void SortGO();
     void CreateGO();
     void CalculateFrameStats() override;
@@ -118,9 +116,9 @@ protected:
     RenderModeFactory defaultPrimePipelineResources;
 
 
-    bool IsStop = false;
+    bool isStopRequested = false;
 
-    const int StatisticStepSecondsCount = 120;
+    const int StatisticsStepSecondsCount = 120;
 
 
     std::shared_ptr<ShadowMap> shadowPath;
@@ -136,27 +134,7 @@ protected:
     bool UseCrossAdapter = false;
     bool UseCrossSync = false;
 
-    struct VoxelLodState
-    {
-        const char* DisplayName = "";
-        const char* ObjectName = "";
-        bool Enabled = true;
-        bool SettingsPending = false;
-        int VoxelCount = 1;
-        uint32_t UpdateInterval = 1;
-        uint64_t LastSimulationFrame = 0;
-        bool UpdatedThisFrame = false;
-        UINT UpdatedVoxelCount = 0;
-        VoxelSimulationParameters Parameters{};
-        Vector3 Position = Vector3::Zero;
-        std::shared_ptr<VoxelWaterfallEmitter> Emitter;
-        std::shared_ptr<CrossAdapterVoxelEmitter> CrossEmitter;
-    };
-
-    static constexpr size_t NearVoxelWaterfall = 0;
-    static constexpr size_t MediumVoxelWaterfall = 1;
-    static constexpr size_t FarVoxelWaterfall = 2;
-    std::array<VoxelLodState, 3> voxelLods{};
+    VoxelLodArray voxelLods{};
     VoxelExecutionMode executionMode = VoxelExecutionMode::PrimaryOnly;
     bool splitMultiGpuAvailable = false;
     std::wstring splitMultiGpuStatus = L"SplitMultiGpu is not initialized";
@@ -165,8 +143,8 @@ protected:
     UINT64 crossAdapterDataReadyFenceValue = 0;
     UINT64 graphicsPassFenceValue = 0;
     uint64_t simulationFrameIndex = 0;
-    static constexpr float FixedSimulationDeltaTime = 1.0f / 60.0f;
-    static constexpr float MaxSimulationDeltaTime = 1.0f / 15.0f;
+    VoxelSimulationScheduler voxelScheduler;
+    VoxelWaterfallDebugPanel debugPanel;
 
     VoxelBenchmarkProfiler benchmarkProfiler;
     std::chrono::steady_clock::time_point cpuFrameStart{};
@@ -174,17 +152,6 @@ protected:
     double currentSecondaryWaitMs = 0.0;
     bool benchmarkVSyncWasEnabled = true;
     std::filesystem::path benchmarkDirectory = L"VoxelBenchmarkResults";
-
-    struct AutomaticBenchmarkConfig
-    {
-        VoxelExecutionMode Mode = VoxelExecutionMode::PrimaryOnly;
-        const char* ModeName = "PrimaryOnly";
-        const char* Preset = "Low";
-        int NearCount = 0;
-        int MediumCount = 0;
-        int FarCount = 0;
-        uint32_t TotalCount = 0;
-    };
 
     std::vector<AutomaticBenchmarkConfig> automaticBenchmarkConfigs;
     std::vector<VoxelBenchmarkProfiler::BenchmarkSummary> automaticBenchmarkSummaries;

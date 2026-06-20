@@ -35,28 +35,28 @@ void CrossAdapterVoxelEmitter::InitPSO(const std::shared_ptr<GDevice>& otherDevi
 
 void CrossAdapterVoxelEmitter::CreateBuffers()
 {
-    if (ParticlesPool)
+    if (particlesPool)
     {
-        ParticlesPool->Reset();
-        ParticlesPool.reset();
+        particlesPool->Reset();
+        particlesPool.reset();
     }
 
-    if (InjectedParticles)
+    if (injectedParticles)
     {
-        InjectedParticles->Reset();
-        InjectedParticles.reset();
+        injectedParticles->Reset();
+        injectedParticles.reset();
     }
 
-    if (ParticlesAlive)
+    if (particlesAlive)
     {
-        ParticlesAlive->Reset();
-        ParticlesAlive.reset();
+        particlesAlive->Reset();
+        particlesAlive.reset();
     }
 
-    if (ParticlesDead)
+    if (particlesDead)
     {
-        ParticlesDead->Reset();
-        ParticlesDead.reset();
+        particlesDead->Reset();
+        particlesDead.reset();
     }
 
     if (CrossAdapterAliveIndexes)
@@ -77,40 +77,40 @@ void CrossAdapterVoxelEmitter::CreateBuffers()
         CrossAdapterParticles.reset();
     }
 
-    ParticlesPool = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
-                                              primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount,
+    auto& emitterData = primeVoxelWaterfallEmitter->GetEmitterData();
+
+    particlesPool = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
+                                              emitterData.ParticlesTotalCount,
                                               L"Second Particles Pool Buffer",
                                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    InjectedParticles = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
-                                                  primeVoxelWaterfallEmitter->emitterData.ParticleInjectCount,
+    injectedParticles = std::make_shared<GBuffer>(secondDevice, sizeof(VoxelParticleData),
+                                                  emitterData.ParticleInjectCount,
                                                   L"Second Injected Particle Buffer",
                                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    ParticlesAlive = std::make_shared<CounteredStructBuffer<DWORD>>(secondDevice,
-                                                                    primeVoxelWaterfallEmitter->emitterData.
-                                                                    ParticlesTotalCount,
+    particlesAlive = std::make_shared<CounteredStructBuffer<DWORD>>(secondDevice,
+                                                                    emitterData.ParticlesTotalCount,
                                                                     L"Second Particles Alive Index Buffer");
-    ParticlesDead = std::make_shared<CounteredStructBuffer<DWORD>>(secondDevice,
-                                                                   primeVoxelWaterfallEmitter->emitterData.
-                                                                   ParticlesTotalCount,
+    particlesDead = std::make_shared<CounteredStructBuffer<DWORD>>(secondDevice,
+                                                                   emitterData.ParticlesTotalCount,
                                                                    L"Second Particles Dead Index Buffer");
 
-    auto desc = ParticlesAlive->GetD3D12ResourceDesc();
+    auto desc = particlesAlive->GetD3D12ResourceDesc();
     CrossAdapterAliveIndexes = std::make_shared<GCrossAdapterResource>(desc, device, secondDevice,
                                                                        L"Cross Adapter Particle Alive Index Buffer");
     CrossAdapterDeadIndexes = std::make_shared<GCrossAdapterResource>(desc, device, secondDevice,
                                                                       L"Cross Adapter Particle Dead Index Buffer");
 
-    desc = ParticlesPool->GetD3D12ResourceDesc();
+    desc = particlesPool->GetD3D12ResourceDesc();
     CrossAdapterParticles = std::make_shared<GCrossAdapterResource>(desc, device, secondDevice,
                                                                     L"Cross Adapter Particle Buffer");
 
 
-    newParticles.resize(InjectedParticles->GetElementCount());
+    newParticles.resize(injectedParticles->GetElementCount());
 
     {
         std::vector<UINT> deadIndex;
 
-        for (int i = 0; i < primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount; ++i)
+        for (DWORD i = 0; i < emitterData.ParticlesTotalCount; ++i)
         {
             deadIndex.push_back(i);
         }
@@ -118,10 +118,10 @@ void CrossAdapterVoxelEmitter::CreateBuffers()
         auto queue = secondDevice->GetCommandQueue();
         auto cmdList = queue->GetCommandList();
 
-        ParticlesDead->LoadData(deadIndex.data(), cmdList);
-        ParticlesDead->SetCounterValue(cmdList, primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount);
+        particlesDead->LoadData(deadIndex.data(), cmdList);
+        particlesDead->SetCounterValue(cmdList, emitterData.ParticlesTotalCount);
 
-        cmdList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+        cmdList->TransitionBarrier(particlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
         cmdList->FlushResourceBarriers();
 
         queue->ExecuteCommandList(cmdList);
@@ -133,22 +133,22 @@ void CrossAdapterVoxelEmitter::CreateBuffers()
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
     uavDesc.Buffer.FirstElement = 0;
-    uavDesc.Buffer.NumElements = ParticlesPool->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = ParticlesPool->GetStride();
+    uavDesc.Buffer.NumElements = particlesPool->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = particlesPool->GetStride();
     uavDesc.Buffer.CounterOffsetInBytes = 0;
 
-    ParticlesPool->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 0);
+    particlesPool->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 0);
 
-    uavDesc.Buffer.NumElements = ParticlesDead->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = ParticlesDead->GetStride();
-    uavDesc.Buffer.CounterOffsetInBytes = ParticlesDead->GetBufferSize() - sizeof(DWORD);
-    ParticlesDead->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 1, ParticlesDead->GetD3D12Resource());
-    ParticlesAlive->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 2, ParticlesAlive->GetD3D12Resource());
+    uavDesc.Buffer.NumElements = particlesDead->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = particlesDead->GetStride();
+    uavDesc.Buffer.CounterOffsetInBytes = particlesDead->GetBufferSize() - sizeof(DWORD);
+    particlesDead->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 1, particlesDead->GetD3D12Resource());
+    particlesAlive->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 2, particlesAlive->GetD3D12Resource());
 
-    uavDesc.Buffer.NumElements = InjectedParticles->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = InjectedParticles->GetStride();
+    uavDesc.Buffer.NumElements = injectedParticles->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = injectedParticles->GetStride();
     uavDesc.Buffer.CounterOffsetInBytes = 0;
-    InjectedParticles->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 3);
+    injectedParticles->CreateUnorderedAccessView(&uavDesc, &updateDescriptors, 3);
 }
 
 CrossAdapterVoxelEmitter::CrossAdapterVoxelEmitter(std::shared_ptr<GDevice> primeDevice,
@@ -176,7 +176,7 @@ CrossAdapterVoxelEmitter::CrossAdapterVoxelEmitter(std::shared_ptr<GDevice> prim
 void CrossAdapterVoxelEmitter::Update()
 {
     primeVoxelWaterfallEmitter->gameObject = this->gameObject;
-    primeVoxelWaterfallEmitter->Update();
+    primeVoxelWaterfallEmitter->UpdateFromCrossAdapterBridge();
 }
 
 void CrossAdapterVoxelEmitter::Draw(const std::shared_ptr<GCommandList>& cmdList)
@@ -184,7 +184,7 @@ void CrossAdapterVoxelEmitter::Draw(const std::shared_ptr<GCommandList>& cmdList
     if (!enabled)
         return;
 
-    primeVoxelWaterfallEmitter->Draw(cmdList);
+    primeVoxelWaterfallEmitter->DrawFromCrossAdapterBridge(cmdList);
 }
 
 void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmdList)
@@ -192,48 +192,48 @@ void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmd
     if (!enabled)
         return;
 
-    if (DirtyActivated == Enable)
-    {
-        if (primeVoxelWaterfallEmitter->isWorked)
-        {
-            primeVoxelWaterfallEmitter->ParticlesAlive->ReadCounter(&primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount);
+    auto& emitterData = primeVoxelWaterfallEmitter->GetEmitterData();
 
-            cmdList->CopyResource(ParticlesPool->GetD3D12Resource(),
+    if (pendingSharedStateChange == Enable)
+    {
+        if (primeVoxelWaterfallEmitter->HasStartedSimulation())
+        {
+            primeVoxelWaterfallEmitter->GetParticlesAlive().ReadCounter(&emitterData.ParticlesAliveCount);
+
+            cmdList->CopyResource(particlesPool->GetD3D12Resource(),
                                   CrossAdapterParticles->GetSharedResource().GetD3D12Resource());
-            cmdList->CopyResource(ParticlesAlive->GetD3D12Resource(),
+            cmdList->CopyResource(particlesAlive->GetD3D12Resource(),
                                   CrossAdapterAliveIndexes->GetSharedResource().GetD3D12Resource());
-            cmdList->CopyResource(ParticlesDead->GetD3D12Resource(),
+            cmdList->CopyResource(particlesDead->GetD3D12Resource(),
                                   CrossAdapterDeadIndexes->GetSharedResource().GetD3D12Resource());
         }
 
-        DirtyActivated = None;
+        pendingSharedStateChange = None;
     }
 
-    if (DirtyActivated == Disable)
+    if (pendingSharedStateChange == Disable)
     {
-        cmdList->CopyResource(primeVoxelWaterfallEmitter->ParticlesPool->GetD3D12Resource(),
+        cmdList->CopyResource(primeVoxelWaterfallEmitter->GetParticlesPool().GetD3D12Resource(),
                               CrossAdapterParticles->GetPrimeResource().GetD3D12Resource());
-        cmdList->CopyResource(primeVoxelWaterfallEmitter->ParticlesAlive->GetD3D12Resource(),
+        cmdList->CopyResource(primeVoxelWaterfallEmitter->GetParticlesAlive().GetD3D12Resource(),
                               CrossAdapterAliveIndexes->GetPrimeResource().GetD3D12Resource());
-        cmdList->CopyResource(primeVoxelWaterfallEmitter->ParticlesDead->GetD3D12Resource(),
+        cmdList->CopyResource(primeVoxelWaterfallEmitter->GetParticlesDead().GetD3D12Resource(),
                               CrossAdapterDeadIndexes->GetPrimeResource().GetD3D12Resource());
 
-        DirtyActivated = None;
+        pendingSharedStateChange = None;
     }
 
 
-    if (UseSharedCompute)
+    if (useSharedCompute)
     {
-        ParticlesAlive->ReadCounter(&primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount);
-        primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount = std::min(
-            primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount,
-            primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount);
-        primeVoxelWaterfallEmitter->lastDispatchVoxelCount =
-            primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount;
+        particlesAlive->ReadCounter(&emitterData.ParticlesAliveCount);
+        emitterData.ParticlesAliveCount = std::min(emitterData.ParticlesAliveCount,
+                                                   emitterData.ParticlesTotalCount);
+        primeVoxelWaterfallEmitter->SetLastDispatchVoxelCount(emitterData.ParticlesAliveCount);
 
-        cmdList->TransitionBarrier(ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        cmdList->TransitionBarrier(ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        cmdList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->TransitionBarrier(particlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->TransitionBarrier(particlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->TransitionBarrier(particlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         cmdList->FlushResourceBarriers();
 
         cmdList->SetComputeRootSignature(*computeRS);
@@ -243,23 +243,21 @@ void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmd
         cmdList->SetRootDescriptorTable(ParticleComputeSlot::ParticleDead, &updateDescriptors, 1);
         cmdList->SetRootDescriptorTable(ParticleComputeSlot::ParticleAlive, &updateDescriptors, 2);
 
-        if (primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount > primeVoxelWaterfallEmitter->emitterData.
-            ParticlesAliveCount)
+        if (emitterData.ParticlesTotalCount > emitterData.ParticlesAliveCount)
         {
-            const long check = (primeVoxelWaterfallEmitter->emitterData.ParticlesTotalCount - primeVoxelWaterfallEmitter->
-                emitterData.ParticlesAliveCount);
+            const long check = emitterData.ParticlesTotalCount - emitterData.ParticlesAliveCount;
 
-            if (check >= primeVoxelWaterfallEmitter->emitterData.ParticleInjectCount)
+            if (check >= emitterData.ParticleInjectCount)
             {
-                for (int i = 0; i < primeVoxelWaterfallEmitter->emitterData.ParticleInjectCount; ++i)
+                const DWORD firstSpawnIndex = primeVoxelWaterfallEmitter->ConsumeNextSpawnIndex(
+                    emitterData.ParticleInjectCount);
+                for (DWORD i = 0; i < emitterData.ParticleInjectCount; ++i)
                 {
-                    newParticles[i] = primeVoxelWaterfallEmitter->GenerateVoxelParticle(
-                        primeVoxelWaterfallEmitter->nextSpawnIndex + i);
+                    newParticles[i] = primeVoxelWaterfallEmitter->GenerateParticleForIndex(firstSpawnIndex + i);
                 }
-                primeVoxelWaterfallEmitter->nextSpawnIndex += primeVoxelWaterfallEmitter->emitterData.ParticleInjectCount;
 
-                InjectedParticles->LoadData(newParticles.data(), cmdList);
-                cmdList->TransitionBarrier(InjectedParticles->GetD3D12Resource(),
+                injectedParticles->LoadData(newParticles.data(), cmdList);
+                cmdList->TransitionBarrier(injectedParticles->GetD3D12Resource(),
                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 cmdList->FlushResourceBarriers();
 
@@ -269,50 +267,48 @@ void CrossAdapterVoxelEmitter::Dispatch(const std::shared_ptr<GCommandList>& cmd
 
                 cmdList->SetRoot32BitConstants(ParticleComputeSlot::EmitterData,
                                                sizeof(VoxelEmitterData) / sizeof(DWORD),
-                                               &primeVoxelWaterfallEmitter->emitterData, 0);
+                                               &emitterData, 0);
 
-                cmdList->Dispatch(primeVoxelWaterfallEmitter->emitterData.InjectedGroupCount,
-                                  primeVoxelWaterfallEmitter->emitterData.InjectedGroupCount, 1);
+                cmdList->Dispatch(emitterData.InjectedGroupCount, emitterData.InjectedGroupCount, 1);
 
-                cmdList->UAVBarrier(InjectedParticles->GetD3D12Resource());
+                cmdList->UAVBarrier(injectedParticles->GetD3D12Resource());
                 cmdList->FlushResourceBarriers();
             }
         }
 
-        if (primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount > 0)
+        if (emitterData.ParticlesAliveCount > 0)
         {
-            primeVoxelWaterfallEmitter->emitterData.SimulatedGroupCount = primeVoxelWaterfallEmitter->CalculateGroupCount(
-                primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount);
+            emitterData.SimulatedGroupCount = primeVoxelWaterfallEmitter->CalculateDispatchGroupCount(
+                emitterData.ParticlesAliveCount);
 
             cmdList->SetRoot32BitConstants(ParticleComputeSlot::EmitterData,
                                            sizeof(VoxelEmitterData) / sizeof(DWORD),
-                                           &primeVoxelWaterfallEmitter->emitterData, 0);
+                                           &emitterData, 0);
 
             cmdList->SetPipelineState(*updatePSO.get());
 
-            cmdList->Dispatch(primeVoxelWaterfallEmitter->emitterData.SimulatedGroupCount,
-                              primeVoxelWaterfallEmitter->emitterData.SimulatedGroupCount, 1);
+            cmdList->Dispatch(emitterData.SimulatedGroupCount, emitterData.SimulatedGroupCount, 1);
         }
 
-        ParticlesAlive->CopyCounterForRead(cmdList);
+        particlesAlive->CopyCounterForRead(cmdList);
 
         cmdList->CopyResource(CrossAdapterParticles->GetSharedResource().GetD3D12Resource(),
-                              ParticlesPool->GetD3D12Resource());
+                              particlesPool->GetD3D12Resource());
         cmdList->CopyResource(CrossAdapterAliveIndexes->GetSharedResource().GetD3D12Resource(),
-                              ParticlesAlive->GetD3D12Resource());
+                              particlesAlive->GetD3D12Resource());
         cmdList->CopyResource(CrossAdapterDeadIndexes->GetSharedResource().GetD3D12Resource(),
-                              ParticlesDead->GetD3D12Resource());
+                              particlesDead->GetD3D12Resource());
     }
     else
     {
         primeVoxelWaterfallEmitter->Dispatch(cmdList);
 
         cmdList->CopyResource(CrossAdapterParticles->GetPrimeResource().GetD3D12Resource(),
-                              primeVoxelWaterfallEmitter->ParticlesPool->GetD3D12Resource());
+                              primeVoxelWaterfallEmitter->GetParticlesPool().GetD3D12Resource());
         cmdList->CopyResource(CrossAdapterAliveIndexes->GetPrimeResource().GetD3D12Resource(),
-                              primeVoxelWaterfallEmitter->ParticlesAlive->GetD3D12Resource());
+                              primeVoxelWaterfallEmitter->GetParticlesAlive().GetD3D12Resource());
         cmdList->CopyResource(CrossAdapterDeadIndexes->GetPrimeResource().GetD3D12Resource(),
-                              primeVoxelWaterfallEmitter->ParticlesDead->GetD3D12Resource());
+                              primeVoxelWaterfallEmitter->GetParticlesDead().GetD3D12Resource());
     }
 }
 
@@ -383,39 +379,42 @@ UINT CrossAdapterVoxelEmitter::GetLastDispatchVoxelCount() const
 
 bool CrossAdapterVoxelEmitter::IsSharedComputeEnabled() const
 {
-    return UseSharedCompute;
+    return useSharedCompute;
 }
 
 void CrossAdapterVoxelEmitter::CopySharedToPrimary(const std::shared_ptr<GCommandList>& cmdList)
 {
-    if (!enabled || !UseSharedCompute)
+    if (!enabled || !useSharedCompute)
         return;
 
-    cmdList->CopyResource(primeVoxelWaterfallEmitter->ParticlesPool->GetD3D12Resource(),
+    auto& emitterData = primeVoxelWaterfallEmitter->GetEmitterData();
+
+    cmdList->CopyResource(primeVoxelWaterfallEmitter->GetParticlesPool().GetD3D12Resource(),
                           CrossAdapterParticles->GetPrimeResource().GetD3D12Resource());
-    cmdList->CopyResource(primeVoxelWaterfallEmitter->ParticlesAlive->GetD3D12Resource(),
+    cmdList->CopyResource(primeVoxelWaterfallEmitter->GetParticlesAlive().GetD3D12Resource(),
                           CrossAdapterAliveIndexes->GetPrimeResource().GetD3D12Resource());
-    primeVoxelWaterfallEmitter->ParticlesAlive->ReadCounter(&primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount);
+    primeVoxelWaterfallEmitter->GetParticlesAlive().ReadCounter(&emitterData.ParticlesAliveCount);
 }
 
 void CrossAdapterVoxelEmitter::EnableShared()
 {
-    if (UseSharedCompute)
+    if (useSharedCompute)
         return;
 
-    primeVoxelWaterfallEmitter->ParticlesAlive->ReadCounter(&primeVoxelWaterfallEmitter->emitterData.ParticlesAliveCount);
+    primeVoxelWaterfallEmitter->GetParticlesAlive().ReadCounter(
+        &primeVoxelWaterfallEmitter->GetEmitterData().ParticlesAliveCount);
 
-    UseSharedCompute = true;
+    useSharedCompute = true;
 
-    DirtyActivated = Enable;
+    pendingSharedStateChange = Enable;
 }
 
 void CrossAdapterVoxelEmitter::DisableShared()
 {
-    if (!UseSharedCompute)
+    if (!useSharedCompute)
         return;
 
-    UseSharedCompute = false;
+    useSharedCompute = false;
 
-    DirtyActivated = Disable;
+    pendingSharedStateChange = Disable;
 }

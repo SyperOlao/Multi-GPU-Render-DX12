@@ -216,6 +216,16 @@ VoxelWaterfallEmitter::VoxelWaterfallEmitter(const std::shared_ptr<GDevice>& pri
     ApplySettings(particleCount, parameters);
 }
 
+void VoxelWaterfallEmitter::UpdateFromCrossAdapterBridge()
+{
+    Update();
+}
+
+void VoxelWaterfallEmitter::DrawFromCrossAdapterBridge(const std::shared_ptr<GCommandList>& cmdList)
+{
+    Draw(cmdList);
+}
+
 void VoxelWaterfallEmitter::ApplySettings(const UINT count, const VoxelSimulationParameters& newParameters)
 {
     parameters = newParameters;
@@ -252,6 +262,58 @@ const VoxelSimulationParameters& VoxelWaterfallEmitter::GetParameters() const
 UINT VoxelWaterfallEmitter::GetParticleCount() const
 {
     return emitterData.ParticlesTotalCount;
+}
+
+VoxelEmitterData& VoxelWaterfallEmitter::GetEmitterData()
+{
+    return emitterData;
+}
+
+const VoxelEmitterData& VoxelWaterfallEmitter::GetEmitterData() const
+{
+    return emitterData;
+}
+
+GBuffer& VoxelWaterfallEmitter::GetParticlesPool() const
+{
+    return *ParticlesPool;
+}
+
+CounteredStructBuffer<DWORD>& VoxelWaterfallEmitter::GetParticlesAlive() const
+{
+    return *ParticlesAlive;
+}
+
+CounteredStructBuffer<DWORD>& VoxelWaterfallEmitter::GetParticlesDead() const
+{
+    return *ParticlesDead;
+}
+
+bool VoxelWaterfallEmitter::HasStartedSimulation() const
+{
+    return isWorked;
+}
+
+VoxelParticleData VoxelWaterfallEmitter::GenerateParticleForIndex(const DWORD index) const
+{
+    return GenerateVoxelParticle(index);
+}
+
+DWORD VoxelWaterfallEmitter::ConsumeNextSpawnIndex(const DWORD count)
+{
+    const DWORD firstIndex = nextSpawnIndex;
+    nextSpawnIndex += count;
+    return firstIndex;
+}
+
+double VoxelWaterfallEmitter::CalculateDispatchGroupCount(const DWORD particleCount) const
+{
+    return CalculateGroupCount(particleCount);
+}
+
+void VoxelWaterfallEmitter::SetLastDispatchVoxelCount(const UINT count)
+{
+    lastDispatchVoxelCount = count;
 }
 
 void VoxelWaterfallEmitter::SetEnabled(const bool value)

@@ -12,8 +12,6 @@
 #include <memory>
 #include <string>
 
-using namespace PEPEngine::Graphics;
-
 class VoxelBenchmarkProfiler
 {
 public:
@@ -71,12 +69,12 @@ public:
         std::filesystem::path CsvPath;
     };
 
-    void Initialize(const std::shared_ptr<GDevice>& primaryDevice,
-                    const std::shared_ptr<GDevice>& secondaryDevice,
-                    const std::shared_ptr<GCommandQueue>& primaryComputeQueue,
-                    const std::shared_ptr<GCommandQueue>& secondaryComputeQueue,
-                    const std::shared_ptr<GCommandQueue>& transferQueue,
-                    const std::shared_ptr<GCommandQueue>& graphicsQueue);
+    void Initialize(const std::shared_ptr<PEPEngine::Graphics::GDevice>& primaryDevice,
+                    const std::shared_ptr<PEPEngine::Graphics::GDevice>& secondaryDevice,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& primaryComputeQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& secondaryComputeQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& transferQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& graphicsQueue);
 
     bool IsInitialized() const { return initialized; }
     bool IsActive() const { return active; }
@@ -98,9 +96,9 @@ public:
     void EndFrameCpu();
     void ProcessCompletedFrames();
 
-    void BeginRange(const std::shared_ptr<GCommandList>& cmdList, QueueId queue, RangeId range);
-    void EndRange(const std::shared_ptr<GCommandList>& cmdList, QueueId queue, RangeId range);
-    void ResolveRange(const std::shared_ptr<GCommandList>& cmdList, QueueId queue, RangeId range);
+    void BeginRange(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList, QueueId queue, RangeId range);
+    void EndRange(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList, QueueId queue, RangeId range);
+    void ResolveRange(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList, QueueId queue, RangeId range);
     void SetQueueFence(QueueId queue, uint64_t fenceValue);
 
     static constexpr uint32_t WarmupFrameCount = 100;
@@ -115,8 +113,8 @@ private:
 
     struct QueueContext
     {
-        std::shared_ptr<GDevice> Device;
-        std::shared_ptr<GCommandQueue> Queue;
+        std::shared_ptr<PEPEngine::Graphics::GDevice> Device;
+        std::shared_ptr<PEPEngine::Graphics::GCommandQueue> Queue;
         Microsoft::WRL::ComPtr<ID3D12QueryHeap> QueryHeap;
         Microsoft::WRL::ComPtr<ID3D12Resource> ReadbackBuffer;
         uint64_t Frequency = 1;

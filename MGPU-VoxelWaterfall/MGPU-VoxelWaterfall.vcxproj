@@ -94,7 +94,7 @@
             <PreprocessorDefinitions>NOMINMAX;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
             <ConformanceMode>false</ConformanceMode>
             <LanguageStandard>stdcpp17</LanguageStandard>
-            <AdditionalIncludeDirectories>$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+            <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
             <MultiProcessorCompilation>true</MultiProcessorCompilation>
         </ClCompile>
         <Link>
@@ -111,7 +111,7 @@
             <PreprocessorDefinitions>NOMINMAX;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
             <ConformanceMode>false</ConformanceMode>
             <LanguageStandard>stdcpp17</LanguageStandard>
-            <AdditionalIncludeDirectories>$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+            <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
             <MultiProcessorCompilation>true</MultiProcessorCompilation>
         </ClCompile>
         <Link>
@@ -128,7 +128,7 @@
             <PreprocessorDefinitions>NOMINMAX;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
             <ConformanceMode>false</ConformanceMode>
             <LanguageStandard>stdcpp17</LanguageStandard>
-            <AdditionalIncludeDirectories>$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+            <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
             <MultiProcessorCompilation>true</MultiProcessorCompilation>
         </ClCompile>
         <Link>
@@ -145,7 +145,7 @@
             <PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
             <ConformanceMode>false</ConformanceMode>
             <LanguageStandard>stdcpp17</LanguageStandard>
-            <AdditionalIncludeDirectories>$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+            <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
             <MultiProcessorCompilation>true</MultiProcessorCompilation>
         </ClCompile>
         <Link>
@@ -165,6 +165,12 @@
         <ClCompile Include="..\Submodule\imgui\imgui_widgets.cpp"/>
         <ClCompile Include="CrossAdapterVoxelEmitter.cpp"/>
         <ClCompile Include="FrameResource.cpp"/>
+        <ClCompile Include="Source\Assets\SampleAssetManifest.cpp"/>
+        <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"/>
+        <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"/>
+        <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"/>
+        <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"/>
+        <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"/>
         <ClCompile Include="VoxelBenchmarkProfiler.cpp"/>
         <ClCompile Include="VoxelWaterfallApp.cpp"/>
         <ClCompile Include="VoxelWaterfallEmitter.cpp"/>
@@ -197,6 +203,13 @@
         <ClInclude Include="..\Submodule\imgui\imstb_truetype.h"/>
         <ClInclude Include="CrossAdapterVoxelEmitter.h"/>
         <ClInclude Include="FrameResource.h"/>
+        <ClInclude Include="Source\Assets\SampleAssetManifest.h"/>
+        <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"/>
+        <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"/>
+        <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"/>
+        <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"/>
+        <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"/>
+        <ClInclude Include="Source\Voxels\VoxelTypes.h"/>
         <ClInclude Include="VoxelBenchmarkProfiler.h"/>
         <ClInclude Include="VoxelWaterfallApp.h"/>
         <ClInclude Include="VoxelWaterfallEmitter.h"/>

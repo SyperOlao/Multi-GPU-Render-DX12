@@ -2,58 +2,10 @@
 
 #include "Emitter.h"
 #include "GDescriptor.h"
-
-struct VoxelSimulationParameters
-{
-    float VoxelSize = 0.75f;
-    float SpawnHeight = 35.0f;
-    float FloorHeight = 0.0f;
-    float WaterfallWidth = 18.0f;
-    float WaterfallDepth = 6.0f;
-    float InitialFallSpeed = 3.0f;
-    float Gravity = 18.0f;
-    DWORD Seed = 1337;
-};
-
-struct alignas(16) VoxelParticleData
-{
-    Vector3 Position = Vector3::Zero;
-    float Reserved = 0.0f;
-    Vector3 Velocity = Vector3::Zero;
-    float Reserved1 = 0.0f;
-    DWORD VoxelIndex = 0;
-    Vector3 ContinuousPosition = Vector3::Zero;
-};
-
-struct alignas(16) VoxelEmitterData
-{
-    Vector4 Color = Vector4(0.02f, 0.48f, 0.95f, 1.0f);
-    Vector3 Force = Vector3(0.0f, -18.0f, 0.0f);
-    float DeltaTime = 1.0f / 60.0f;
-
-    float VoxelSize = 0.75f;
-    float SpawnHeight = 35.0f;
-    DWORD ParticlesTotalCount = 0;
-    DWORD SimulatedGroupCount = 0;
-
-    DWORD ParticleInjectCount = 0;
-    DWORD InjectedGroupCount = 0;
-    DWORD ParticlesAliveCount = 0;
-    float FloorHeight = 0.0f;
-
-    float WaterfallWidth = 18.0f;
-    float WaterfallDepth = 6.0f;
-    float InitialFallSpeed = 3.0f;
-    DWORD Seed = 1337;
-};
-
-static_assert(sizeof(VoxelParticleData) == sizeof(ParticleData));
-static_assert(sizeof(VoxelEmitterData) == sizeof(EmitterData));
+#include "Source/Voxels/VoxelTypes.h"
 
 class VoxelWaterfallEmitter : public Emitter
 {
-    friend class CrossAdapterVoxelEmitter;
-
     std::shared_ptr<ConstantUploadBuffer<ObjectConstants>> objectPositionBuffer;
     std::shared_ptr<GBuffer> ParticlesPool;
     std::shared_ptr<CounteredStructBuffer<DWORD>> ParticlesAlive;
@@ -89,10 +41,22 @@ public:
                           const VoxelSimulationParameters& initialParameters = {});
 
     void Dispatch(const std::shared_ptr<GCommandList>& cmdList) override;
+    void UpdateFromCrossAdapterBridge();
+    void DrawFromCrossAdapterBridge(const std::shared_ptr<GCommandList>& cmdList);
     void ChangeParticleCount(UINT count);
     void ApplySettings(UINT count, const VoxelSimulationParameters& newParameters);
     const VoxelSimulationParameters& GetParameters() const;
     UINT GetParticleCount() const;
+    VoxelEmitterData& GetEmitterData();
+    const VoxelEmitterData& GetEmitterData() const;
+    GBuffer& GetParticlesPool() const;
+    CounteredStructBuffer<DWORD>& GetParticlesAlive() const;
+    CounteredStructBuffer<DWORD>& GetParticlesDead() const;
+    bool HasStartedSimulation() const;
+    VoxelParticleData GenerateParticleForIndex(DWORD index) const;
+    DWORD ConsumeNextSpawnIndex(DWORD count);
+    double CalculateDispatchGroupCount(DWORD particleCount) const;
+    void SetLastDispatchVoxelCount(UINT count);
     void SetEnabled(bool value);
     bool IsEnabled() const;
     void SetUpdateInterval(uint32_t value);
