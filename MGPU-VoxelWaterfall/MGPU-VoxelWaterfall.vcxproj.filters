@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{69BA047A-3927-447C-8758-323D8D4BB4E7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{33841289-C54D-4BA4-9378-A1FEED8DC07C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{298D3519-772B-4B16-AC8F-A95E60E01C35}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IMGUI">
+      <UniqueIdentifier>{9B609F1F-6CB2-4A80-A68A-4F2AA0EFCC68}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Source.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="FrameResource.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="VoxelBenchmarkProfiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="VoxelWaterfallApp.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="VoxelWaterfallEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="CrossAdapterVoxelEmitter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_tables.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_widgets.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\backends\imgui_impl_dx12.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\backends\imgui_impl_win32.cpp"><Filter>IMGUI</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="FrameResource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VoxelBenchmarkProfiler.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VoxelWaterfallApp.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VoxelWaterfallEmitter.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="CrossAdapterVoxelEmitter.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="packages.config" />
+    <None Include="Shaders\Common.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Default.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\DrawNormals.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\LightingUtil.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\MipMapCS.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ParticleCommon.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Quad.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shadows.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SkyBoxShader.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Ssao.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SsaoBlur.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\TreeSprite.hlsl"><Filter>Shaders</Filter></None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Shaders\ComputeParticle.hlsl"><Filter>Shaders</Filter></FxCompile>
+    <FxCompile Include="Shaders\ParticleDraw.hlsl"><Filter>Shaders</Filter></FxCompile>
+  </ItemGroup>
+</Project>
