@@ -76,6 +76,8 @@
     <ClCompile Include="Source\Rendering\RenderPipeline.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Scene\SceneFactory.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\SceneTransformController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\SceneTransformPersistence.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\CrossAdapterVoxelEmitter.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelEmitterGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
@@ -103,6 +105,8 @@
     <ClInclude Include="Source\Rendering\RenderPipeline.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Scene\SceneFactory.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\SceneTransformController.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\SceneTransformPersistence.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\CrossAdapterVoxelEmitter.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelEmitterGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>

@@ -14,6 +14,8 @@ namespace PEPEngine::Graphics
     class GDescriptor;
 }
 
+class SceneTransformController;
+
 struct VoxelWaterfallDebugPanelContext
 {
     bool ImGuiInitialized = false;
@@ -35,6 +37,7 @@ struct VoxelWaterfallDebugPanelContext
     size_t AutomaticBenchmarkIndex = 0;
     size_t AutomaticBenchmarkCount = 0;
     std::filesystem::path AutomaticBenchmarkSummaryPath;
+    SceneTransformController* SceneEditor = nullptr;
 
     std::function<void()> DrawSceneLabels;
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;

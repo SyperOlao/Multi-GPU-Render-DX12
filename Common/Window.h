@@ -74,6 +74,7 @@ namespace Common
         void ResetTimer();
 
         virtual void OnResize();
+        void MarkNativeDestroyed();
 
         ComPtr<IDXGISwapChain4> GetSwapChain();
 

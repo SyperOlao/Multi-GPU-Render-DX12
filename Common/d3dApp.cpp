@@ -393,10 +393,10 @@ namespace Common
                 OnResize();
                 return 0;
 
-            // WM_DESTROY is sent when the window is being destroyed.
             case WM_DESTROY:
 
                 Flush();
+                pWindow->MarkNativeDestroyed();
 
                 // If a window is being destroyed, remove it from the 
                 // window maps.

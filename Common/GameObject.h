@@ -59,6 +59,7 @@ public:
     void SetScale(const Vector3& scale) const;
 
     std::string& GetName() { return name; }
+    const std::string& GetName() const { return name; }
 
 protected:
     custom_vector<std::shared_ptr<Component>> components = MemoryAllocator::CreateVector<std::shared_ptr<Component>>();

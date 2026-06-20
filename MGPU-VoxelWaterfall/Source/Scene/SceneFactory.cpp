@@ -18,6 +18,13 @@
 using namespace DirectX::SimpleMath;
 using namespace PEPEngine::Graphics;
 
+namespace
+{
+    constexpr float PlatformEdgeWaterfallX = 150.0f;
+    constexpr float PlatformWaterfallFloorY = -80.0f;
+    const Vector3 PlatformEdgeWaterfallRotation(0.0f, 90.0f, 0.0f);
+}
+
 void SceneFactory::AddRenderer(const SceneFactoryContext& context, const RenderMode mode,
                                const std::shared_ptr<Renderer>& renderer)
 {
@@ -26,11 +33,12 @@ void SceneFactory::AddRenderer(const SceneFactoryContext& context, const RenderM
 
 void SceneFactory::CreateVoxelLod(const SceneFactoryContext& context, const char* displayName,
                                   const char* objectName, const size_t lodIndex,
-                                  const Vector3& position, const int count,
+                                  const Vector3& position, const Vector3& rotation, const int count,
                                   const VoxelSimulationParameters& parameters)
 {
     auto voxelObject = std::make_unique<GameObject>(objectName);
     voxelObject->GetTransform()->SetPosition(position);
+    voxelObject->GetTransform()->SetEulerRotate(rotation);
 
     std::shared_ptr<VoxelWaterfallEmitter> emitter;
     std::shared_ptr<CrossAdapterVoxelEmitter> crossEmitter;
@@ -146,8 +154,9 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
 
     VoxelSimulationParameters nearParameters{};
     nearParameters.VoxelSize = 0.50f;
-    nearParameters.SpawnHeight = 45.0f;
-    nearParameters.WaterfallWidth = 22.0f;
+    nearParameters.SpawnHeight = 14.0f;
+    nearParameters.FloorHeight = PlatformWaterfallFloorY;
+    nearParameters.WaterfallWidth = 26.0f;
     nearParameters.WaterfallDepth = 3.0f;
     nearParameters.InitialFallSpeed = 7.0f;
     nearParameters.Gravity = 34.0f;
@@ -155,24 +164,27 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
 
     VoxelSimulationParameters mediumParameters = nearParameters;
     mediumParameters.VoxelSize = nearParameters.VoxelSize * 2.0f;
-    mediumParameters.SpawnHeight = 42.0f;
-    mediumParameters.WaterfallWidth = 26.0f;
+    mediumParameters.SpawnHeight = 13.0f;
+    mediumParameters.WaterfallWidth = 30.0f;
     mediumParameters.WaterfallDepth = 3.6f;
     mediumParameters.Seed = 7331;
 
     VoxelSimulationParameters farParameters = nearParameters;
     farParameters.VoxelSize = nearParameters.VoxelSize * 4.0f;
-    farParameters.SpawnHeight = 38.0f;
-    farParameters.WaterfallWidth = 32.0f;
+    farParameters.SpawnHeight = 12.0f;
+    farParameters.WaterfallWidth = 36.0f;
     farParameters.WaterfallDepth = 4.8f;
     farParameters.Seed = 9001;
 
     CreateVoxelLod(context, "NearVoxelWaterfall", "NearVoxelWaterfall", NearVoxelWaterfall,
-                   Vector3(-34.0f, 0.0f, 24.0f), 18432, nearParameters);
+                   Vector3(PlatformEdgeWaterfallX, 0.0f, 16.0f), PlatformEdgeWaterfallRotation,
+                   18432, nearParameters);
     CreateVoxelLod(context, "MediumVoxelWaterfall", "MediumVoxelWaterfall", MediumVoxelWaterfall,
-                   Vector3(0.0f, 0.0f, 24.0f), 4608, mediumParameters);
+                   Vector3(PlatformEdgeWaterfallX, 0.0f, 50.0f), PlatformEdgeWaterfallRotation,
+                   4608, mediumParameters);
     CreateVoxelLod(context, "FarVoxelWaterfall", "FarVoxelWaterfall", FarVoxelWaterfall,
-                   Vector3(36.0f, 0.0f, 24.0f), 1152, farParameters);
+                   Vector3(PlatformEdgeWaterfallX, 0.0f, 88.0f), PlatformEdgeWaterfallRotation,
+                   1152, farParameters);
 
     context.VoxelLods[NearVoxelWaterfall].UpdateInterval = 1;
     context.VoxelLods[MediumVoxelWaterfall].UpdateInterval = 2;

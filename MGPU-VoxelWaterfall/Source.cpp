@@ -33,6 +33,7 @@ namespace
             }
         }
     }
+
 }
 
 int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -47,11 +48,14 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
     {
         SetVoxelWaterfallWorkingDirectory();
 
-        VoxelWaterfallApp theApp(hInstance);
-        if (!theApp.Initialize())
-            return 0;
+        int result = 0;
+        {
+            VoxelWaterfallApp theApp(hInstance);
+            if (!theApp.Initialize())
+                return 0;
 
-        const auto result = theApp.Run();
+            result = theApp.Run();
+        }
         ExitProcess(static_cast<UINT>(result));
     }
     catch (DxException& e)

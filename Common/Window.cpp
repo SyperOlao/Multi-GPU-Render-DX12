@@ -43,6 +43,11 @@ namespace Common
         backBuffers.clear();
     }
 
+    void Window::MarkNativeDestroyed()
+    {
+        hWnd = nullptr;
+    }
+
 
     const std::wstring& Window::GetWindowName() const
     {
@@ -241,7 +246,7 @@ namespace Common
                              nullptr, nullptr, windowClass.hInstance, nullptr);
 
 
-        assert(hWnd, "Could not create the render window.");
+        assert(hWnd && "Could not create the render window.");
 
         ShowWindow(hWnd, SW_SHOW);
         UpdateWindow(hWnd);

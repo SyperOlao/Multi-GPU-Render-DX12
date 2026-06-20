@@ -42,6 +42,8 @@ private:
                             const std::shared_ptr<Renderer>& renderer);
     static void CreateVoxelLod(const SceneFactoryContext& context, const char* displayName,
                                const char* objectName, size_t lodIndex,
-                               const DirectX::SimpleMath::Vector3& position, int count,
+                               const DirectX::SimpleMath::Vector3& position,
+                               const DirectX::SimpleMath::Vector3& rotation,
+                               int count,
                                const VoxelSimulationParameters& parameters);
 };

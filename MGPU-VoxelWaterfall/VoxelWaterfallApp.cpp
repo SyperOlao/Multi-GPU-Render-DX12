@@ -31,6 +31,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace
 {
+    constexpr float DebugUiScale = 2.25f;
+    constexpr float SceneLabelUiScale = 2.0f;
+
     std::filesystem::path GetExecutableDirectory()
     {
         std::wstring path(MAX_PATH, L'\0');
@@ -97,9 +100,11 @@ VoxelWaterfallApp::~VoxelWaterfallApp()
 {
     if (imguiInitialized)
     {
+        Flush();
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
+        imguiInitialized = false;
     }
 }
 
@@ -270,6 +275,7 @@ bool VoxelWaterfallApp::Initialize()
     CreateGO();
     Flush();
     SortGO();
+    sceneTransformController.Load();
     Flush();
     InitFrameResource();
     Flush();
@@ -335,6 +341,9 @@ void VoxelWaterfallApp::InitUserInterface()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    auto& io = ImGui::GetIO();
+    io.FontGlobalScale = DebugUiScale;
+    ImGui::GetStyle().ScaleAllSizes(DebugUiScale);
 
     imguiSrvMemory = primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
     ImGui_ImplWin32_Init(MainWindow->GetWindowHandle());
@@ -365,6 +374,8 @@ void VoxelWaterfallApp::InitUserInterface()
 
 void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList)
 {
+    sceneTransformController.Refresh();
+
     VoxelWaterfallDebugPanelContext context{
         imguiInitialized,
         cmdList,
@@ -383,6 +394,7 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         benchmarkController.GetAutomaticIndex(),
         benchmarkController.GetAutomaticCount(),
         benchmarkController.GetAutomaticSummaryPath(),
+        &sceneTransformController,
         [this] { DrawVoxelWaterfallSceneLabels(); },
         [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
         [this] { StartManualBenchmark(); },
@@ -488,20 +500,25 @@ void VoxelWaterfallApp::DrawVoxelWaterfallSceneLabels()
         label += std::to_string(std::max(0, lod.VoxelCount));
         label += " voxels";
 
-        const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
-        const float sideOffset = (i == NearVoxelWaterfall) ? -28.0f : (i == FarVoxelWaterfall ? 28.0f : 0.0f);
+        const float fontSize = ImGui::GetFontSize() * SceneLabelUiScale;
+        const ImVec2 baseTextSize = ImGui::CalcTextSize(label.c_str());
+        const ImVec2 textSize(baseTextSize.x * SceneLabelUiScale, baseTextSize.y * SceneLabelUiScale);
+        const float sideOffset = ((i == NearVoxelWaterfall) ? -28.0f : (i == FarVoxelWaterfall ? 28.0f : 0.0f)) *
+            SceneLabelUiScale;
         const ImVec2 anchor(screenPosition.x, screenPosition.y);
         const ImVec2 textPos(screenPosition.x - textSize.x * 0.5f + sideOffset,
-                             screenPosition.y - textSize.y - 18.0f);
-        const ImVec2 rectMin(textPos.x - 7.0f, textPos.y - 5.0f);
-        const ImVec2 rectMax(textPos.x + textSize.x + 7.0f, textPos.y + textSize.y + 5.0f);
+                             screenPosition.y - textSize.y - 18.0f * SceneLabelUiScale);
+        const ImVec2 rectMin(textPos.x - 7.0f * SceneLabelUiScale, textPos.y - 5.0f * SceneLabelUiScale);
+        const ImVec2 rectMax(textPos.x + textSize.x + 7.0f * SceneLabelUiScale,
+                             textPos.y + textSize.y + 5.0f * SceneLabelUiScale);
 
         const ImU32 color = labelColors[i];
-        drawList->AddLine(anchor, ImVec2(textPos.x + textSize.x * 0.5f, rectMax.y), color, 2.0f);
-        drawList->AddCircleFilled(anchor, 4.0f, color, 12);
-        drawList->AddRectFilled(rectMin, rectMax, IM_COL32(5, 14, 24, 205), 5.0f);
-        drawList->AddRect(rectMin, rectMax, color, 5.0f, 0, 1.5f);
-        drawList->AddText(textPos, IM_COL32(235, 250, 255, 255), label.c_str());
+        drawList->AddLine(anchor, ImVec2(textPos.x + textSize.x * 0.5f, rectMax.y), color,
+                          2.0f * SceneLabelUiScale);
+        drawList->AddCircleFilled(anchor, 4.0f * SceneLabelUiScale, color, 12);
+        drawList->AddRectFilled(rectMin, rectMax, IM_COL32(5, 14, 24, 220), 5.0f * SceneLabelUiScale);
+        drawList->AddRect(rectMin, rectMax, color, 5.0f * SceneLabelUiScale, 0, 1.5f * SceneLabelUiScale);
+        drawList->AddText(ImGui::GetFont(), fontSize, textPos, IM_COL32(235, 250, 255, 255), label.c_str());
     }
 }
 
@@ -1013,9 +1030,31 @@ void VoxelWaterfallApp::CreateGO()
         AspectRatio()
     };
     sceneFactory.CreateScene(sceneContext);
+    sceneTransformController.Attach(gameObjects);
+    sceneTransformController.SetTransformAppliedCallback(
+        [this](const GameObject& object, const Vector3& position)
+        {
+            SyncVoxelLodPosition(object, position);
+        });
+    sceneTransformController.SetLogCallback(
+        [this](const std::wstring& message)
+        {
+            logQueue.Push(L"\n" + message);
+        });
 
     logQueue.Push(std::wstring(L"\nFinish create GO"));
 }
+
+void VoxelWaterfallApp::SyncVoxelLodPosition(const GameObject& object, const Vector3& position)
+{
+    const auto& name = object.GetName();
+    for (auto& lod : voxelLods)
+    {
+        if (lod.ObjectName && name == lod.ObjectName)
+            lod.Position = position;
+    }
+}
+
 void VoxelWaterfallApp::CalculateFrameStats()
 {
     static float minFps = std::numeric_limits<float>::max();
@@ -1440,8 +1479,10 @@ void VoxelWaterfallApp::OnResize()
 
 void VoxelWaterfallApp::Flush()
 {
-    primeDevice->Flush();
-    secondDevice->Flush();
+    if (primeDevice)
+        primeDevice->Flush();
+    if (secondDevice && secondDevice != primeDevice)
+        secondDevice->Flush();
 }
 
 LRESULT VoxelWaterfallApp::MsgProc(const HWND hwnd, const UINT msg, const WPARAM wParam, const LPARAM lParam)

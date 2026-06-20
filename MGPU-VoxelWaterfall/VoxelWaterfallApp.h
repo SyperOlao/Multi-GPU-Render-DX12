@@ -18,12 +18,12 @@
 #include "Source/Rendering/RenderPipeline.h"
 #include "Source/Rendering/VoxelRenderPasses.h"
 #include "Source/Scene/SceneFactory.h"
+#include "Source/Scene/SceneTransformController.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
 #include "Source/Voxels/VoxelSimulationScheduler.h"
 
 #include <array>
 #include <chrono>
-#include <filesystem>
 #include <vector>
 
 class VoxelWaterfallApp :
@@ -69,6 +69,7 @@ protected:
     void GenerateMipMaps();
     void SortGO();
     void CreateGO();
+    void SyncVoxelLodPosition(const GameObject& object, const Vector3& position);
     void CalculateFrameStats() override;
     void LogWriting();
     void UpdateMaterials();
@@ -137,6 +138,7 @@ protected:
     VoxelRenderPasses voxelRenderPasses;
     VoxelWaterfallDebugPanel debugPanel;
     SceneFactory sceneFactory;
+    SceneTransformController sceneTransformController;
     Win32InputRouter inputRouter;
 
     VoxelBenchmarkProfiler benchmarkProfiler;

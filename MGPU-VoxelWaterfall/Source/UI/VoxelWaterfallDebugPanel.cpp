@@ -2,11 +2,64 @@
 
 #include "GCommandList.h"
 #include "GDescriptor.h"
+#include "Source/Scene/SceneTransformController.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
 
 #include <algorithm>
+
+namespace
+{
+    void DrawSceneObjectEditor(const VoxelWaterfallDebugPanelContext& context)
+    {
+        if (!context.SceneEditor)
+            return;
+
+        auto& editor = *context.SceneEditor;
+        auto& objects = editor.GetEditorItems();
+        auto& selectedIndex = editor.GetSelectedIndex();
+        if (objects.empty())
+        {
+            ImGui::TextDisabled("No editable scene objects");
+            return;
+        }
+
+        selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(objects.size()) - 1);
+
+        const char* previewName = objects[selectedIndex].Name.c_str();
+        if (ImGui::BeginCombo("Object", previewName))
+        {
+            for (int i = 0; i < static_cast<int>(objects.size()); ++i)
+            {
+                std::string label = std::to_string(objects[i].ObjectIndex) + ": " + objects[i].Name;
+                const bool selected = selectedIndex == i;
+                if (ImGui::Selectable(label.c_str(), selected))
+                    selectedIndex = i;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        auto& item = objects[selectedIndex];
+        bool changed = false;
+        changed |= ImGui::DragFloat3("Position", &item.Position.x, 0.1f);
+        changed |= ImGui::DragFloat3("Rotation", &item.Rotation.x, 0.25f);
+        changed |= ImGui::DragFloat3("Scale", &item.Scale.x, 0.01f, 0.001f, 1000.0f);
+        if (changed)
+            editor.ApplyEditorItem(static_cast<size_t>(selectedIndex), item);
+
+        if (ImGui::Button("Save scene"))
+            editor.Save();
+        ImGui::SameLine();
+        if (ImGui::Button("Reload scene"))
+            editor.Load();
+
+        ImGui::Text("Scene file: %S", editor.GetPath().wstring().c_str());
+        ImGui::Text("State: %s", editor.IsDirty() ? "modified" : "saved");
+    }
+}
 
 void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& context) const
 {
@@ -20,7 +73,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
     if (context.DrawSceneLabels)
         context.DrawSceneLabels();
 
-    ImGui::SetNextWindowSize(ImVec2(390.0f, 430.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(880.0f, 970.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Voxel Waterfall");
 
     UINT totalVoxelCount = 0;
@@ -150,10 +203,16 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         }
     }
 
+    ImGui::Separator();
+    if (ImGui::TreeNodeEx("Scene objects", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawSceneObjectEditor(context);
+        ImGui::TreePop();
+    }
+
     ImGui::End();
 
     ImGui::Render();
     context.CommandList->SetDescriptorsHeap(context.ImGuiSrvMemory);
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), context.CommandList->GetGraphicsCommandList().Get());
 }
-
