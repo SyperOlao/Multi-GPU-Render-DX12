@@ -27,7 +27,7 @@ struct alignas(16) VoxelParticleData
 
 struct alignas(16) VoxelEmitterData
 {
-    Vector4 Color = Vector4(0.05f, 0.35f, 0.95f, 1.0f);
+    Vector4 Color = Vector4(0.02f, 0.48f, 0.95f, 1.0f);
     Vector3 Force = Vector3(0.0f, -18.0f, 0.0f);
     float DeltaTime = 1.0f / 60.0f;
 

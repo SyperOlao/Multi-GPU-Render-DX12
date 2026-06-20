@@ -57,6 +57,8 @@ protected:
     void InitDevices();
     void InitUserInterface();
     void DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList);
+    bool ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const;
+    void DrawVoxelWaterfallSceneLabels();
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
     std::string GetExecutionModeName() const;

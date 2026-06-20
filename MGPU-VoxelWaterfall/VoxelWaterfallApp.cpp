@@ -696,6 +696,8 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    DrawVoxelWaterfallSceneLabels();
+
     ImGui::SetNextWindowSize(ImVec2(390.0f, 430.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Voxel Waterfall");
 
@@ -813,10 +815,12 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
             }
 
             ImGui::Text("Elements: %d", lod.Enabled ? lod.VoxelCount : 0);
-            ImGui::SliderInt("Element count", &lod.VoxelCount, 1024, 262144);
+            ImGui::SliderInt("Element count", &lod.VoxelCount, 128, 262144);
             ImGui::SliderFloat("Voxel size", &lod.Parameters.VoxelSize, 0.1f, 4.0f, "%.2f");
             ImGui::SliderFloat("Gravity", &lod.Parameters.Gravity, 1.0f, 40.0f, "%.1f");
             ImGui::SliderFloat("Waterfall height", &lod.Parameters.SpawnHeight, 5.0f, 80.0f, "%.1f");
+            ImGui::SliderFloat("Waterfall width", &lod.Parameters.WaterfallWidth, 1.0f, 40.0f, "%.1f");
+            ImGui::SliderFloat("Waterfall depth", &lod.Parameters.WaterfallDepth, 0.5f, 12.0f, "%.1f");
             if (i == MediumVoxelWaterfall || i == FarVoxelWaterfall)
             {
                 int interval = static_cast<int>(lod.UpdateInterval);
@@ -843,6 +847,87 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
     ImGui::Render();
     cmdList->SetDescriptorsHeap(&imguiSrvMemory);
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList->GetGraphicsCommandList().Get());
+}
+
+bool VoxelWaterfallApp::ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const
+{
+    if (!camera || !MainWindow)
+        return false;
+
+    const Matrix viewProj = camera->GetViewMatrix() * camera->GetProjectionMatrix();
+    const Vector4 clip = Vector4::Transform(Vector4(worldPosition.x, worldPosition.y, worldPosition.z, 1.0f), viewProj);
+    if (clip.w <= 1e-4f)
+        return false;
+
+    const float invW = 1.0f / clip.w;
+    const float ndcX = clip.x * invW;
+    const float ndcY = clip.y * invW;
+    if (ndcX < -1.25f || ndcX > 1.25f || ndcY < -1.25f || ndcY > 1.25f)
+        return false;
+
+    const float width = static_cast<float>(MainWindow->GetClientWidth());
+    const float height = static_cast<float>(MainWindow->GetClientHeight());
+    screenPosition.x = (ndcX * 0.5f + 0.5f) * width;
+    screenPosition.y = (1.0f - (ndcY * 0.5f + 0.5f)) * height;
+    return true;
+}
+
+void VoxelWaterfallApp::DrawVoxelWaterfallSceneLabels()
+{
+    static constexpr ImU32 labelColors[] =
+    {
+        IM_COL32(80, 220, 255, 255),
+        IM_COL32(80, 170, 255, 255),
+        IM_COL32(150, 200, 255, 255)
+    };
+
+    static constexpr const char* lodTitles[] =
+    {
+        "Near LOD",
+        "Medium LOD",
+        "Far LOD"
+    };
+
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    for (size_t i = 0; i < voxelLods.size(); ++i)
+    {
+        const auto& lod = voxelLods[i];
+        if (!lod.Enabled)
+            continue;
+
+        Vector2 screenPosition;
+        const Vector3 labelWorldPosition = lod.Position +
+            Vector3(0.0f, lod.Parameters.SpawnHeight + lod.Parameters.VoxelSize * 4.0f, 0.0f);
+        if (!ProjectWorldToScreen(labelWorldPosition, screenPosition))
+            continue;
+
+        const bool secondaryGpu =
+            (executionMode == VoxelExecutionMode::SplitMultiGpu ||
+             executionMode == VoxelExecutionMode::SplitMultiGpuLod) &&
+            (i == MediumVoxelWaterfall || i == FarVoxelWaterfall) &&
+            splitMultiGpuAvailable;
+
+        std::string label = lodTitles[i];
+        label += secondaryGpu ? "\nSecondary GPU" : "\nPrimary GPU";
+        label += "\n";
+        label += std::to_string(std::max(0, lod.VoxelCount));
+        label += " voxels";
+
+        const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+        const float sideOffset = (i == NearVoxelWaterfall) ? -28.0f : (i == FarVoxelWaterfall ? 28.0f : 0.0f);
+        const ImVec2 anchor(screenPosition.x, screenPosition.y);
+        const ImVec2 textPos(screenPosition.x - textSize.x * 0.5f + sideOffset,
+                             screenPosition.y - textSize.y - 18.0f);
+        const ImVec2 rectMin(textPos.x - 7.0f, textPos.y - 5.0f);
+        const ImVec2 rectMax(textPos.x + textSize.x + 7.0f, textPos.y + textSize.y + 5.0f);
+
+        const ImU32 color = labelColors[i];
+        drawList->AddLine(anchor, ImVec2(textPos.x + textSize.x * 0.5f, rectMax.y), color, 2.0f);
+        drawList->AddCircleFilled(anchor, 4.0f, color, 12);
+        drawList->AddRectFilled(rectMin, rectMax, IM_COL32(5, 14, 24, 205), 5.0f);
+        drawList->AddRect(rectMin, rectMax, color, 5.0f, 0, 1.5f);
+        drawList->AddText(textPos, IM_COL32(235, 250, 255, 255), label.c_str());
+    }
 }
 
 std::string VoxelWaterfallApp::GetExecutionModeName() const
@@ -1690,32 +1775,34 @@ void VoxelWaterfallApp::CreateGO()
     }
 
     VoxelSimulationParameters nearParameters{};
-    nearParameters.VoxelSize = 0.5f;
-    nearParameters.SpawnHeight = 35.0f;
-    nearParameters.WaterfallWidth = 18.0f;
-    nearParameters.WaterfallDepth = 6.0f;
-    nearParameters.InitialFallSpeed = 3.0f;
-    nearParameters.Gravity = 18.0f;
+    nearParameters.VoxelSize = 0.50f;
+    nearParameters.SpawnHeight = 45.0f;
+    nearParameters.WaterfallWidth = 22.0f;
+    nearParameters.WaterfallDepth = 3.0f;
+    nearParameters.InitialFallSpeed = 7.0f;
+    nearParameters.Gravity = 34.0f;
     nearParameters.Seed = 1337;
 
     VoxelSimulationParameters mediumParameters = nearParameters;
     mediumParameters.VoxelSize = nearParameters.VoxelSize * 2.0f;
-    mediumParameters.WaterfallWidth = nearParameters.WaterfallWidth * 1.5f;
-    mediumParameters.WaterfallDepth = nearParameters.WaterfallDepth * 1.5f;
+    mediumParameters.SpawnHeight = 42.0f;
+    mediumParameters.WaterfallWidth = 26.0f;
+    mediumParameters.WaterfallDepth = 3.6f;
     mediumParameters.Seed = 7331;
 
     VoxelSimulationParameters farParameters = nearParameters;
     farParameters.VoxelSize = nearParameters.VoxelSize * 4.0f;
-    farParameters.WaterfallWidth = nearParameters.WaterfallWidth * 2.0f;
-    farParameters.WaterfallDepth = nearParameters.WaterfallDepth * 2.0f;
+    farParameters.SpawnHeight = 38.0f;
+    farParameters.WaterfallWidth = 32.0f;
+    farParameters.WaterfallDepth = 4.8f;
     farParameters.Seed = 9001;
 
     CreateVoxelLod("NearVoxelWaterfall", "NearVoxelWaterfall", NearVoxelWaterfall,
-                   Vector3(0.0f, 0.0f, 0.0f), 65536, nearParameters);
+                   Vector3(-34.0f, 0.0f, 24.0f), 18432, nearParameters);
     CreateVoxelLod("MediumVoxelWaterfall", "MediumVoxelWaterfall", MediumVoxelWaterfall,
-                   Vector3(0.0f, 0.0f, 28.0f), 16384, mediumParameters);
+                   Vector3(0.0f, 0.0f, 24.0f), 4608, mediumParameters);
     CreateVoxelLod("FarVoxelWaterfall", "FarVoxelWaterfall", FarVoxelWaterfall,
-                   Vector3(0.0f, 0.0f, 56.0f), 4096, farParameters);
+                   Vector3(36.0f, 0.0f, 24.0f), 1152, farParameters);
 
     voxelLods[NearVoxelWaterfall].UpdateInterval = 1;
     voxelLods[MediumVoxelWaterfall].UpdateInterval = 2;
@@ -1746,10 +1833,9 @@ void VoxelWaterfallApp::CreateGO()
     rotater->AddComponent(std::make_shared<Rotater>(10));
 
     auto camera = std::make_unique<GameObject>("MainCamera");
-    camera->GetTransform()->SetParent(rotater->GetTransform().get());
-    //camera->AddComponent(std::make_shared<CameraController>());
-    camera->GetTransform()->SetEulerRotate(Vector3(-30, 270, 0));
-    camera->GetTransform()->SetPosition(Vector3(-1000, 190, -32));
+    camera->AddComponent(std::make_shared<CameraController>(35.0f, 80.0f, 60.0f));
+    camera->GetTransform()->SetEulerRotate(Vector3(-8.0f, 180.0f, 0.0f));
+    camera->GetTransform()->SetPosition(Vector3(0.0f, 24.0f, -72.0f));
     camera->AddComponent(std::make_shared<Camera>(AspectRatio()));
 
     gameObjects.push_back(std::move(camera));
