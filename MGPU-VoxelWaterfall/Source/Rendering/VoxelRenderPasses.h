@@ -2,9 +2,12 @@
 
 #include "GraphicPSO.h"
 #include "MemoryAllocator.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
+#include "Source/Voxels/VoxelTypes.h"
 
 #include <d3d12.h>
 #include <memory>
+#include <vector>
 
 struct FrameResource;
 class Renderer;
@@ -34,6 +37,9 @@ struct VoxelRenderPassContext
     SSAA& AntiAliasingPath;
     RenderModeFactory& PipelineResources;
     PEPEngine::Allocator::custom_vector<PEPEngine::Allocator::custom_vector<std::shared_ptr<Renderer>>>& TypedRenderers;
+    const std::vector<const VoxelPartitionState*>* PrimaryVoxelPartitions = nullptr;
+    std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
+    VoxelBenchmarkProfiler* BenchmarkProfiler = nullptr;
     PEPEngine::Graphics::GTexture& BackBuffer;
     PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
     UINT ResolveSourceSrvOffset = 0;
@@ -56,6 +62,8 @@ private:
                                  const VoxelRenderPassContext& context);
     static void RecordForwardPath(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
                                   const VoxelRenderPassContext& context);
+    static void RecordPrimaryVoxelPartitions(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
+                                             const VoxelRenderPassContext& context);
     static void RecordBackBufferInit(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
                                      const VoxelRenderPassContext& context);
     static void RecordFullQuad(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,

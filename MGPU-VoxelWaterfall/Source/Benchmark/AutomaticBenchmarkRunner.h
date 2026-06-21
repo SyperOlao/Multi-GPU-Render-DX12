@@ -12,6 +12,8 @@ struct AutomaticBenchmarkConfig
     const char* Preset = "Low";
     uint32_t TotalCount = 0;
     float SecondaryShare = 0.25f;
+    bool SpatialLodEnabled = false;
+    uint32_t TemporalInterval = 1;
     uint32_t Repetition = 0;
 };
 

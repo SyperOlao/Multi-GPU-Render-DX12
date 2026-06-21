@@ -26,6 +26,25 @@ namespace
         desc.Texture2D.MipLevels = 1;
         return desc;
     }
+
+    bool IsR32DepthSrvCompatible(const DXGI_FORMAT resourceFormat)
+    {
+        return resourceFormat == DXGI_FORMAT_R32_TYPELESS ||
+               resourceFormat == DXGI_FORMAT_R32_FLOAT;
+    }
+
+    void ValidateDepthSrvCompatibility(const VoxelCompositePassContext& context)
+    {
+        const auto primaryDepthFormat = context.PrimaryDepth.GetD3D12ResourceDesc().Format;
+        const auto secondaryLinearDepthFormat =
+            context.FrameTargets.PrimaryReceivedSecondaryLinearDepth.GetD3D12ResourceDesc().Format;
+        assert(IsR32DepthSrvCompatible(primaryDepthFormat) &&
+               "Primary depth must be R32_TYPELESS-compatible before creating an R32_FLOAT SRV");
+        assert(secondaryLinearDepthFormat == DXGI_FORMAT_R32_FLOAT &&
+               "Secondary depth composition input must already be linear R32_FLOAT depth");
+        assert(context.NearZ > 0.0f && context.FarZ > context.NearZ &&
+               "Depth linearization requires explicit non-reversed near/far plane convention");
+    }
 }
 
 void VoxelCompositePass::Initialize(const std::shared_ptr<GDevice>& inDevice, const DXGI_FORMAT inOutputFormat)
@@ -77,6 +96,7 @@ bool VoxelCompositePass::IsInitialized() const
 
 void VoxelCompositePass::RefreshDescriptors(const VoxelCompositePassContext& context) const
 {
+    ValidateDepthSrvCompatibility(context);
     auto& descriptors = context.FrameTargets.PrimaryCompositeDescriptors;
 
     auto primaryColorDesc = Texture2DSrv(context.PrimaryBaseColor.GetD3D12ResourceDesc().Format);

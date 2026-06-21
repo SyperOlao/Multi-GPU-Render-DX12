@@ -179,6 +179,7 @@
         <ClCompile Include="Source\Scene\SceneTransformController.cpp"/>
         <ClCompile Include="Source\Scene\SceneTransformPersistence.cpp"/>
         <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"/>
+        <ClCompile Include="Source\Validation\VoxelVisualValidationRunner.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"/>
@@ -228,6 +229,7 @@
         <ClInclude Include="Source\Scene\SceneTransformController.h"/>
         <ClInclude Include="Source\Scene\SceneTransformPersistence.h"/>
         <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"/>
+        <ClInclude Include="Source\Validation\VoxelVisualValidationRunner.h"/>
         <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"/>
         <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"/>
         <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"/>
@@ -353,6 +355,12 @@
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\VoxelComposite.hlsl">
+            <FileType>Document</FileType>
+        </None>
+        <None Include="Shaders\BuildLodRenderList.hlsl">
+            <FileType>Document</FileType>
+        </None>
+        <None Include="Shaders\VoxelValidationCompare.hlsl">
             <FileType>Document</FileType>
         </None>
     </ItemGroup>

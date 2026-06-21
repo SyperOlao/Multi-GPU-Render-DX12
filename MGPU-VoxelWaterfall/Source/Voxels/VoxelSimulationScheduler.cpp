@@ -26,31 +26,86 @@ namespace
                    ? VoxelBenchmarkProfiler::QueueId::SecondaryCompute
                    : VoxelBenchmarkProfiler::QueueId::PrimaryCompute;
     }
+
+    bool IsTemporalMode(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::SingleGpuTemporalDecimation ||
+               mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+}
+
+uint32_t VoxelSimulationScheduler::GetEffectiveUpdateInterval(
+    const VoxelExecutionMode mode,
+    const VoxelPartitionState& partition)
+{
+    if (partition.PartitionId == VoxelPartitionId::SecondaryPartition && IsTemporalMode(mode))
+        return std::max<uint32_t>(1, partition.UpdateInterval);
+
+    return 1;
+}
+
+bool VoxelSimulationScheduler::ShouldDispatchPartition(
+    const VoxelPartitionState& partition,
+    const uint64_t fixedStepIndex,
+    const uint32_t effectiveInterval)
+{
+    if (!HasDispatchableEmitter(partition))
+        return false;
+
+    if (!partition.GpuPartition->HasStartedSimulation())
+        return true;
+
+    return effectiveInterval <= 1 || fixedStepIndex % effectiveInterval == 0;
+}
+
+float VoxelSimulationScheduler::CalculateInterpolationPhase(
+    const VoxelSimulationSchedulerContext& context,
+    const VoxelPartitionState& partition,
+    const uint32_t effectiveInterval)
+{
+    if (!partition.GpuPartition || !partition.GpuPartition->HasStartedSimulation())
+        return 0.0f;
+
+    const uint64_t completedStepsSinceLastUpdate =
+        context.SimulationFrameIndex > partition.LastSimulationFrame
+            ? context.SimulationFrameIndex - partition.LastSimulationFrame - 1
+            : 0;
+    const double phase =
+        (static_cast<double>(completedStepsSinceLastUpdate) + context.InterpolationAlpha) /
+        static_cast<double>(std::max<uint32_t>(1, effectiveInterval));
+    return static_cast<float>(std::clamp(phase, 0.0, 1.0));
 }
 
 void VoxelSimulationScheduler::PreparePartitionDispatch(
-    const VoxelSimulationSchedulerContext& context,
-    VoxelPartitionState& partition)
+    const VoxelSimulationSchedulerContext&,
+    VoxelPartitionState& partition,
+    const uint32_t effectiveInterval,
+    const uint64_t fixedStepIndex)
 {
-    partition.UpdateInterval = 1;
+    partition.EffectiveUpdateInterval = effectiveInterval;
+    partition.CoarseDeltaTime = static_cast<float>(
+        FixedSimulationDeltaTime * static_cast<double>(effectiveInterval));
     if (partition.GpuPartition)
     {
-        partition.GpuPartition->SetUpdateInterval(1);
-        partition.GpuPartition->SetSimulationDeltaTime(static_cast<float>(FixedSimulationDeltaTime));
-        partition.GpuPartition->SetSimulationTime(static_cast<float>(context.SimulationTime));
+        partition.GpuPartition->SetUpdateInterval(effectiveInterval);
+        partition.GpuPartition->SetSimulationDeltaTime(partition.CoarseDeltaTime);
+        const double targetSimulationTime =
+            static_cast<double>(fixedStepIndex + effectiveInterval) * FixedSimulationDeltaTime;
+        partition.GpuPartition->SetSimulationTime(static_cast<float>(targetSimulationTime));
     }
 }
 
 void VoxelSimulationScheduler::MarkPartitionUpdated(
-    const VoxelSimulationSchedulerContext& context,
-    VoxelPartitionState& partition)
+    VoxelPartitionState& partition,
+    const uint64_t fixedStepIndex)
 {
     partition.UpdatedThisFrame = true;
-    partition.LastSimulationFrame = context.SimulationFrameIndex;
+    partition.SimulationDispatchedThisFrame = true;
+    partition.LastSimulationFrame = fixedStepIndex;
 
     if (partition.GpuPartition)
     {
-        partition.GpuPartition->SetLastSimulationFrame(context.SimulationFrameIndex);
+        partition.GpuPartition->SetLastSimulationFrame(fixedStepIndex);
         partition.UpdatedVoxelCount = partition.GpuPartition->GetLastDispatchVoxelCount();
     }
 }
@@ -67,7 +122,11 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
     for (auto& partition : context.Workload.Partitions)
     {
         partition.UpdatedThisFrame = false;
+        partition.SimulationDispatchedThisFrame = false;
         partition.UpdatedVoxelCount = 0;
+        partition.EffectiveUpdateInterval = GetEffectiveUpdateInterval(context.ExecutionMode, partition);
+        partition.CoarseDeltaTime = static_cast<float>(
+            FixedSimulationDeltaTime * static_cast<double>(partition.EffectiveUpdateInterval));
     }
 
     const double clampedFrameDelta = std::clamp(context.FrameDeltaTime, 0.0, MaxAccumulatedSimulationTime);
@@ -81,10 +140,16 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
         std::clamp(context.SimulationAccumulator / FixedSimulationDeltaTime, 0.0, 1.0));
 
     bool needsSecondaryComputeQueue = false;
-    for (const auto& partition : context.Workload.Partitions)
+    for (uint32_t stepIndex = 0; stepIndex < stepsToRun && !needsSecondaryComputeQueue; ++stepIndex)
     {
-        needsSecondaryComputeQueue = needsSecondaryComputeQueue ||
-            (HasDispatchableEmitter(partition) && partition.AdapterOwner == VoxelAdapterOwner::Secondary);
+        const uint64_t fixedStepIndex = context.SimulationFrameIndex + stepIndex;
+        for (const auto& partition : context.Workload.Partitions)
+        {
+            const uint32_t effectiveInterval = GetEffectiveUpdateInterval(context.ExecutionMode, partition);
+            needsSecondaryComputeQueue = needsSecondaryComputeQueue ||
+                (partition.AdapterOwner == VoxelAdapterOwner::Secondary &&
+                 ShouldDispatchPartition(partition, fixedStepIndex, effectiveInterval));
+        }
     }
 
     const auto primaryCmdList = context.PrimaryComputeQueue->GetCommandList();
@@ -105,15 +170,15 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
 
     for (uint32_t stepIndex = 0; stepIndex < stepsToRun; ++stepIndex)
     {
-        context.SimulationTime += FixedSimulationDeltaTime;
-        ++context.SimulationFrameIndex;
+        const uint64_t fixedStepIndex = context.SimulationFrameIndex;
 
         for (auto& partition : context.Workload.Partitions)
         {
-            if (!HasDispatchableEmitter(partition))
+            const uint32_t effectiveInterval = GetEffectiveUpdateInterval(context.ExecutionMode, partition);
+            if (!ShouldDispatchPartition(partition, fixedStepIndex, effectiveInterval))
                 continue;
 
-            PreparePartitionDispatch(context, partition);
+            PreparePartitionDispatch(context, partition, effectiveInterval, fixedStepIndex);
             auto cmdList = primaryCmdList;
             if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
                 cmdList = secondaryCmdList;
@@ -126,11 +191,14 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
             partition.GpuPartition->DispatchSimulation(cmdList);
             context.BenchmarkProfiler.EndRange(cmdList, queueId, range);
             context.BenchmarkProfiler.ResolveRange(cmdList, queueId, range);
-            MarkPartitionUpdated(context, partition);
+            MarkPartitionUpdated(partition, fixedStepIndex);
 
             if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
                 result.SecondaryWorkThisFrame = true;
         }
+
+        context.SimulationTime += FixedSimulationDeltaTime;
+        ++context.SimulationFrameIndex;
     }
 
     context.RecycledVoxelCount = 0;
@@ -141,12 +209,31 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
         if (!partition.GpuPartition)
             continue;
 
-        partition.GpuPartition->SetInterpolationAlpha(context.InterpolationAlpha);
+        partition.EffectiveUpdateInterval = GetEffectiveUpdateInterval(context.ExecutionMode, partition);
+        partition.StepsSinceLastUpdate =
+            partition.GpuPartition->HasStartedSimulation() && context.SimulationFrameIndex > partition.LastSimulationFrame
+                ? static_cast<uint32_t>(
+                    std::min<uint64_t>(
+                        context.SimulationFrameIndex - partition.LastSimulationFrame,
+                        partition.EffectiveUpdateInterval))
+                : 0;
+        partition.InterpolationPhase = CalculateInterpolationPhase(
+            context, partition, partition.EffectiveUpdateInterval);
+        partition.GpuPartition->SetInterpolationAlpha(partition.InterpolationPhase);
         const auto statistics = partition.GpuPartition->GetStatistics();
-        context.RecycledVoxelCount += stepsToRun > 0 ? statistics.LastRecycledVoxelCount : 0;
+        context.RecycledVoxelCount += partition.SimulationDispatchedThisFrame ? statistics.LastRecycledVoxelCount : 0;
         context.AliveVoxelCount += statistics.LastAliveVoxelCount;
         context.ExpectedVoxelCount += statistics.ExpectedVoxelCount;
     }
+
+    const auto& secondaryPartition =
+        context.Workload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
+    result.SecondaryConfiguredUpdateInterval = std::max<uint32_t>(1, secondaryPartition.UpdateInterval);
+    result.SecondaryEffectiveUpdateInterval = secondaryPartition.EffectiveUpdateInterval;
+    result.FixedSimulationStepIndex = context.SimulationFrameIndex;
+    result.SecondaryStepsSinceLastUpdate = secondaryPartition.StepsSinceLastUpdate;
+    result.SecondaryInterpolationPhase = secondaryPartition.InterpolationPhase;
+    result.SecondaryCoarseDeltaTime = secondaryPartition.CoarseDeltaTime;
 
     primaryCmdList->EndQuery(context.TimestampHeapIndex + 1);
     primaryCmdList->ResolveQuery(context.TimestampHeapIndex, 2, context.TimestampHeapIndex * sizeof(UINT64));

@@ -66,12 +66,36 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
     cmdList->ClearDepthStencil(&targets.SecondaryDsvDescriptor, 0, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0);
     cmdList->SetRenderTargets(2, &targets.SecondaryRtvDescriptors, 0, &targets.SecondaryDsvDescriptor, 0);
 
-    context.SecondaryPartition.UpdateFrameConstants();
-    const auto statistics = context.SecondaryPartition.GetStatistics();
-    context.SecondaryPartition.RecordRender(
-        cmdList,
-        VoxelPartitionRenderOutputMode::SecondaryColorAndLinearDepth,
-        context.CurrentFrameResource.SecondaryPassConstantUploadBuffer.get());
+    uint32_t drawCallCount = 0;
+    uint32_t submittedVoxelCount = 0;
+    VoxelSpatialLodStats lodStats{};
+    uint32_t indirectDrawCalls = 0;
+    for (const auto* partition : context.SecondaryPartitions)
+    {
+        if (!partition || !partition->GpuPartition || partition->VoxelCount() == 0)
+            continue;
+
+        partition->GpuPartition->UpdateFrameConstants();
+        auto result = partition->GpuPartition->RecordRender(
+            cmdList,
+            VoxelPartitionRenderOutputMode::SecondaryColorAndLinearDepth,
+            context.CurrentFrameResource.SecondaryPassConstantUploadBuffer.get(),
+            &context.BenchmarkProfiler,
+            VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
+            VoxelBenchmarkProfiler::RangeId::SecondaryLodCompaction);
+        result.PartitionId = partition->PartitionId;
+        result.LogicalVoxelCount = partition->VoxelCount();
+        drawCallCount += result.DrawCallCount;
+        submittedVoxelCount += result.SubmittedVoxelCount;
+        lodStats.Lod0Rendered += result.LodStats.Lod0Rendered;
+        lodStats.Lod1Rendered += result.LodStats.Lod1Rendered;
+        lodStats.Lod2Rendered += result.LodStats.Lod2Rendered;
+        lodStats.Aggregated += result.LodStats.Aggregated;
+        if (result.UsedIndirectDraw)
+            indirectDrawCalls += result.DrawCallCount;
+        if (context.SecondaryVoxelRenderResults)
+            context.SecondaryVoxelRenderResults->push_back(result);
+    }
 
     cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_RENDER_TARGET);
     cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -96,10 +120,13 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
     if (context.Telemetry)
     {
         context.Telemetry->SecondaryGraphicsSubmitted = true;
+        context.Telemetry->SecondaryRenderSubmitted = true;
         context.Telemetry->SecondaryGraphicsFenceValue =
             context.CurrentFrameResource.SecondaryRenderFenceValue;
-        context.Telemetry->SecondaryDrawCalls = statistics.ExpectedVoxelCount > 0 ? 1u : 0u;
-        context.Telemetry->SecondaryRenderedVoxelCount = statistics.LastAliveVoxelCount;
+        context.Telemetry->SecondaryDrawCalls = drawCallCount;
+        context.Telemetry->SecondaryRenderedVoxelCount = submittedVoxelCount;
+        context.Telemetry->SecondarySpatialLodStats = lodStats;
+        context.Telemetry->SecondaryIndirectDrawCalls = indirectDrawCalls;
     }
 }
 

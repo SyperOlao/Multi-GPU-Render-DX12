@@ -1,11 +1,13 @@
 #include "pch.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
 
+#include "GDescriptorHeap.h"
 #include "Source/Voxels/VoxelParticleSpawner.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <sstream>
 #include <utility>
 
 #include "GameObject.h"
@@ -15,10 +17,21 @@ namespace
 {
     std::vector<DWORD> BuildSequentialVoxelIds(const DWORD count)
     {
-        std::vector<DWORD> ids(std::max<DWORD>(1, count));
+        std::vector<DWORD> ids(count);
         for (DWORD i = 0; i < ids.size(); ++i)
             ids[i] = i;
         return ids;
+    }
+
+    bool SameAdapterLuid(const LUID& left, const LUID& right)
+    {
+        return left.HighPart == right.HighPart && left.LowPart == right.LowPart;
+    }
+
+    void ReportOwnershipFailure(const std::wstring& message)
+    {
+        OutputDebugStringW((message + L"\n").c_str());
+        assert(false && "VoxelGpuPartition ownership validation failed; see debug output");
     }
 }
 
@@ -37,6 +50,126 @@ VoxelParticleData VoxelGpuPartition::GenerateVoxelParticle(const DWORD index) co
     assert(index < globalVoxelIds.size());
     const DWORD clampedIndex = std::min<DWORD>(index, static_cast<DWORD>(globalVoxelIds.size() - 1));
     return VoxelParticleSpawner::Generate(globalVoxelIds[clampedIndex], parameters);
+}
+
+bool VoxelGpuPartition::HasVoxels() const
+{
+    return emitterData.ParticlesTotalCount > 0 && !globalVoxelIds.empty();
+}
+
+void VoxelGpuPartition::ValidateDescriptorOwnership(
+    const GDescriptor& descriptor,
+    const char* descriptorName,
+    const char* operation) const
+{
+    if (descriptor.IsNull())
+        return;
+
+    const auto descriptorDevice = descriptor.GetDescriptorHeap()->GetDevice();
+    if (!descriptorDevice || !gpuResources.Owner.IsValid ||
+        !SameAdapterLuid(descriptorDevice->GetDesc().AdapterLuid, gpuResources.Owner.AdapterLuid))
+    {
+        std::wostringstream message;
+        message << L"VoxelGpuPartition " << operation << L" descriptor ownership mismatch for "
+            << descriptorName << L". Expected adapter " << gpuResources.Owner.DeviceName
+            << L", actual adapter " << (descriptorDevice ? descriptorDevice->GetName() : L"null");
+        ReportOwnershipFailure(message.str());
+    }
+}
+
+void VoxelGpuPartition::ValidateBufferOwnership(
+    const GBuffer* buffer,
+    const char* bufferName,
+    const char* operation) const
+{
+    if (!buffer)
+        return;
+
+    const auto bufferDevice = const_cast<GBuffer*>(buffer)->GetDevice();
+    if (!bufferDevice || !gpuResources.Owner.IsValid ||
+        !SameAdapterLuid(bufferDevice->GetDesc().AdapterLuid, gpuResources.Owner.AdapterLuid))
+    {
+        std::wostringstream message;
+        message << L"VoxelGpuPartition " << operation << L" buffer ownership mismatch for "
+            << bufferName << L". Expected adapter " << gpuResources.Owner.DeviceName
+            << L", actual adapter " << (bufferDevice ? bufferDevice->GetName() : L"null");
+        ReportOwnershipFailure(message.str());
+    }
+}
+
+void VoxelGpuPartition::ValidateRootSignatureOwnership(
+    const GRootSignature* rootSignature,
+    const char* signatureName,
+    const char* operation) const
+{
+    const auto signatureDevice = rootSignature ? rootSignature->GetDevice() : nullptr;
+    if (!signatureDevice || !gpuResources.Owner.IsValid ||
+        !SameAdapterLuid(signatureDevice->GetDesc().AdapterLuid, gpuResources.Owner.AdapterLuid))
+    {
+        std::wostringstream message;
+        message << L"VoxelGpuPartition " << operation << L" root signature ownership mismatch for "
+            << signatureName << L". Expected adapter " << gpuResources.Owner.DeviceName
+            << L", actual adapter " << (signatureDevice ? signatureDevice->GetName() : L"null");
+        ReportOwnershipFailure(message.str());
+    }
+}
+
+void VoxelGpuPartition::ValidateGraphicsPsoOwnership(
+    const GraphicPSO* pso,
+    const char* psoName,
+    const char* operation) const
+{
+    const auto psoDevice = pso ? pso->GetDevice() : nullptr;
+    if (!psoDevice || !gpuResources.Owner.IsValid ||
+        !SameAdapterLuid(psoDevice->GetDesc().AdapterLuid, gpuResources.Owner.AdapterLuid))
+    {
+        std::wostringstream message;
+        message << L"VoxelGpuPartition " << operation << L" graphics PSO ownership mismatch for "
+            << psoName << L". Expected adapter " << gpuResources.Owner.DeviceName
+            << L", actual adapter " << (psoDevice ? psoDevice->GetName() : L"null");
+        ReportOwnershipFailure(message.str());
+    }
+}
+
+void VoxelGpuPartition::ValidateCommandListOwnership(
+    const std::shared_ptr<GCommandList>& cmdList,
+    const char* operation) const
+{
+    const auto cmdDevice = cmdList ? cmdList->GetDevice() : nullptr;
+    if (!cmdDevice || !gpuResources.Owner.IsValid ||
+        !SameAdapterLuid(cmdDevice->GetDesc().AdapterLuid, gpuResources.Owner.AdapterLuid))
+    {
+        std::wostringstream message;
+        message << L"VoxelGpuPartition " << operation << L" command list ownership mismatch. Expected adapter "
+            << gpuResources.Owner.DeviceName
+            << L", actual adapter " << (cmdDevice ? cmdDevice->GetName() : L"null");
+        ReportOwnershipFailure(message.str());
+    }
+}
+
+void VoxelGpuPartition::ValidateGpuResourceOwnership(const char* operation) const
+{
+    ValidateRootSignatureOwnership(renderSignature.get(), "RenderRootSignature", operation);
+    ValidateGraphicsPsoOwnership(renderPSO.get(), "PrimaryRenderPSO", operation);
+    ValidateGraphicsPsoOwnership(secondaryRenderPSO.get(), "SecondaryRenderPSO", operation);
+    ValidateDescriptorOwnership(gpuResources.ComputeDescriptors, "ComputeDescriptors", operation);
+    ValidateDescriptorOwnership(gpuResources.RenderDescriptors, "RenderDescriptors", operation);
+    ValidateBufferOwnership(gpuResources.ObjectPositionBuffer.get(), "ObjectPositionBuffer", operation);
+    ValidateBufferOwnership(gpuResources.ParticlesPool.get(), "ParticlesPool", operation);
+    ValidateBufferOwnership(gpuResources.ParticlesAlive.get(), "ParticlesAlive", operation);
+    ValidateBufferOwnership(gpuResources.ParticlesDead.get(), "ParticlesDead", operation);
+    ValidateBufferOwnership(gpuResources.InjectedParticles.get(), "InjectedParticles", operation);
+    ValidateBufferOwnership(gpuResources.SimulationStats.get(), "SimulationStats", operation);
+    ValidateBufferOwnership(gpuResources.SimulationStatsUpload.get(), "SimulationStatsUpload", operation);
+    ValidateBufferOwnership(gpuResources.SimulationStatsReadback.get(), "SimulationStatsReadback", operation);
+    ValidateDescriptorOwnership(gpuResources.LodBuildDescriptors, "LodBuildDescriptors", operation);
+    ValidateBufferOwnership(gpuResources.LodRenderItems.get(), "LodRenderItems", operation);
+    ValidateBufferOwnership(gpuResources.LodPreviousLevels.get(), "LodPreviousLevels", operation);
+    ValidateBufferOwnership(gpuResources.LodDrawArguments.get(), "LodDrawArguments", operation);
+    ValidateBufferOwnership(gpuResources.LodDrawArgumentsUpload.get(), "LodDrawArgumentsUpload", operation);
+    ValidateBufferOwnership(gpuResources.LodStats.get(), "LodStats", operation);
+    ValidateBufferOwnership(gpuResources.LodStatsUpload.get(), "LodStatsUpload", operation);
+    ValidateBufferOwnership(gpuResources.LodStatsReadback.get(), "LodStatsReadback", operation);
 }
 
 void VoxelGpuPartition::CreatePipelineState()
@@ -113,6 +246,37 @@ void VoxelGpuPartition::CreatePipelineState()
     simulatedPSO->SetRootSignature(*computeSignature);
     simulatedPSO->SetShader(simulatedShader.get());
     simulatedPSO->Initialize(device);
+
+    CD3DX12_DESCRIPTOR_RANGE lodRanges[6];
+    lodRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    lodRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+    lodRanges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+    lodRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
+    lodRanges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2);
+    lodRanges[5].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3);
+
+    lodBuildSignature = std::make_shared<GRootSignature>();
+    lodBuildSignature->AddConstantParameter(sizeof(VoxelLodBuildData) / sizeof(DWORD), 0);
+    for (auto& range : lodRanges)
+        lodBuildSignature->AddDescriptorParameter(&range, 1);
+    lodBuildSignature->Initialize(device, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+    lodBuildShader = std::make_shared<GShader>(L"Shaders\\BuildLodRenderList.hlsl", ComputeShader, nullptr,
+                                               "CS", "cs_5_1");
+    lodBuildShader->LoadAndCompile();
+    lodBuildPSO = std::make_shared<ComputePSO>();
+    lodBuildPSO->SetRootSignature(*lodBuildSignature);
+    lodBuildPSO->SetShader(lodBuildShader.get());
+    lodBuildPSO->Initialize(device);
+
+    D3D12_INDIRECT_ARGUMENT_DESC argumentDesc{};
+    argumentDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+    D3D12_COMMAND_SIGNATURE_DESC signatureDesc{};
+    signatureDesc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
+    signatureDesc.NumArgumentDescs = 1;
+    signatureDesc.pArgumentDescs = &argumentDesc;
+    ThrowIfFailed(device->GetDXDevice()->CreateCommandSignature(
+        &signatureDesc, nullptr, IID_PPV_ARGS(&drawCommandSignature)));
 }
 
 void VoxelGpuPartition::CreateDescriptors()
@@ -122,10 +286,11 @@ void VoxelGpuPartition::CreateDescriptors()
 
 void VoxelGpuPartition::CreateBuffers()
 {
-    gpuResources.EnsureObjectPositionBuffer(device);
     gpuResources.ResetResources();
 
-    gpuResources.InjectionCapacity = std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16);
+    gpuResources.InjectionCapacity = HasVoxels()
+                                         ? std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16)
+                                         : 0;
     emitterData.ParticleInjectCount = gpuResources.InjectionCapacity;
     emitterData.InjectedGroupCount = static_cast<DWORD>(CalculateGroupCount(gpuResources.InjectionCapacity));
     emitterData.ParticlesAliveCount = 0;
@@ -137,47 +302,38 @@ void VoxelGpuPartition::CreateBuffers()
     simulationStatsResetPending = true;
     isWorked = false;
 
+    if (!HasVoxels())
+        return;
+
+    gpuResources.EnsureObjectPositionBuffer(device);
     gpuResources.CreateParticleBuffers(device, emitterData.ParticlesTotalCount);
     gpuResources.InitializeDeadParticleList(device, emitterData.ParticlesTotalCount);
+    gpuResources.InitializeLodState(device, emitterData.ParticlesTotalCount);
     gpuResources.CreateParticleViews();
     gpuResources.ResizeInjectionScratch();
 }
 
 VoxelGpuPartition::VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, const DWORD particleCount,
-                                     const VoxelSimulationParameters& initialParameters)
-    : parameters(initialParameters), globalVoxelIds(BuildSequentialVoxelIds(particleCount))
+                                     const VoxelSimulationParameters& initialParameters,
+                                     const VoxelAdapterOwner owner)
+    : parameters(initialParameters), adapterOwner(owner), globalVoxelIds(BuildSequentialVoxelIds(particleCount))
 {
     device = owningDevice;
+    gpuResources.SetOwnerDevice(device);
     Initialize();
     ApplySettings(globalVoxelIds, parameters);
 }
 
 VoxelGpuPartition::VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice,
                                      std::vector<DWORD> voxelIds,
-                                     const VoxelSimulationParameters& initialParameters)
-    : parameters(initialParameters), globalVoxelIds(std::move(voxelIds))
+                                     const VoxelSimulationParameters& initialParameters,
+                                     const VoxelAdapterOwner owner)
+    : parameters(initialParameters), adapterOwner(owner), globalVoxelIds(std::move(voxelIds))
 {
-    if (globalVoxelIds.empty())
-        globalVoxelIds = BuildSequentialVoxelIds(1);
-
     device = owningDevice;
+    gpuResources.SetOwnerDevice(device);
     Initialize();
     ApplySettings(globalVoxelIds, parameters);
-}
-
-void VoxelGpuPartition::Reset(const std::shared_ptr<GDevice>& owningDevice,
-                              const std::vector<DWORD>& voxelIds,
-                              const VoxelSimulationParameters& newParameters)
-{
-    device = owningDevice;
-    renderSignature.reset();
-    renderPSO.reset();
-    secondaryRenderPSO.reset();
-    computeSignature.reset();
-    injectedPSO.reset();
-    simulatedPSO.reset();
-    Initialize();
-    ApplySettings(voxelIds, newParameters);
 }
 
 void VoxelGpuPartition::Initialize()
@@ -188,7 +344,7 @@ void VoxelGpuPartition::Initialize()
 
 void VoxelGpuPartition::ApplySettings(const UINT count, const VoxelSimulationParameters& newParameters)
 {
-    ApplySettings(BuildSequentialVoxelIds(static_cast<DWORD>(std::max<UINT>(1, count))), newParameters);
+    ApplySettings(BuildSequentialVoxelIds(static_cast<DWORD>(count)), newParameters);
 }
 
 void VoxelGpuPartition::ApplySettings(const std::vector<DWORD>& voxelIds,
@@ -214,7 +370,9 @@ void VoxelGpuPartition::ApplySettings(const std::vector<DWORD>& voxelIds,
     emitterData.InterpolationAlpha = 0.0f;
     emitterData.RecycleMargin = std::max(parameters.VoxelSize * 8.0f, 3.0f);
     emitterData.GridSnapEnabled = 0.0f;
-    globalVoxelIds = voxelIds.empty() ? BuildSequentialVoxelIds(1) : voxelIds;
+    emitterData.SpatialLodDebugMode = static_cast<DWORD>(spatialLodSettings.DebugMode);
+    emitterData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
+    globalVoxelIds = voxelIds;
     emitterData.ParticlesTotalCount = static_cast<DWORD>(globalVoxelIds.size());
     emitterData.SimulatedGroupCount = static_cast<DWORD>(CalculateGroupCount(emitterData.ParticlesTotalCount));
     CreateBuffers();
@@ -338,6 +496,18 @@ void VoxelGpuPartition::SetInterpolationAlpha(const float value)
     emitterData.InterpolationAlpha = std::clamp(value, 0.0f, 1.0f);
 }
 
+void VoxelGpuPartition::ConfigureSpatialLod(
+    const VoxelSpatialLodSettings& settings,
+    const DirectX::SimpleMath::Vector3& cameraPosition)
+{
+    spatialLodSettings = settings;
+    spatialLodSettings.Lod0Distance = std::max(1.0f, spatialLodSettings.Lod0Distance);
+    spatialLodSettings.Lod1Distance = std::max(spatialLodSettings.Lod0Distance + 1.0f,
+                                               spatialLodSettings.Lod1Distance);
+    spatialLodSettings.Hysteresis = std::max(0.0f, spatialLodSettings.Hysteresis);
+    spatialLodCameraPosition = cameraPosition;
+}
+
 void VoxelGpuPartition::BeginSimulationFrame()
 {
     simulationStatsResetPending = true;
@@ -373,9 +543,24 @@ VoxelPartitionStatistics VoxelGpuPartition::GetStatistics() const
     };
 }
 
+VoxelSpatialLodStats VoxelGpuPartition::GetLastLodStats() const
+{
+    return lastLodStats;
+}
+
 std::shared_ptr<GDevice> VoxelGpuPartition::GetOwningDevice() const
 {
     return device;
+}
+
+VoxelAdapterOwner VoxelGpuPartition::GetAdapterOwner() const
+{
+    return adapterOwner;
+}
+
+const std::vector<DWORD>& VoxelGpuPartition::GetGlobalVoxelIds() const
+{
+    return globalVoxelIds;
 }
 
 void VoxelGpuPartition::Update()
@@ -385,7 +570,11 @@ void VoxelGpuPartition::Update()
 
 void VoxelGpuPartition::UpdateFrameConstants()
 {
+    if (!gpuResources.ObjectPositionBuffer)
+        return;
+
     const auto transform = gameObject->GetTransform();
+    cachedObjectPosition = transform->GetWorldPosition();
     if (transform->IsDirty())
     {
         objectWorldData.TextureTransform = transform->TextureTransform.Transpose();
@@ -399,15 +588,123 @@ void VoxelGpuPartition::Draw(const std::shared_ptr<GCommandList>& cmdList)
     RecordRender(cmdList);
 }
 
-void VoxelGpuPartition::RecordRender(const std::shared_ptr<GCommandList>& cmdList,
-                                     const VoxelPartitionRenderOutputMode outputMode,
-                                     const GBuffer* passConstants)
+void VoxelGpuPartition::UpdateLodStatsReadback()
 {
-    if (!renderEnabled)
+    if (!gpuResources.LodStatsReadback)
         return;
+
+    DWORD lod0 = 0;
+    DWORD lod1 = 0;
+    DWORD lod2 = 0;
+    DWORD aggregated = 0;
+    gpuResources.LodStatsReadback->ReadData(0, lod0);
+    gpuResources.LodStatsReadback->ReadData(1, lod1);
+    gpuResources.LodStatsReadback->ReadData(2, lod2);
+    gpuResources.LodStatsReadback->ReadData(3, aggregated);
+    lastLodStats.Lod0Rendered = lod0;
+    lastLodStats.Lod1Rendered = lod1;
+    lastLodStats.Lod2Rendered = lod2;
+    lastLodStats.Aggregated = aggregated;
+}
+
+void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList)
+{
+    ValidateCommandListOwnership(cmdList, "BuildLodRenderList");
+    ValidateGpuResourceOwnership("BuildLodRenderList");
+
+    UpdateLodStatsReadback();
+
+    gpuResources.LodRenderItems->SetCounterValue(cmdList, 0u);
+    const DWORD initialArgs[4] = {0u, 1u, 0u, 0u};
+    gpuResources.LodDrawArgumentsUpload->CopyData(0, initialArgs, sizeof(initialArgs));
+    cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->FlushResourceBarriers();
+    cmdList->CopyBufferRegion(*gpuResources.LodDrawArguments, 0, *gpuResources.LodDrawArgumentsUpload, 0,
+                              static_cast<UINT>(sizeof(initialArgs)), false);
+
+    const DWORD zeroStats[4] = {};
+    gpuResources.LodStatsUpload->CopyData(0, zeroStats, sizeof(zeroStats));
+    cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->FlushResourceBarriers();
+    cmdList->CopyBufferRegion(*gpuResources.LodStats, 0, *gpuResources.LodStatsUpload, 0,
+                              static_cast<UINT>(sizeof(zeroStats)), false);
+
+    VoxelLodBuildData lodData{};
+    lodData.CameraPosition = spatialLodCameraPosition;
+    lodData.ObjectPosition = cachedObjectPosition;
+    lodData.Lod0Distance = spatialLodSettings.Lod0Distance;
+    lodData.Lod1Distance = std::max(spatialLodSettings.Lod1Distance, spatialLodSettings.Lod0Distance + 1.0f);
+    lodData.Hysteresis = spatialLodSettings.Hysteresis;
+    lodData.VoxelSize = parameters.VoxelSize;
+    lodData.SpawnHeight = parameters.SpawnHeight;
+    lodData.FloorHeight = parameters.FloorHeight;
+    lodData.WaterfallWidth = parameters.WaterfallWidth;
+    lodData.WaterfallDepth = parameters.WaterfallDepth;
+    lodData.Seed = parameters.Seed;
+    lodData.AliveCount = emitterData.ParticlesAliveCount;
+    lodData.SpatialLodMode = static_cast<DWORD>(spatialLodSettings.Mode);
+    lodData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
 
     cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->FlushResourceBarriers();
+
+    cmdList->SetComputeRootSignature(*lodBuildSignature);
+    cmdList->SetPipelineState(*lodBuildPSO);
+    cmdList->SetDescriptorsHeap(&gpuResources.LodBuildDescriptors);
+    cmdList->SetComputeRoot32BitConstants(0, sizeof(VoxelLodBuildData) / sizeof(DWORD), &lodData, 0);
+    for (UINT slot = 0; slot < 6; ++slot)
+        cmdList->SetComputeRootDescriptorTable(slot + 1, &gpuResources.LodBuildDescriptors, slot);
+    const uint32_t groups = (emitterData.ParticlesAliveCount + 255u) / 256u;
+    if (groups > 0)
+        cmdList->Dispatch(groups, 1, 1);
+    cmdList->UAVBarrier(gpuResources.LodRenderItems->GetD3D12Resource());
+    cmdList->UAVBarrier(gpuResources.LodDrawArguments->GetD3D12Resource());
+    cmdList->UAVBarrier(gpuResources.LodStats->GetD3D12Resource());
+    cmdList->FlushResourceBarriers();
+    cmdList->CopyBufferRegion(*gpuResources.LodStatsReadback, 0, *gpuResources.LodStats, 0,
+                              static_cast<UINT>(sizeof(DWORD) * 4u), true);
+}
+
+VoxelPartitionRenderResult VoxelGpuPartition::RecordRender(
+    const std::shared_ptr<GCommandList>& cmdList,
+    const VoxelPartitionRenderOutputMode outputMode,
+    const GBuffer* passConstants,
+    VoxelBenchmarkProfiler* benchmarkProfiler,
+    const VoxelBenchmarkProfiler::QueueId profilerQueue,
+    const VoxelBenchmarkProfiler::RangeId lodCompactionRange)
+{
+    VoxelPartitionRenderResult result{};
+    result.OwnerAdapter = adapterOwner;
+    result.OwnerAdapterName = gpuResources.Owner.DeviceName;
+    const auto cmdDevice = cmdList ? cmdList->GetDevice() : nullptr;
+    result.CommandListAdapterName = cmdDevice ? cmdDevice->GetName() : L"null";
+
+    if (!renderEnabled || !HasVoxels() || emitterData.ParticlesAliveCount == 0)
+        return result;
+
+    ValidateCommandListOwnership(cmdList, "RecordRender");
+    ValidateGpuResourceOwnership("RecordRender");
+    if (passConstants)
+        ValidateBufferOwnership(passConstants, "PassConstants", "RecordRender");
+
+    if (benchmarkProfiler)
+        benchmarkProfiler->BeginRange(cmdList, profilerQueue, lodCompactionRange);
+    BuildLodRenderList(cmdList);
+    if (benchmarkProfiler)
+    {
+        benchmarkProfiler->EndRange(cmdList, profilerQueue, lodCompactionRange);
+        benchmarkProfiler->ResolveRange(cmdList, profilerQueue, lodCompactionRange);
+    }
+    emitterData.SpatialLodDebugMode = static_cast<DWORD>(spatialLodSettings.DebugMode);
+    emitterData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
+
+    cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->FlushResourceBarriers();
 
     cmdList->SetGraphicsRootSignature(*renderSignature);
@@ -425,11 +722,21 @@ void VoxelGpuPartition::RecordRender(const std::shared_ptr<GCommandList>& cmdLis
     cmdList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
     cmdList->SetIBuffer();
     cmdList->SetVBuffer();
-    cmdList->Draw(emitterData.ParticlesAliveCount);
+    cmdList->ExecuteIndirect(drawCommandSignature.Get(), 1u, *gpuResources.LodDrawArguments);
+    result.DrawIssued = true;
+    result.DrawCallCount = 1;
+    result.UsedIndirectDraw = true;
+    result.LodStats = lastLodStats;
+    result.SubmittedVoxelCount = lastLodStats.TotalRendered();
 
     cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
+    return result;
 }
 
 void VoxelGpuPartition::Dispatch(const std::shared_ptr<GCommandList>& cmdList)
@@ -439,8 +746,18 @@ void VoxelGpuPartition::Dispatch(const std::shared_ptr<GCommandList>& cmdList)
 
 void VoxelGpuPartition::DispatchSimulation(const std::shared_ptr<GCommandList>& cmdList)
 {
-    if (!simulationEnabled)
+    if (!simulationEnabled || !HasVoxels())
+    {
+        lastDispatchVoxelCount = 0;
+        lastRecycledVoxelCount = 0;
+        lastAliveVoxelCount = 0;
+        recordedAliveVoxelCount = 0;
+        emitterData.ParticlesAliveCount = 0;
         return;
+    }
+
+    ValidateCommandListOwnership(cmdList, "RecordSimulation");
+    ValidateGpuResourceOwnership("RecordSimulation");
 
     isWorked = true;
     DWORD readbackAliveCount = 0;

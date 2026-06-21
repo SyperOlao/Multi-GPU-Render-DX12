@@ -3,10 +3,12 @@
 #include "Emitter.h"
 #include "GBuffer.h"
 #include "GDescriptor.h"
+#include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Voxels/VoxelPartitionGpuResources.h"
 #include "Source/Voxels/VoxelTypes.h"
 
 #include <vector>
+#include <wrl.h>
 
 struct VoxelPartitionStatistics
 {
@@ -29,6 +31,15 @@ class VoxelGpuPartition : public Emitter
     VoxelSimulationParameters parameters{};
     ObjectConstants objectWorldData{};
     std::shared_ptr<GraphicPSO> secondaryRenderPSO;
+    std::shared_ptr<GRootSignature> lodBuildSignature;
+    std::shared_ptr<ComputePSO> lodBuildPSO;
+    std::shared_ptr<GShader> lodBuildShader;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> drawCommandSignature;
+    VoxelAdapterOwner adapterOwner = VoxelAdapterOwner::Primary;
+    VoxelSpatialLodSettings spatialLodSettings{};
+    DirectX::SimpleMath::Vector3 spatialLodCameraPosition = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Vector3 cachedObjectPosition = DirectX::SimpleMath::Vector3::Zero;
+    VoxelSpatialLodStats lastLodStats{};
 
     DWORD nextSpawnIndex = 0;
     bool isWorked = false;
@@ -46,6 +57,23 @@ class VoxelGpuPartition : public Emitter
     void CreatePipelineState();
     void CreateDescriptors();
     void CreateBuffers();
+    bool HasVoxels() const;
+    void ValidateCommandListOwnership(const std::shared_ptr<GCommandList>& cmdList, const char* operation) const;
+    void ValidateGpuResourceOwnership(const char* operation) const;
+    void ValidateDescriptorOwnership(const PEPEngine::Graphics::GDescriptor& descriptor,
+                                     const char* descriptorName,
+                                     const char* operation) const;
+    void ValidateBufferOwnership(const PEPEngine::Graphics::GBuffer* buffer,
+                                 const char* bufferName,
+                                 const char* operation) const;
+    void ValidateRootSignatureOwnership(const PEPEngine::Graphics::GRootSignature* rootSignature,
+                                        const char* signatureName,
+                                        const char* operation) const;
+    void ValidateGraphicsPsoOwnership(const PEPEngine::Graphics::GraphicPSO* pso,
+                                      const char* psoName,
+                                      const char* operation) const;
+    void BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList);
+    void UpdateLodStatsReadback();
 
 protected:
     void Update() override;
@@ -53,19 +81,23 @@ protected:
 
 public:
     VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, DWORD particleCount,
-                      const VoxelSimulationParameters& initialParameters = {});
+                      const VoxelSimulationParameters& initialParameters = {},
+                      VoxelAdapterOwner owner = VoxelAdapterOwner::Primary);
     VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, std::vector<DWORD> voxelIds,
-                      const VoxelSimulationParameters& initialParameters = {});
+                      const VoxelSimulationParameters& initialParameters = {},
+                      VoxelAdapterOwner owner = VoxelAdapterOwner::Primary);
 
     void Dispatch(const std::shared_ptr<GCommandList>& cmdList) override;
-    void Reset(const std::shared_ptr<GDevice>& owningDevice,
-               const std::vector<DWORD>& voxelIds,
-               const VoxelSimulationParameters& newParameters);
     void Initialize();
     void DispatchSimulation(const std::shared_ptr<GCommandList>& cmdList);
-    void RecordRender(const std::shared_ptr<GCommandList>& cmdList,
-                      VoxelPartitionRenderOutputMode outputMode = VoxelPartitionRenderOutputMode::PrimaryColor,
-                      const PEPEngine::Graphics::GBuffer* passConstants = nullptr);
+    VoxelPartitionRenderResult RecordRender(
+        const std::shared_ptr<GCommandList>& cmdList,
+        VoxelPartitionRenderOutputMode outputMode = VoxelPartitionRenderOutputMode::PrimaryColor,
+        const PEPEngine::Graphics::GBuffer* passConstants = nullptr,
+        VoxelBenchmarkProfiler* benchmarkProfiler = nullptr,
+        VoxelBenchmarkProfiler::QueueId profilerQueue = VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
+        VoxelBenchmarkProfiler::RangeId lodCompactionRange =
+            VoxelBenchmarkProfiler::RangeId::PrimaryLodCompaction);
     void UpdateFrameConstants();
     void BeginSimulationFrame();
     void ChangeParticleCount(UINT count);
@@ -93,12 +125,17 @@ public:
     void SetSimulationDeltaTime(float value);
     void SetSimulationTime(float value);
     void SetInterpolationAlpha(float value);
+    void ConfigureSpatialLod(const VoxelSpatialLodSettings& settings,
+                             const DirectX::SimpleMath::Vector3& cameraPosition);
     UINT GetLastDispatchVoxelCount() const;
     UINT GetLastRecycledVoxelCount() const;
     UINT GetLastAliveVoxelCount() const;
     UINT GetExpectedVoxelCount() const;
     VoxelPartitionStatistics GetStatistics() const;
+    VoxelSpatialLodStats GetLastLodStats() const;
     std::shared_ptr<GDevice> GetOwningDevice() const;
+    VoxelAdapterOwner GetAdapterOwner() const;
+    const std::vector<DWORD>& GetGlobalVoxelIds() const;
 
     uint32_t UpdateInterval = 1;
     uint64_t LastSimulationFrame = 0;

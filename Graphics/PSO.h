@@ -22,6 +22,7 @@ namespace PEPEngine::Graphics
     protected:
         ComPtr<ID3D12PipelineState> nativePSO;
         GRootSignature rs;
+        std::shared_ptr<GDevice> ownerDevice;
 
     public:
         PSO(const GRootSignature& RS) : rs(RS)
@@ -46,6 +47,11 @@ namespace PEPEngine::Graphics
         const GRootSignature& GetRootSignature() const
         {
             return rs;
+        }
+
+        std::shared_ptr<GDevice> GetDevice() const
+        {
+            return ownerDevice;
         }
 
         void virtual SetRootSignature(const GRootSignature& rs)

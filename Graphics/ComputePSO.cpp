@@ -28,6 +28,7 @@ namespace PEPEngine::Graphics
         {
             throw DxException(hr, L"CreateComputePipelineState", AnsiToWString(__FILE__), __LINE__);
         }
+        ownerDevice = device;
     }
 
     void ComputePSO::SetRootSignature(const GRootSignature& rs)

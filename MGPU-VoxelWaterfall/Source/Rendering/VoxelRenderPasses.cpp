@@ -10,6 +10,7 @@
 #include "ShadowMap.h"
 #include "SSAA.h"
 #include "SSAO.h"
+#include "Source/Voxels/VoxelGpuPartition.h"
 
 using namespace DirectX;
 using namespace PEPEngine::Graphics;
@@ -142,14 +143,39 @@ void VoxelRenderPasses::RecordForwardPath(const std::shared_ptr<GCommandList>& c
     cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::Transparent));
     RecordDraw(cmdList, context, RenderMode::Transparent);
 
-    cmdList->SetRootConstantBufferView(StandardShaderSlot::CameraData,
-                                       *context.CurrentFrameResource.PrimePassConstantUploadBuffer.get(), 0);
-    RecordDraw(cmdList, context, RenderMode::Particle);
+    RecordPrimaryVoxelPartitions(cmdList, context);
 
     cmdList->TransitionBarrier(context.AntiAliasingPath.GetRenderTarget(),
                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(context.AntiAliasingPath.GetDepthMap(), D3D12_RESOURCE_STATE_DEPTH_READ);
     cmdList->FlushResourceBarriers();
+}
+
+void VoxelRenderPasses::RecordPrimaryVoxelPartitions(
+    const std::shared_ptr<GCommandList>& cmdList,
+    const VoxelRenderPassContext& context)
+{
+    if (!context.PrimaryVoxelPartitions)
+        return;
+
+    for (const auto* partition : *context.PrimaryVoxelPartitions)
+    {
+        if (!partition || !partition->GpuPartition || partition->VoxelCount() == 0)
+            continue;
+
+        partition->GpuPartition->UpdateFrameConstants();
+        auto result = partition->GpuPartition->RecordRender(
+            cmdList,
+            VoxelPartitionRenderOutputMode::PrimaryColor,
+            context.CurrentFrameResource.PrimePassConstantUploadBuffer.get(),
+            context.BenchmarkProfiler,
+            VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
+            VoxelBenchmarkProfiler::RangeId::PrimaryLodCompaction);
+        result.PartitionId = partition->PartitionId;
+        result.LogicalVoxelCount = partition->VoxelCount();
+        if (context.PrimaryVoxelRenderResults)
+            context.PrimaryVoxelRenderResults->push_back(result);
+    }
 }
 
 void VoxelRenderPasses::RecordBackBufferInit(const std::shared_ptr<GCommandList>& cmdList,

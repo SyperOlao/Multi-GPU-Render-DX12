@@ -84,6 +84,9 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
             summary.Preset = config.Preset;
             summary.TotalVoxelCount = config.TotalCount;
             summary.SecondaryShare = config.SecondaryShare;
+            summary.SpatialLodPolicy = config.SpatialLodEnabled ? "SpatialDensityThreeLevel" : "Off";
+            summary.TemporalPolicy =
+                config.TemporalInterval <= 1 ? "Full" : "TemporalDecimation";
             summary.Repetition = config.Repetition;
         }
         automaticBenchmarkSummaries.push_back(summary);
@@ -139,7 +142,10 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.Preset = config.Preset;
         skipped.TotalVoxelCount = config.TotalCount;
         skipped.SecondaryShare = config.SecondaryShare;
+        skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "SpatialDensityThreeLevel" : "Off";
+        skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "TemporalDecimation";
         skipped.Repetition = config.Repetition;
+        skipped.Valid = false;
         skipped.SkipReason = "secondary hardware adapter unavailable";
         automaticBenchmarkSummaries.push_back(skipped);
         ++automaticBenchmarkIndex;
@@ -151,11 +157,17 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
     ApplyBenchmarkVoxelCount(context, static_cast<int>(config.TotalCount));
     if (context.ApplySecondaryShare)
         context.ApplySecondaryShare(config.SecondaryShare);
+    if (context.ApplySpatialLodEnabled)
+        context.ApplySpatialLodEnabled(config.SpatialLodEnabled);
+    if (context.ApplyTemporalInterval)
+        context.ApplyTemporalInterval(config.TemporalInterval);
     context.Flush();
 
     const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +
         config.Preset + "_" + std::to_string(config.TotalCount) +
         "_share" + std::to_string(static_cast<int>(config.SecondaryShare * 100.0f)) +
+        "_" + (config.SpatialLodEnabled ? "SpatialLOD" : "NoSpatialLOD") +
+        "_temporal" + std::to_string(config.TemporalInterval) +
         "_rep" + std::to_string(config.Repetition) + ".csv";
     if (!context.Profiler.Start(benchmarkDirectory, context.BuildMetadata(), fileName,
                                 config.Preset, config.Repetition))

@@ -110,14 +110,25 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     currentRepetition = repetition;
     completedSummaryReady = false;
     csv.imbue(std::locale::classic());
-    csv << "frame_index,requested_mode,actual_mode,fallback_reason,temporal_policy,total_voxels,secondary_share,"
+    csv << "frame_index,requested_mode,actual_mode,fallback_reason,temporal_policy,spatial_lod_policy,total_voxels,secondary_share,"
         << "primary_partition_voxels,secondary_partition_voxels,updated_voxels,simulation_steps,"
-        << "seed,render_width,render_height,primary_adapter,secondary_adapter,cpu_wait_ms,"
+        << "seed,render_width,render_height,primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
+        << "primary_luid,primary_dedicated_memory,secondary_vendor_id,secondary_device_id,secondary_luid,"
+        << "secondary_dedicated_memory,operating_system,build_configuration,git_commit,d3d12_debug_layer,"
+        << "cpu_wait_ms,"
         << "cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
-        << "primary_base_graphics_ms,secondary_compute_ms,secondary_graphics_ms,"
+        << "primary_lod_compaction_ms,primary_base_graphics_ms,secondary_compute_ms,"
+        << "secondary_lod_compaction_ms,secondary_graphics_ms,"
         << "secondary_local_to_shared_copy_ms,primary_shared_to_local_copy_ms,transfer_ms,"
         << "composite_ms,final_resolve_ui_ms,present_ready_gpu_ms,total_cross_adapter_bytes,"
-        << "particle_transfer_bytes,secondary_draw_calls,reused_secondary_image,visual_validation_passed\n";
+        << "color_transfer_bytes,depth_transfer_bytes,particle_transfer_bytes,render_output_transfer_bytes,"
+        << "secondary_draw_calls,primary_submitted_voxels,secondary_submitted_voxels,"
+        << "primary_rendered_voxels,secondary_rendered_voxels,primary_lod0,primary_lod1,primary_lod2,"
+        << "secondary_lod0,secondary_lod1,secondary_lod2,"
+        << "visual_validation_has_result,visual_validation_passed,visual_color_mae,visual_color_rmse,"
+        << "visual_psnr,visual_max_error,visual_mismatched_pixel_percent,visual_depth_rmse,"
+        << "visual_depth_mismatched_pixel_percent,visual_pipeline_primitive_count,visual_fail_reason,"
+        << "frame_valid,invalid_reason\n";
 
     framesSeen = 0;
     rowsWritten = 0;
@@ -392,8 +403,10 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         return;
 
     const auto primaryCompute = ReadRangeTiming(frame, RangeId::PrimaryCompute);
+    const auto primaryLodCompaction = ReadRangeTiming(frame, RangeId::PrimaryLodCompaction);
     const auto primaryBaseGraphics = ReadRangeTiming(frame, RangeId::PrimaryBaseGraphics);
     const auto secondaryCompute = ReadRangeTiming(frame, RangeId::SecondaryCompute);
+    const auto secondaryLodCompaction = ReadRangeTiming(frame, RangeId::SecondaryLodCompaction);
     const auto secondaryGraphics = ReadRangeTiming(frame, RangeId::SecondaryGraphics);
     const auto secondaryCopy = ReadRangeTiming(frame, RangeId::SecondaryLocalToSharedCopy);
     const auto primaryCopy = ReadRangeTiming(frame, RangeId::PrimarySharedToLocalCopy);
@@ -401,17 +414,20 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     const auto finalResolveUi = ReadRangeTiming(frame, RangeId::FinalResolveUi);
 
     const std::array timings = {
-        primaryCompute, primaryBaseGraphics, secondaryCompute, secondaryGraphics,
+        primaryCompute, primaryLodCompaction, primaryBaseGraphics,
+        secondaryCompute, secondaryLodCompaction, secondaryGraphics,
         secondaryCopy, primaryCopy, composite, finalResolveUi
     };
 
     double firstStart = std::numeric_limits<double>::max();
     double finalEnd = 0.0;
     double gpuWorkSum = 0.0;
+    bool timestampsValid = false;
     for (uint32_t i = 0; i < RangeCount; ++i)
     {
         if (!frame.Ranges[i].Active)
             continue;
+        timestampsValid = true;
         firstStart = std::min(firstStart, timings[i].StartQpc);
         finalEnd = std::max(finalEnd, timings[i].EndQpc);
         gpuWorkSum += timings[i].Ms;
@@ -426,26 +442,43 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
             : 0.0;
     const double transferMs = secondaryCopy.Ms + primaryCopy.Ms;
     const double presentReadyGpuMs = criticalPathGpuMs;
+    const std::string invalidReason = ValidateFrameRecord(frame, timestampsValid);
 
     cpuFrameMsSamples.push_back(frame.CpuFrameMs);
     criticalPathGpuMsSamples.push_back(criticalPathGpuMs);
     gpuWorkSumMsSamples.push_back(gpuWorkSum);
     primaryComputeMsSamples.push_back(primaryCompute.Ms);
+    primaryLodCompactionMsSamples.push_back(primaryLodCompaction.Ms);
     primaryGraphicsMsSamples.push_back(primaryBaseGraphics.Ms);
     secondaryComputeMsSamples.push_back(secondaryCompute.Ms);
+    secondaryLodCompactionMsSamples.push_back(secondaryLodCompaction.Ms);
     secondaryGraphicsMsSamples.push_back(secondaryGraphics.Ms);
     transferMsSamples.push_back(transferMs);
     compositeMsSamples.push_back(composite.Ms);
     transferBytesSamples.push_back(frame.Metadata.TotalCrossAdapterBytes);
+    colorTransferBytesSamples.push_back(frame.Metadata.ColorTransferBytes);
+    depthTransferBytesSamples.push_back(frame.Metadata.DepthTransferBytes);
     particleTransferBytesSamples.push_back(frame.Metadata.ParticleTransferBytes);
+    renderOutputTransferBytesSamples.push_back(frame.Metadata.RenderOutputTransferBytes);
     secondaryDrawCallSamples.push_back(static_cast<double>(frame.Metadata.SecondaryDrawCalls));
-    reusedSecondaryImageSamples.push_back(frame.Metadata.ReusedSecondaryImage ? 1.0 : 0.0);
+    primarySubmittedVoxelSamples.push_back(static_cast<double>(frame.Metadata.PrimarySubmittedVoxelCount));
+    secondarySubmittedVoxelSamples.push_back(static_cast<double>(frame.Metadata.SecondarySubmittedVoxelCount));
+    primaryLod0Samples.push_back(static_cast<double>(frame.Metadata.PrimaryLod0Count));
+    primaryLod1Samples.push_back(static_cast<double>(frame.Metadata.PrimaryLod1Count));
+    primaryLod2Samples.push_back(static_cast<double>(frame.Metadata.PrimaryLod2Count));
+    secondaryLod0Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod0Count));
+    secondaryLod1Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod1Count));
+    secondaryLod2Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod2Count));
+    if (!invalidReason.empty())
+        invalidReasons.push_back(invalidReason);
 
     latestTimingSnapshot = {
         true,
         primaryCompute.Ms,
+        primaryLodCompaction.Ms,
         primaryBaseGraphics.Ms,
         secondaryCompute.Ms,
+        secondaryLodCompaction.Ms,
         secondaryGraphics.Ms,
         transferMs,
         composite.Ms,
@@ -455,7 +488,6 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         frame.Metadata.TotalCrossAdapterBytes,
         frame.Metadata.ParticleTransferBytes,
         frame.Metadata.SecondaryDrawCalls,
-        frame.Metadata.ReusedSecondaryImage,
         frame.Metadata.VisualValidationPassed
     };
 
@@ -464,6 +496,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << EscapeCsv(frame.Metadata.ActualMode) << ','
         << EscapeCsv(frame.Metadata.FallbackReason) << ','
         << EscapeCsv(frame.Metadata.TemporalPolicy) << ','
+        << EscapeCsv(frame.Metadata.SpatialLodPolicy) << ','
         << frame.Metadata.TotalVoxelCount << ','
         << frame.Metadata.SecondaryShare << ','
         << frame.Metadata.PrimaryPartitionVoxelCount << ','
@@ -475,14 +508,28 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.RenderHeight << ','
         << EscapeCsv(frame.Metadata.PrimaryAdapterName) << ','
         << EscapeCsv(frame.Metadata.SecondaryAdapterName) << ','
+        << frame.Metadata.PrimaryVendorId << ','
+        << frame.Metadata.PrimaryDeviceId << ','
+        << EscapeCsv(frame.Metadata.PrimaryAdapterLuid) << ','
+        << frame.Metadata.PrimaryDedicatedVideoMemory << ','
+        << frame.Metadata.SecondaryVendorId << ','
+        << frame.Metadata.SecondaryDeviceId << ','
+        << EscapeCsv(frame.Metadata.SecondaryAdapterLuid) << ','
+        << frame.Metadata.SecondaryDedicatedVideoMemory << ','
+        << EscapeCsv(frame.Metadata.OperatingSystem) << ','
+        << EscapeCsv(frame.Metadata.BuildConfiguration) << ','
+        << EscapeCsv(frame.Metadata.GitCommit) << ','
+        << BoolText(frame.Metadata.D3D12DebugLayerEnabled) << ','
         << std::fixed << std::setprecision(6)
         << frame.Metadata.CpuWaitMs << ','
         << frame.CpuFrameMs << ','
         << criticalPathGpuMs << ','
         << gpuWorkSum << ','
         << primaryCompute.Ms << ','
+        << primaryLodCompaction.Ms << ','
         << primaryBaseGraphics.Ms << ','
         << secondaryCompute.Ms << ','
+        << secondaryLodCompaction.Ms << ','
         << secondaryGraphics.Ms << ','
         << secondaryCopy.Ms << ','
         << primaryCopy.Ms << ','
@@ -491,10 +538,34 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << finalResolveUi.Ms << ','
         << presentReadyGpuMs << ','
         << frame.Metadata.TotalCrossAdapterBytes << ','
+        << frame.Metadata.ColorTransferBytes << ','
+        << frame.Metadata.DepthTransferBytes << ','
         << frame.Metadata.ParticleTransferBytes << ','
+        << frame.Metadata.RenderOutputTransferBytes << ','
         << frame.Metadata.SecondaryDrawCalls << ','
-        << BoolText(frame.Metadata.ReusedSecondaryImage) << ','
-        << BoolText(frame.Metadata.VisualValidationPassed) << '\n';
+        << frame.Metadata.PrimarySubmittedVoxelCount << ','
+        << frame.Metadata.SecondarySubmittedVoxelCount << ','
+        << frame.Metadata.PrimaryRenderedVoxelCount << ','
+        << frame.Metadata.SecondaryRenderedVoxelCount << ','
+        << frame.Metadata.PrimaryLod0Count << ','
+        << frame.Metadata.PrimaryLod1Count << ','
+        << frame.Metadata.PrimaryLod2Count << ','
+        << frame.Metadata.SecondaryLod0Count << ','
+        << frame.Metadata.SecondaryLod1Count << ','
+        << frame.Metadata.SecondaryLod2Count << ','
+        << BoolText(frame.Metadata.VisualValidationHasResult) << ','
+        << BoolText(frame.Metadata.VisualValidationPassed) << ','
+        << frame.Metadata.VisualValidationColorMAE << ','
+        << frame.Metadata.VisualValidationColorRMSE << ','
+        << frame.Metadata.VisualValidationPSNR << ','
+        << frame.Metadata.VisualValidationMaxError << ','
+        << frame.Metadata.VisualValidationMismatchedPixelPercent << ','
+        << frame.Metadata.VisualValidationDepthRMSE << ','
+        << frame.Metadata.VisualValidationDepthMismatchPercent << ','
+        << frame.Metadata.VisualValidationPipelinePrimitiveCount << ','
+        << EscapeCsv(frame.Metadata.VisualValidationFailReason) << ','
+        << BoolText(invalidReason.empty()) << ','
+        << EscapeCsv(invalidReason) << '\n';
 
     ++rowsWritten;
     if (rowsWritten % 32 == 0)
@@ -522,6 +593,34 @@ void VoxelBenchmarkProfiler::CreateQueueResources(QueueContext& context)
         IID_PPV_ARGS(&context.ReadbackBuffer)));
 }
 
+std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
+    const FrameRecord& frame,
+    const bool timestampsValid) const
+{
+    const auto& metadata = frame.Metadata;
+    const bool requestedMultiGpu = metadata.RequestedMode == "MultiGpuFull" ||
+        metadata.RequestedMode == "MultiGpuTemporalDecimation";
+    if (!timestampsValid)
+        return "GPU timestamp query failed";
+    if (requestedMultiGpu && metadata.ActualMode != metadata.RequestedMode)
+        return "requested multi-GPU mode fell back to a different actual mode";
+    if (requestedMultiGpu &&
+        metadata.SecondaryPartitionVoxelCount > 0 &&
+        metadata.SecondaryDrawCalls == 0)
+        return "secondary graphics draw count is zero for a non-empty secondary partition";
+    if (metadata.ParticleTransferBytes > 0)
+        return "particle transfer bytes are non-zero";
+    if (requestedMultiGpu && metadata.RenderOutputTransferBytes == 0)
+        return "render-output transfer bytes are zero";
+    if (!metadata.VisualValidationHasResult)
+        return "visual validation metrics are not available";
+    if (!metadata.VisualValidationPassed)
+        return metadata.VisualValidationFailReason.empty()
+                   ? "visual validation failed"
+                   : metadata.VisualValidationFailReason;
+    return {};
+}
+
 void VoxelBenchmarkProfiler::CalibrateQueues()
 {
     for (auto& queue : queues)
@@ -545,15 +644,28 @@ void VoxelBenchmarkProfiler::ResetSamples()
     criticalPathGpuMsSamples.clear();
     gpuWorkSumMsSamples.clear();
     primaryComputeMsSamples.clear();
+    primaryLodCompactionMsSamples.clear();
     primaryGraphicsMsSamples.clear();
     secondaryComputeMsSamples.clear();
+    secondaryLodCompactionMsSamples.clear();
     secondaryGraphicsMsSamples.clear();
     transferMsSamples.clear();
     compositeMsSamples.clear();
     transferBytesSamples.clear();
+    colorTransferBytesSamples.clear();
+    depthTransferBytesSamples.clear();
     particleTransferBytesSamples.clear();
+    renderOutputTransferBytesSamples.clear();
     secondaryDrawCallSamples.clear();
-    reusedSecondaryImageSamples.clear();
+    primarySubmittedVoxelSamples.clear();
+    secondarySubmittedVoxelSamples.clear();
+    primaryLod0Samples.clear();
+    primaryLod1Samples.clear();
+    primaryLod2Samples.clear();
+    secondaryLod0Samples.clear();
+    secondaryLod1Samples.clear();
+    secondaryLod2Samples.clear();
+    invalidReasons.clear();
 }
 
 void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
@@ -576,6 +688,7 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.ActualMode = lastWritten ? lastWritten->Metadata.ActualMode : "";
     completedSummary.Preset = currentPresetName;
     completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
+    completedSummary.SpatialLodPolicy = lastWritten ? lastWritten->Metadata.SpatialLodPolicy : "";
     completedSummary.PrimaryAdapterName = lastWritten ? lastWritten->Metadata.PrimaryAdapterName : L"";
     completedSummary.SecondaryAdapterName = lastWritten ? lastWritten->Metadata.SecondaryAdapterName : L"";
     completedSummary.TotalVoxelCount = lastWritten ? lastWritten->Metadata.TotalVoxelCount : 0;
@@ -583,6 +696,10 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.RenderWidth = lastWritten ? lastWritten->Metadata.RenderWidth : 0;
     completedSummary.RenderHeight = lastWritten ? lastWritten->Metadata.RenderHeight : 0;
     completedSummary.Repetition = currentRepetition;
+    completedSummary.RepetitionCount = 1;
+    completedSummary.MeasuredFrameCount = static_cast<uint32_t>(cpuFrameMsSamples.size());
+    completedSummary.Valid = invalidReasons.empty();
+    completedSummary.ValidityReason = invalidReasons.empty() ? "" : invalidReasons.front();
     completedSummary.AverageCpuFrameMs = Average(cpuFrameMsSamples);
     completedSummary.MedianCpuFrameMs = Percentile(cpuFrameMsSamples, 0.50);
     completedSummary.P95CpuFrameMs = Percentile(cpuFrameMsSamples, 0.95);
@@ -596,16 +713,31 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.CriticalPathGpuMs = Average(criticalPathGpuMsSamples);
     completedSummary.GpuWorkSumMs = Average(gpuWorkSumMsSamples);
     completedSummary.PrimaryComputeMs = Average(primaryComputeMsSamples);
+    completedSummary.PrimaryLodCompactionMs = Average(primaryLodCompactionMsSamples);
     completedSummary.PrimaryGraphicsMs = Average(primaryGraphicsMsSamples);
     completedSummary.SecondaryComputeMs = Average(secondaryComputeMsSamples);
+    completedSummary.SecondaryLodCompactionMs = Average(secondaryLodCompactionMsSamples);
     completedSummary.SecondaryGraphicsMs = Average(secondaryGraphicsMsSamples);
     completedSummary.TransferMs = Average(transferMsSamples);
     completedSummary.CompositeMs = Average(compositeMsSamples);
     completedSummary.AverageTransferBytes = static_cast<uint64_t>(AverageUint64(transferBytesSamples));
+    completedSummary.AverageColorTransferBytes =
+        static_cast<uint64_t>(AverageUint64(colorTransferBytesSamples));
+    completedSummary.AverageDepthTransferBytes =
+        static_cast<uint64_t>(AverageUint64(depthTransferBytesSamples));
     completedSummary.AverageParticleTransferBytes =
         static_cast<uint64_t>(AverageUint64(particleTransferBytesSamples));
+    completedSummary.AverageRenderOutputTransferBytes =
+        static_cast<uint64_t>(AverageUint64(renderOutputTransferBytesSamples));
     completedSummary.AverageSecondaryDrawCalls = Average(secondaryDrawCallSamples);
-    completedSummary.ReusedSecondaryImageRate = Average(reusedSecondaryImageSamples);
+    completedSummary.AveragePrimarySubmittedVoxelCount = Average(primarySubmittedVoxelSamples);
+    completedSummary.AverageSecondarySubmittedVoxelCount = Average(secondarySubmittedVoxelSamples);
+    completedSummary.AveragePrimaryLod0Count = Average(primaryLod0Samples);
+    completedSummary.AveragePrimaryLod1Count = Average(primaryLod1Samples);
+    completedSummary.AveragePrimaryLod2Count = Average(primaryLod2Samples);
+    completedSummary.AverageSecondaryLod0Count = Average(secondaryLod0Samples);
+    completedSummary.AverageSecondaryLod1Count = Average(secondaryLod1Samples);
+    completedSummary.AverageSecondaryLod2Count = Average(secondaryLod2Samples);
     completedSummary.VisualValidationPassed =
         lastWritten ? lastWritten->Metadata.VisualValidationPassed : false;
     completedSummary.CsvPath = csvPath;

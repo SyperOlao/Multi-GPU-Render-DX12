@@ -204,6 +204,8 @@ namespace PEPEngine::Graphics
         void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t startIndex = 0,
                          int32_t baseVertex = 0,
                          uint32_t startInstance = 0) const;
+        void ExecuteIndirect(ID3D12CommandSignature* commandSignature, uint32_t maxCommandCount,
+                             const GBuffer& argumentBuffer, uint64_t argumentBufferOffset = 0) const;
 
         void Dispatch(uint32_t numGroupsX, uint32_t numGroupsY = 1, uint32_t numGroupsZ = 1) const;
 

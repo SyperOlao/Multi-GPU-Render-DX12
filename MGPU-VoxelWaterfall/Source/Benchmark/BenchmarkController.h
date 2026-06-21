@@ -19,6 +19,8 @@ struct BenchmarkControllerContext
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;
     std::function<void(int)> ApplyVoxelCount;
     std::function<void(float)> ApplySecondaryShare;
+    std::function<void(bool)> ApplySpatialLodEnabled;
+    std::function<void(uint32_t)> ApplyTemporalInterval;
     bool MultiGpuAvailable = false;
 };
 

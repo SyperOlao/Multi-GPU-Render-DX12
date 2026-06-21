@@ -21,6 +21,7 @@
 #include "Source/Scene/SceneFactory.h"
 #include "Source/Scene/SceneTransformController.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
+#include "Source/Validation/VoxelVisualValidationRunner.h"
 #include "Source/Voxels/VoxelSimulationScheduler.h"
 
 #include <array>
@@ -47,11 +48,19 @@ protected:
     void DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList);
     void StartManualBenchmark();
     void StopManualBenchmark();
+    void RunVisualValidation();
     void RequestApplyVoxelWorkloadSettings();
     bool ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const;
     void DrawVoxelWaterfallSceneLabels();
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
+    void RebuildGpuPartitionsForMode();
+    VoxelRenderWorkload BuildVoxelRenderWorkload() const;
+    void ValidateVoxelRenderWorkload(const VoxelRenderWorkload& renderWorkload) const;
+    void ValidateVoxelFrameDrawResults(const VoxelRenderWorkload& renderWorkload,
+                                       const std::vector<VoxelPartitionRenderResult>& primaryResults,
+                                       const std::vector<VoxelPartitionRenderResult>& secondaryResults,
+                                       bool secondaryGraphicsSubmitted) const;
     std::string GetExecutionModeName() const;
     std::string GetExecutionModeName(VoxelExecutionMode mode) const;
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
@@ -60,6 +69,8 @@ protected:
     void StopAutomaticBenchmark();
     void ApplyBenchmarkVoxelCount(int totalCount);
     void ApplyBenchmarkSecondaryShare(float secondaryShare);
+    void ApplyBenchmarkSpatialLodEnabled(bool enabled);
+    void ApplyBenchmarkTemporalInterval(uint32_t interval);
     void InitFrameResource();
     void InitRootSignature();
     void InitPipeLineResource();
@@ -155,9 +166,14 @@ protected:
 
     VoxelBenchmarkProfiler benchmarkProfiler;
     BenchmarkController benchmarkController;
+    VoxelVisualValidationRunner visualValidationRunner;
+    VoxelVisualValidationMetrics visualValidationMetrics{};
     std::chrono::steady_clock::time_point cpuFrameStart{};
     double currentPrimaryWaitMs = 0.0;
+    bool currentFrameResourceReady = true;
     VoxelCompositeDebugView voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+    Vector3 spatialLodCameraPosition = Vector3::Zero;
+    bool spatialLodCameraInitialized = false;
 
     GDescriptor imguiSrvMemory;
     bool imguiInitialized = false;

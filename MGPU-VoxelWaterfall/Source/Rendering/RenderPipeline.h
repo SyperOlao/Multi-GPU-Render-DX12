@@ -2,11 +2,14 @@
 
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
+#include "Source/Validation/VoxelVisualValidationRunner.h"
 #include "Source/Voxels/VoxelTypes.h"
 
 #include <d3d12.h>
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 #include <wrl.h>
 
 struct FrameResource;
@@ -24,8 +27,20 @@ struct VoxelFrameGraphTelemetry
     bool PrimaryBaseGraphicsSubmitted = false;
     bool SecondaryComputeSubmitted = false;
     bool SecondaryGraphicsSubmitted = false;
+    uint32_t SecondaryConfiguredUpdateInterval = 1;
+    uint32_t SecondaryEffectiveUpdateInterval = 1;
+    uint64_t FixedSimulationStepIndex = 0;
+    bool SecondarySimulationDispatchedThisFrame = false;
+    uint32_t SecondaryStepsSinceLastUpdate = 0;
+    float SecondaryInterpolationPhase = 0.0f;
+    float SecondaryCoarseDeltaTime = 1.0f / 60.0f;
+    bool SecondaryRenderSubmitted = false;
     uint32_t SecondaryDrawCalls = 0;
     uint32_t SecondaryRenderedVoxelCount = 0;
+    VoxelSpatialLodStats PrimarySpatialLodStats{};
+    VoxelSpatialLodStats SecondarySpatialLodStats{};
+    uint32_t PrimaryIndirectDrawCalls = 0;
+    uint32_t SecondaryIndirectDrawCalls = 0;
     uint32_t FrameResourceIndex = 0;
     UINT64 PrimaryComputeFenceValue = 0;
     UINT64 PrimaryBaseGraphicsFenceValue = 0;
@@ -41,10 +56,19 @@ struct VoxelFrameGraphTelemetry
     UINT64 TotalCrossAdapterBytes = 0;
     UINT64 ParticleTransferBytes = 0;
     UINT64 RenderOutputTransferBytes = 0;
-    bool SecondaryImageReused = false;
     bool CompositeSubmitted = false;
     bool CompositeUsedSecondaryImage = false;
+    bool VisualValidationHasResult = false;
     bool VisualValidationPassed = false;
+    double VisualValidationColorMAE = 0.0;
+    double VisualValidationColorRMSE = 0.0;
+    double VisualValidationPSNR = 0.0;
+    double VisualValidationMaxError = 0.0;
+    double VisualValidationMismatchedPixelPercent = 0.0;
+    double VisualValidationDepthRMSE = 0.0;
+    double VisualValidationDepthMismatchPercent = 0.0;
+    uint64_t VisualValidationPipelinePrimitiveCount = 0;
+    std::string VisualValidationFailReason;
     VoxelCompositeDebugView CompositeDebugView = VoxelCompositeDebugView::FinalComposite;
     VoxelExecutionMode RequestedMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;
@@ -60,6 +84,8 @@ struct PrimaryBasePassContext
     VoxelBenchmarkProfiler& BenchmarkProfiler;
     UINT64& GraphicsPassFenceValue;
     VoxelFrameGraphTelemetry* Telemetry = nullptr;
+    const VoxelRenderWorkload* VoxelWorkload = nullptr;
+    std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
     std::function<void(const std::shared_ptr<PEPEngine::Graphics::GCommandList>&)> RecordPrimaryBaseCommands;
 };
 
@@ -70,12 +96,13 @@ struct SecondaryVoxelGraphicsPassContext
     UINT64 SecondaryComputeFenceValue = 0;
     uint32_t TimestampHeapIndex = 0;
     FrameResource& CurrentFrameResource;
-    VoxelGpuPartition& SecondaryPartition;
+    std::vector<const VoxelPartitionState*> SecondaryPartitions;
     MultiGpuVoxelFrameRenderTargets& RenderTargets;
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
     VoxelBenchmarkProfiler& BenchmarkProfiler;
     VoxelFrameGraphTelemetry* Telemetry = nullptr;
+    std::vector<VoxelPartitionRenderResult>* SecondaryVoxelRenderResults = nullptr;
 };
 
 struct SecondaryLocalToSharedCopyPassContext

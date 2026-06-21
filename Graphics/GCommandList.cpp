@@ -809,6 +809,21 @@ namespace PEPEngine::Graphics
         cmdList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
     }
 
+    void GCommandList::ExecuteIndirect(ID3D12CommandSignature* commandSignature,
+                                       const uint32_t maxCommandCount,
+                                       const GBuffer& argumentBuffer,
+                                       const uint64_t argumentBufferOffset) const
+    {
+        TransitionBarrier(argumentBuffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        FlushResourceBarriers();
+
+        cmdList->ExecuteIndirect(commandSignature, maxCommandCount,
+                                 argumentBuffer.GetD3D12Resource().Get(),
+                                 argumentBufferOffset,
+                                 nullptr,
+                                 0);
+    }
+
     void GCommandList::Dispatch(const uint32_t numGroupsX, const uint32_t numGroupsY, const uint32_t numGroupsZ) const
     {
         FlushResourceBarriers();

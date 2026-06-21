@@ -64,6 +64,8 @@ VoxelWaterfallWorkload VoxelWaterfallWorkloadBuilder::Build(const VoxelWaterfall
     primary.PartitionId = VoxelPartitionId::PrimaryPartition;
     primary.AdapterOwner = VoxelAdapterOwner::Primary;
     primary.UpdateInterval = 1;
+    primary.EffectiveUpdateInterval = 1;
+    primary.CoarseDeltaTime = 1.0f / 60.0f;
 
     auto& secondary = workload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
     secondary = {};
@@ -72,6 +74,9 @@ VoxelWaterfallWorkload VoxelWaterfallWorkloadBuilder::Build(const VoxelWaterfall
     secondary.PartitionId = VoxelPartitionId::SecondaryPartition;
     secondary.AdapterOwner = VoxelAdapterOwner::Secondary;
     secondary.UpdateInterval = workload.TemporalDecimationInterval;
+    secondary.EffectiveUpdateInterval = workload.TemporalDecimationInterval;
+    secondary.CoarseDeltaTime =
+        static_cast<float>(static_cast<double>(secondary.EffectiveUpdateInterval) / 60.0);
 
     for (DWORD globalVoxelId = 0; globalVoxelId < workload.TotalVoxelCount; ++globalVoxelId)
     {

@@ -10,10 +10,23 @@
 using PEPEngine::Graphics::CounteredStructBuffer;
 using PEPEngine::Graphics::GBuffer;
 
+void VoxelPartitionGpuResources::SetOwnerDevice(
+    const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
+{
+    Owner = {};
+    if (!device)
+        return;
+
+    Owner.AdapterLuid = device->GetDesc().AdapterLuid;
+    Owner.DeviceName = device->GetName();
+    Owner.IsValid = true;
+}
+
 void VoxelPartitionGpuResources::AllocateDescriptors(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
 {
     ComputeDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5);
     RenderDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
+    LodBuildDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6);
 }
 
 void VoxelPartitionGpuResources::ResetResources()
@@ -25,6 +38,15 @@ void VoxelPartitionGpuResources::ResetResources()
     SimulationStats.reset();
     SimulationStatsUpload.reset();
     SimulationStatsReadback.reset();
+    LodRenderItems.reset();
+    LodPreviousLevels.reset();
+    LodDrawArguments.reset();
+    LodDrawArgumentsUpload.reset();
+    LodStats.reset();
+    LodStatsUpload.reset();
+    LodStatsReadback.reset();
+    NewParticles.clear();
+    InjectionCapacity = 0;
 }
 
 void VoxelPartitionGpuResources::EnsureObjectPositionBuffer(
@@ -51,6 +73,21 @@ void VoxelPartitionGpuResources::CreateParticleBuffers(
         device, 1u, static_cast<UINT>(sizeof(DWORD)), L"Voxel Simulation Stats Upload");
     SimulationStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
         device, 1, L"Voxel Simulation Stats Readback");
+    LodPreviousLevels = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), particleCount,
+                                                  L"Voxel Previous LOD Levels",
+                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    LodDrawArguments = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 4u,
+                                                 L"Voxel LOD Indirect Draw Arguments",
+                                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    LodDrawArgumentsUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
+        device, 4u, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Indirect Draw Arguments Upload");
+    LodStats = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 4u,
+                                         L"Voxel LOD Stats",
+                                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    LodStatsUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
+        device, 4u, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Stats Upload");
+    LodStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
+        device, 4u, L"Voxel LOD Stats Readback");
 
 #pragma warning(push)
 #pragma warning(disable : 4267)
@@ -58,6 +95,8 @@ void VoxelPartitionGpuResources::CreateParticleBuffers(
                                                                     L"Voxel Alive Index Buffer");
     ParticlesDead = std::make_shared<CounteredStructBuffer<DWORD>>(device, particleCount,
                                                                    L"Voxel Dead Index Buffer");
+    LodRenderItems = std::make_shared<CounteredStructBuffer<VoxelLodRenderItem>>(device, particleCount,
+                                                                                 L"Voxel LOD Render Items");
 #pragma warning(pop)
 }
 
@@ -83,6 +122,38 @@ void VoxelPartitionGpuResources::InitializeDeadParticleList(
     queue->WaitForFenceValue(queue->ExecuteCommandList(initList));
 }
 #pragma warning(pop)
+
+void VoxelPartitionGpuResources::InitializeLodState(
+    const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount) const
+{
+    std::vector<DWORD> initialLevels(particleCount, 0u);
+    auto queue = device->GetCommandQueue();
+    auto initList = queue->GetCommandList();
+    if (particleCount > 0)
+        LodPreviousLevels->LoadData(initialLevels.data(), initList);
+    LodRenderItems->SetCounterValue(initList, 0u);
+
+    const DWORD initialArgs[4] = {0u, 1u, 0u, 0u};
+    LodDrawArgumentsUpload->CopyData(0, initialArgs, sizeof(initialArgs));
+    initList->TransitionBarrier(LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    initList->FlushResourceBarriers();
+    initList->CopyBufferRegion(*LodDrawArguments, 0, *LodDrawArgumentsUpload, 0,
+                               static_cast<UINT>(sizeof(initialArgs)), false);
+
+    const DWORD zeroStats[4] = {};
+    LodStatsUpload->CopyData(0, zeroStats, sizeof(zeroStats));
+    initList->TransitionBarrier(LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    initList->FlushResourceBarriers();
+    initList->CopyBufferRegion(*LodStats, 0, *LodStatsUpload, 0,
+                               static_cast<UINT>(sizeof(zeroStats)), false);
+
+    initList->TransitionBarrier(LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->FlushResourceBarriers();
+    queue->WaitForFenceValue(queue->ExecuteCommandList(initList));
+}
 
 void VoxelPartitionGpuResources::CreateParticleViews()
 {
@@ -116,9 +187,43 @@ void VoxelPartitionGpuResources::CreateParticleViews()
     srvDesc.Buffer.StructureByteStride = ParticlesPool->GetStride();
     ParticlesPool->CreateShaderResourceView(&srvDesc, &RenderDescriptors, 0);
 
+    srvDesc.Buffer.NumElements = LodRenderItems->GetElementCount();
+    srvDesc.Buffer.StructureByteStride = LodRenderItems->GetStride();
+    LodRenderItems->CreateShaderResourceView(&srvDesc, &RenderDescriptors, 1);
+
+    srvDesc.Buffer.NumElements = ParticlesPool->GetElementCount();
+    srvDesc.Buffer.StructureByteStride = ParticlesPool->GetStride();
+    ParticlesPool->CreateShaderResourceView(&srvDesc, &LodBuildDescriptors, 0);
+
     srvDesc.Buffer.NumElements = ParticlesAlive->GetElementCount();
     srvDesc.Buffer.StructureByteStride = ParticlesAlive->GetStride();
-    ParticlesAlive->CreateShaderResourceView(&srvDesc, &RenderDescriptors, 1);
+    ParticlesAlive->CreateShaderResourceView(&srvDesc, &LodBuildDescriptors, 1);
+
+    uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Buffer.NumElements = LodRenderItems->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = LodRenderItems->GetStride();
+    uavDesc.Buffer.CounterOffsetInBytes = LodRenderItems->GetBufferSize() - sizeof(DWORD);
+    LodRenderItems->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 2, LodRenderItems->GetD3D12Resource());
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC rawUavDesc{};
+    rawUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    rawUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    rawUavDesc.Buffer.NumElements = LodDrawArguments->GetBufferSize() / sizeof(DWORD);
+    rawUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    LodDrawArguments->CreateUnorderedAccessView(&rawUavDesc, &LodBuildDescriptors, 3);
+
+    uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Buffer.NumElements = LodStats->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = LodStats->GetStride();
+    LodStats->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 4);
+
+    uavDesc.Buffer.NumElements = LodPreviousLevels->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = LodPreviousLevels->GetStride();
+    LodPreviousLevels->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 5);
 }
 
 void VoxelPartitionGpuResources::ResizeInjectionScratch()

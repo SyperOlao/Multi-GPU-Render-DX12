@@ -33,4 +33,16 @@ struct EmitterData
     float InterpolationAlpha;
     float RecycleMargin;
     float GridSnapEnabled;
+
+    uint SpatialLodDebugMode;
+    uint AdapterOwner;
+    float2 Padding;
+};
+
+struct VoxelLodRenderItem
+{
+    uint ParticleIndex;
+    uint LodLevel;
+    uint Padding0;
+    uint Padding1;
 };

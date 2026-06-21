@@ -132,7 +132,7 @@ GPU1 compute  -> GPU1 voxel graphics -> local-to-shared -> GPU0 shared-to-local 
 - Shared fences are created with `D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER`, then opened on the other device.
 - Texture movement between adapters is modeled as local resource -> shared resource on one adapter, then shared resource -> local resource on the other adapter.
 - The existing SFR example uses cross-adapter backbuffer copies and split-screen/scissor regions; that is not the voxel renderer contract.
-- The existing Particles and current VoxelWaterfall cross-adapter paths copy simulated particle buffers back to GPU 0 and draw on GPU 0; that is not the multi-GPU render contract.
+- Copy-back samples can move simulated particle data back to GPU 0 and draw on GPU 0; that is not the multi-GPU render contract.
 
 ## Studied Engine APIs And Existing Paths
 
@@ -140,15 +140,15 @@ GPU1 compute  -> GPU1 voxel graphics -> local-to-shared -> GPU0 shared-to-local 
 - `RenderPipeline::RenderFrame`.
 - `VoxelRenderPasses::RecordFrame`, `RecordForwardPath`, `RecordFullQuad`, `RecordDraw`.
 - `VoxelSimulationScheduler::DispatchFrame`.
-- The previous voxel emitter simulation and draw path.
-- The previous voxel cross-adapter particle-buffer bridge path.
+- The voxel emitter simulation and draw path.
+- The cross-adapter render-output bridge path.
 - `VoxelBenchmarkProfiler::Initialize`, `BeginRange`, `EndRange`, `ResolveRange`, `SetQueueFence`, `IsFrameReady`.
 - `GCrossAdapterResource` construction, `GetPrimeResource`, `GetSharedResource`, `Resize`, `Reset`.
 - `GDevice::Initialize`, `IsCrossAdapterTextureSupported`, `SharedFence`, `TrySharedFence`, `ShareResource`, `GetCommandQueue`.
 - `GCommandQueue::ExecuteCommandList`, `Signal`, `Wait`, `WaitForFenceValue`, `Flush`.
 - `GCommandList::CopyResource`, `CopyTextureRegion`, `Draw`, `Dispatch`, `TransitionBarrier`, `SetRenderTargets`.
 - `MGPU-SFR` split-frame rendering, shared backbuffer, shared fence, cross-adapter copy, viewport/scissor split.
-- `MGPU-Particles` cross-adapter compute, shared fences, particle buffer copy-back, GPU0 drawing.
+- `MGPU-Particles` cross-adapter compute, shared fences, simulated data copy-back, GPU0 drawing.
 
 ## Prohibited Substitutions
 
@@ -160,9 +160,9 @@ The following are explicitly not acceptable implementations of this contract:
 - The entire scene is duplicated on both GPUs for half-screen SFR.
 - The secondary image is composited by alpha overlay without a depth test.
 - `Flush` or `WaitForFenceValue` is called every frame on the CPU path.
-- The old voxel particle-buffer bridge remains as a parallel alternative path for multi-GPU rendering.
-- Stubs, TODOs, or temporary fallback paths are added to the code.
+- A voxel simulation-data bridge remains as a parallel alternative path for multi-GPU rendering.
+- Unfinished placeholders or temporary fallback paths are added to the code.
 
-## Current Implementation Gap
+## Implementation Status
 
-The current MGPU-VoxelWaterfall path is a compute/data-sharing path, not the renderer defined here. In split modes it runs Medium/Far simulation on the secondary compute queue, copies cross-adapter particle buffers back to primary-local buffers, and the existing primary graphics pass draws all voxel renderers on GPU 0. Future implementation work must replace that path for multi-GPU rendering instead of extending it as an accepted rendering mode.
+The MGPU-VoxelWaterfall implementation is expected to follow this contract directly: adapter-local voxel partitions, GPU 1 graphics for secondary-owned voxels, color plus linear-depth transfer, and GPU 0 depth-aware composition.

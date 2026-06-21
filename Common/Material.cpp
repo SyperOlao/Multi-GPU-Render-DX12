@@ -55,7 +55,6 @@ void Material::InitMaterial(GDescriptor* textureHeap) const
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    //TODO: �������� ��� ����� �� ����� ����������, � �������� ������ ������ � ���������
     if (diffuseMap)
     {
         auto desc = diffuseMap->GetD3D12Resource()->GetDesc();

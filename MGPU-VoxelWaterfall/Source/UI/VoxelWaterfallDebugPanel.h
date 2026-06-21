@@ -55,6 +55,7 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;
     std::function<void()> StartBenchmark;
     std::function<void()> StopBenchmark;
+    std::function<void()> RunVisualValidation;
     std::function<void()> StartAutomaticBenchmark;
     std::function<void()> StopAutomaticBenchmark;
     std::function<void()> RequestApplyWorkloadSettings;

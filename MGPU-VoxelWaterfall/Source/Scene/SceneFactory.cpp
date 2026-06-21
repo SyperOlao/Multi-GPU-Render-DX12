@@ -10,31 +10,11 @@
 #include "Rotater.h"
 #include "SkyBox.h"
 #include "Transform.h"
-#include "Source/Voxels/VoxelGpuPartition.h"
 
 #include <algorithm>
 
 using namespace DirectX::SimpleMath;
 using namespace PEPEngine::Graphics;
-
-namespace
-{
-    bool UsesSecondaryAdapter(const SceneFactoryContext& context, const VoxelPartitionState& partition)
-    {
-        const bool multiGpuMode = context.ExecutionMode == VoxelExecutionMode::MultiGpuFull ||
-            context.ExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation;
-        return multiGpuMode &&
-            context.MultiGpuAvailable &&
-            partition.PartitionId == VoxelPartitionId::SecondaryPartition &&
-            context.SecondaryDevice != nullptr;
-    }
-
-    std::shared_ptr<GDevice> DeviceForPartition(const SceneFactoryContext& context,
-                                                const VoxelPartitionState& partition)
-    {
-        return UsesSecondaryAdapter(context, partition) ? context.SecondaryDevice : context.PrimaryDevice;
-    }
-}
 
 void SceneFactory::AddRenderer(const SceneFactoryContext& context, const RenderMode mode,
                                const std::shared_ptr<Renderer>& renderer)
@@ -47,22 +27,6 @@ void SceneFactory::CreateVoxelWaterfall(const SceneFactoryContext& context)
     auto voxelObject = std::make_unique<GameObject>("VoxelWaterfall");
     voxelObject->GetTransform()->SetPosition(context.Workload.Position);
     voxelObject->GetTransform()->SetEulerRotate(context.Workload.Rotation);
-
-    for (auto& partition : context.Workload.Partitions)
-    {
-        partition.AdapterOwner = UsesSecondaryAdapter(context, partition)
-                                     ? VoxelAdapterOwner::Secondary
-                                     : VoxelAdapterOwner::Primary;
-        auto gpuPartition = std::make_shared<VoxelGpuPartition>(
-            DeviceForPartition(context, partition), partition.GlobalVoxelIds, context.Workload.Parameters);
-        gpuPartition->SetSimulationEnabled(true);
-        gpuPartition->SetRenderEnabled(true);
-        voxelObject->AddComponent(gpuPartition);
-        if (partition.AdapterOwner == VoxelAdapterOwner::Primary)
-            AddRenderer(context, RenderMode::Particle, gpuPartition);
-        partition.GpuPartition = gpuPartition;
-    }
-
     context.GameObjects.push_back(std::move(voxelObject));
 }
 

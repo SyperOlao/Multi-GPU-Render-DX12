@@ -30,8 +30,10 @@ public:
     enum class RangeId : uint8_t
     {
         PrimaryCompute = 0,
+        PrimaryLodCompaction,
         PrimaryBaseGraphics,
         SecondaryCompute,
+        SecondaryLodCompaction,
         SecondaryGraphics,
         SecondaryLocalToSharedCopy,
         PrimarySharedToLocalCopy,
@@ -46,6 +48,7 @@ public:
         std::string RequestedMode;
         std::string ActualMode;
         std::string TemporalPolicy;
+        std::string SpatialLodPolicy;
         std::string FallbackReason;
         uint32_t PrimaryPartitionVoxelCount = 0;
         uint32_t SecondaryPartitionVoxelCount = 0;
@@ -59,12 +62,46 @@ public:
         uint32_t RenderHeight = 0;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
+        uint32_t PrimaryVendorId = 0;
+        uint32_t PrimaryDeviceId = 0;
+        uint64_t PrimaryDedicatedVideoMemory = 0;
+        std::string PrimaryAdapterLuid;
+        uint32_t SecondaryVendorId = 0;
+        uint32_t SecondaryDeviceId = 0;
+        uint64_t SecondaryDedicatedVideoMemory = 0;
+        std::string SecondaryAdapterLuid;
+        std::string OperatingSystem;
+        std::string BuildConfiguration;
+        std::string GitCommit;
+        bool D3D12DebugLayerEnabled = false;
         double CpuWaitMs = 0.0;
         uint64_t TotalCrossAdapterBytes = 0;
+        uint64_t ColorTransferBytes = 0;
+        uint64_t DepthTransferBytes = 0;
         uint64_t ParticleTransferBytes = 0;
+        uint64_t RenderOutputTransferBytes = 0;
         uint32_t SecondaryDrawCalls = 0;
-        bool ReusedSecondaryImage = false;
+        uint32_t PrimaryRenderedVoxelCount = 0;
+        uint32_t SecondaryRenderedVoxelCount = 0;
+        uint32_t PrimarySubmittedVoxelCount = 0;
+        uint32_t SecondarySubmittedVoxelCount = 0;
+        uint32_t PrimaryLod0Count = 0;
+        uint32_t PrimaryLod1Count = 0;
+        uint32_t PrimaryLod2Count = 0;
+        uint32_t SecondaryLod0Count = 0;
+        uint32_t SecondaryLod1Count = 0;
+        uint32_t SecondaryLod2Count = 0;
+        bool VisualValidationHasResult = false;
         bool VisualValidationPassed = false;
+        double VisualValidationColorMAE = 0.0;
+        double VisualValidationColorRMSE = 0.0;
+        double VisualValidationPSNR = 0.0;
+        double VisualValidationMaxError = 0.0;
+        double VisualValidationMismatchedPixelPercent = 0.0;
+        double VisualValidationDepthRMSE = 0.0;
+        double VisualValidationDepthMismatchPercent = 0.0;
+        uint64_t VisualValidationPipelinePrimitiveCount = 0;
+        std::string VisualValidationFailReason;
         std::chrono::steady_clock::time_point CpuFrameStart{};
     };
 
@@ -74,6 +111,7 @@ public:
         std::string ActualMode;
         std::string Preset;
         std::string TemporalPolicy;
+        std::string SpatialLodPolicy;
         std::string SkipReason;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
@@ -82,6 +120,11 @@ public:
         uint32_t RenderWidth = 0;
         uint32_t RenderHeight = 0;
         uint32_t Repetition = 0;
+        uint32_t RepetitionCount = 1;
+        uint32_t MeasuredFrameCount = 0;
+        bool Valid = true;
+        std::string ValidityReason;
+        std::string SpeedupStatistic = "mean_cpu_frame_ms";
         double AverageCpuFrameMs = 0.0;
         double MedianCpuFrameMs = 0.0;
         double P95CpuFrameMs = 0.0;
@@ -91,15 +134,27 @@ public:
         double CriticalPathGpuMs = 0.0;
         double GpuWorkSumMs = 0.0;
         double PrimaryComputeMs = 0.0;
+        double PrimaryLodCompactionMs = 0.0;
         double PrimaryGraphicsMs = 0.0;
         double SecondaryComputeMs = 0.0;
+        double SecondaryLodCompactionMs = 0.0;
         double SecondaryGraphicsMs = 0.0;
         double TransferMs = 0.0;
         double CompositeMs = 0.0;
         uint64_t AverageTransferBytes = 0;
+        uint64_t AverageColorTransferBytes = 0;
+        uint64_t AverageDepthTransferBytes = 0;
         uint64_t AverageParticleTransferBytes = 0;
+        uint64_t AverageRenderOutputTransferBytes = 0;
         double AverageSecondaryDrawCalls = 0.0;
-        double ReusedSecondaryImageRate = 0.0;
+        double AveragePrimarySubmittedVoxelCount = 0.0;
+        double AverageSecondarySubmittedVoxelCount = 0.0;
+        double AveragePrimaryLod0Count = 0.0;
+        double AveragePrimaryLod1Count = 0.0;
+        double AveragePrimaryLod2Count = 0.0;
+        double AverageSecondaryLod0Count = 0.0;
+        double AverageSecondaryLod1Count = 0.0;
+        double AverageSecondaryLod2Count = 0.0;
         double SpeedupVsMatchingSingleGpu = 0.0;
         double Efficiency = 0.0;
         bool VisualValidationPassed = false;
@@ -110,8 +165,10 @@ public:
     {
         bool Valid = false;
         double PrimaryComputeMs = 0.0;
+        double PrimaryLodCompactionMs = 0.0;
         double PrimaryGraphicsMs = 0.0;
         double SecondaryComputeMs = 0.0;
+        double SecondaryLodCompactionMs = 0.0;
         double SecondaryGraphicsMs = 0.0;
         double TransferMs = 0.0;
         double CompositeMs = 0.0;
@@ -121,7 +178,6 @@ public:
         uint64_t TransferBytes = 0;
         uint64_t ParticleTransferBytes = 0;
         uint32_t SecondaryDrawCalls = 0;
-        bool ReusedSecondaryImage = false;
         bool VisualValidationPassed = false;
     };
 
@@ -227,15 +283,28 @@ private:
     std::vector<double> criticalPathGpuMsSamples;
     std::vector<double> gpuWorkSumMsSamples;
     std::vector<double> primaryComputeMsSamples;
+    std::vector<double> primaryLodCompactionMsSamples;
     std::vector<double> primaryGraphicsMsSamples;
     std::vector<double> secondaryComputeMsSamples;
+    std::vector<double> secondaryLodCompactionMsSamples;
     std::vector<double> secondaryGraphicsMsSamples;
     std::vector<double> transferMsSamples;
     std::vector<double> compositeMsSamples;
     std::vector<uint64_t> transferBytesSamples;
+    std::vector<uint64_t> colorTransferBytesSamples;
+    std::vector<uint64_t> depthTransferBytesSamples;
     std::vector<uint64_t> particleTransferBytesSamples;
+    std::vector<uint64_t> renderOutputTransferBytesSamples;
     std::vector<double> secondaryDrawCallSamples;
-    std::vector<double> reusedSecondaryImageSamples;
+    std::vector<double> primarySubmittedVoxelSamples;
+    std::vector<double> secondarySubmittedVoxelSamples;
+    std::vector<double> primaryLod0Samples;
+    std::vector<double> primaryLod1Samples;
+    std::vector<double> primaryLod2Samples;
+    std::vector<double> secondaryLod0Samples;
+    std::vector<double> secondaryLod1Samples;
+    std::vector<double> secondaryLod2Samples;
+    std::vector<std::string> invalidReasons;
 
     static uint32_t ToIndex(QueueId id) { return static_cast<uint32_t>(id); }
     static uint32_t ToIndex(RangeId id) { return static_cast<uint32_t>(id); }
@@ -250,6 +319,7 @@ private:
     bool IsFrameReady(const FrameRecord& frame) const;
     RangeTiming ReadRangeTiming(const FrameRecord& frame, RangeId range) const;
     void WriteFrame(const FrameRecord& frame);
+    std::string ValidateFrameRecord(const FrameRecord& frame, bool timestampsValid) const;
     void CreateQueueResources(QueueContext& context);
     void CalibrateQueues();
     void ResetSamples();

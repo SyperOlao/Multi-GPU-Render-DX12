@@ -170,6 +170,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         "Secondary Linear Depth",
         "Primary Linear Depth",
         "Partition Ownership Colors",
+        "Spatial LOD Colors",
         "Depth Difference"
     };
     int selectedCompositeView = static_cast<int>(context.CompositeDebugView);
@@ -192,13 +193,51 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         ImGui::Text("Secondary compute submitted: %s", telemetry.SecondaryComputeSubmitted ? "yes" : "no");
         ImGui::Text("Secondary graphics submitted: %s",
                     telemetry.SecondaryGraphicsSubmitted ? "yes" : "no");
+        ImGui::Text("Temporal interval configured/effective: %u / %u",
+                    telemetry.SecondaryConfiguredUpdateInterval,
+                    telemetry.SecondaryEffectiveUpdateInterval);
+        ImGui::Text("Fixed simulation step index: %llu", telemetry.FixedSimulationStepIndex);
+        ImGui::Text("Secondary simulation dispatched: %s",
+                    telemetry.SecondarySimulationDispatchedThisFrame ? "yes" : "no");
+        ImGui::Text("Secondary steps since update: %u", telemetry.SecondaryStepsSinceLastUpdate);
+        ImGui::Text("Secondary interpolation phase: %.3f", telemetry.SecondaryInterpolationPhase);
+        ImGui::Text("Secondary coarse dt: %.4f s", telemetry.SecondaryCoarseDeltaTime);
+        ImGui::Text("Secondary render submitted: %s", telemetry.SecondaryRenderSubmitted ? "yes" : "no");
         ImGui::Text("Secondary draw calls: %u", telemetry.SecondaryDrawCalls);
         ImGui::Text("Secondary rendered voxels: %u", telemetry.SecondaryRenderedVoxelCount);
-        ImGui::Text("Secondary image reused: %s", telemetry.SecondaryImageReused ? "yes" : "no");
+        ImGui::Text("Primary indirect draws: %u", telemetry.PrimaryIndirectDrawCalls);
+        ImGui::Text("Secondary indirect draws: %u", telemetry.SecondaryIndirectDrawCalls);
+        ImGui::Text("Primary LOD0/LOD1/LOD2: %u / %u / %u",
+                    telemetry.PrimarySpatialLodStats.Lod0Rendered,
+                    telemetry.PrimarySpatialLodStats.Lod1Rendered,
+                    telemetry.PrimarySpatialLodStats.Lod2Rendered);
+        ImGui::Text("Primary aggregated: %u", telemetry.PrimarySpatialLodStats.Aggregated);
+        ImGui::Text("Secondary LOD0/LOD1/LOD2: %u / %u / %u",
+                    telemetry.SecondarySpatialLodStats.Lod0Rendered,
+                    telemetry.SecondarySpatialLodStats.Lod1Rendered,
+                    telemetry.SecondarySpatialLodStats.Lod2Rendered);
+        ImGui::Text("Secondary aggregated: %u", telemetry.SecondarySpatialLodStats.Aggregated);
         ImGui::Text("Depth composite submitted: %s", telemetry.CompositeSubmitted ? "yes" : "no");
         ImGui::Text("Composite uses secondary image: %s",
                     telemetry.CompositeUsedSecondaryImage ? "yes" : "no");
-        ImGui::Text("Visual validation: %s", telemetry.VisualValidationPassed ? "passed" : "not passed");
+        ImGui::Text("Visual validation: %s",
+                    telemetry.VisualValidationHasResult
+                        ? (telemetry.VisualValidationPassed ? "passed" : "failed")
+                        : "not run");
+        ImGui::Text("Color MAE/RMSE/PSNR: %.6f / %.6f / %.2f",
+                    telemetry.VisualValidationColorMAE,
+                    telemetry.VisualValidationColorRMSE,
+                    telemetry.VisualValidationPSNR);
+        ImGui::Text("Max error / mismatch: %.6f / %.3f%%",
+                    telemetry.VisualValidationMaxError,
+                    telemetry.VisualValidationMismatchedPixelPercent);
+        ImGui::Text("Depth RMSE / mismatch: %.6f / %.3f%%",
+                    telemetry.VisualValidationDepthRMSE,
+                    telemetry.VisualValidationDepthMismatchPercent);
+        ImGui::Text("Validation secondary draws: %u", telemetry.SecondaryDrawCalls);
+        ImGui::Text("Pipeline primitives: %llu", telemetry.VisualValidationPipelinePrimitiveCount);
+        if (!telemetry.VisualValidationFailReason.empty())
+            ImGui::TextWrapped("Validation fail reason: %s", telemetry.VisualValidationFailReason.c_str());
         ImGui::Text("Particle transfer bytes: %llu", telemetry.ParticleTransferBytes);
         ImGui::Text("Render-output transfer bytes: %llu", telemetry.RenderOutputTransferBytes);
         ImGui::Text("Color/depth bytes: %llu / %llu",
@@ -238,6 +277,9 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
 
     if (!context.AutomaticBenchmarkActive)
     {
+        if (ImGui::Button("Run Visual Validation") && context.RunVisualValidation)
+            context.RunVisualValidation();
+
         if (ImGui::Button("Start Auto Benchmark") && context.StartAutomaticBenchmark)
             context.StartAutomaticBenchmark();
     }
@@ -275,8 +317,40 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
             context.Workload.TotalVoxelCount = static_cast<uint32_t>(std::max(1, totalCount));
         ImGui::SliderFloat("Secondary share", &context.Workload.SecondaryShare, 0.0f, 1.0f, "%.2f");
         int decimation = static_cast<int>(context.Workload.TemporalDecimationInterval);
-        if (ImGui::SliderInt("Temporal decimation", &decimation, 1, 16))
-            context.Workload.TemporalDecimationInterval = static_cast<uint32_t>(std::max(1, decimation));
+        if (ImGui::SliderInt("Temporal decimation interval", &decimation, 2, 16))
+            context.Workload.TemporalDecimationInterval = static_cast<uint32_t>(std::clamp(decimation, 2, 16));
+        const char* spatialLodModes[] = {"Off", "Three Level"};
+        int spatialLodMode = context.Workload.SpatialLod.Mode == VoxelSpatialLodMode::ThreeLevel ? 1 : 0;
+        if (ImGui::Combo("Spatial LOD", &spatialLodMode, spatialLodModes, IM_ARRAYSIZE(spatialLodModes)))
+            context.Workload.SpatialLod.Mode =
+                spatialLodMode == 1 ? VoxelSpatialLodMode::ThreeLevel : VoxelSpatialLodMode::Off;
+        ImGui::SliderFloat("LOD0 distance", &context.Workload.SpatialLod.Lod0Distance, 5.0f, 250.0f, "%.1f");
+        ImGui::SliderFloat("LOD1 distance", &context.Workload.SpatialLod.Lod1Distance, 10.0f, 500.0f, "%.1f");
+        if (context.Workload.SpatialLod.Lod1Distance <= context.Workload.SpatialLod.Lod0Distance)
+            context.Workload.SpatialLod.Lod1Distance = context.Workload.SpatialLod.Lod0Distance + 1.0f;
+        ImGui::SliderFloat("LOD hysteresis", &context.Workload.SpatialLod.Hysteresis, 0.0f, 64.0f, "%.1f");
+        ImGui::Checkbox("Freeze LOD camera", &context.Workload.SpatialLod.FreezeCamera);
+        const char* spatialDebugModes[] = {"None", "LOD levels", "Adapter ownership"};
+        int spatialDebugMode = static_cast<int>(context.Workload.SpatialLod.DebugMode);
+        if (ImGui::Combo("Spatial debug coloring", &spatialDebugMode,
+                         spatialDebugModes, IM_ARRAYSIZE(spatialDebugModes)))
+        {
+            context.Workload.SpatialLod.DebugMode =
+                static_cast<VoxelSpatialLodDebugMode>(
+                    std::clamp(spatialDebugMode, 0,
+                               static_cast<int>(VoxelSpatialLodDebugMode::AdapterOwnership)));
+        }
+        if (ImGui::Button("Demo Spatial LOD"))
+        {
+            context.Workload.SpatialLod.Mode = VoxelSpatialLodMode::ThreeLevel;
+            context.Workload.SpatialLod.Lod0Distance = 45.0f;
+            context.Workload.SpatialLod.Lod1Distance = 130.0f;
+            context.Workload.SpatialLod.Hysteresis = 10.0f;
+            context.Workload.SpatialLod.FreezeCamera = false;
+            context.Workload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::LodLevel;
+            if (context.ApplyExecutionMode)
+                context.ApplyExecutionMode(VoxelExecutionMode::SingleGpuFull);
+        }
         ImGui::SliderFloat("Voxel size", &context.Workload.Parameters.VoxelSize, 0.1f, 4.0f, "%.2f");
         ImGui::SliderFloat("Gravity", &context.Workload.Parameters.Gravity, 1.0f, 40.0f, "%.1f");
         ImGui::SliderFloat("Waterfall height", &context.Workload.Parameters.SpawnHeight, 5.0f, 80.0f, "%.1f");
@@ -295,7 +369,14 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
             ImGui::Text("%s", partition.DisplayName);
             ImGui::Text("Voxels: %u", partition.VoxelCount());
             ImGui::Text("Owner: %s", AdapterOwnerName(partition.AdapterOwner));
-            ImGui::Text("Updated this frame: %s", partition.UpdatedThisFrame ? "yes" : "no");
+            ImGui::Text("Simulation dispatched this frame: %s",
+                        partition.SimulationDispatchedThisFrame ? "yes" : "no");
+            ImGui::Text("Configured/effective interval: %u / %u",
+                        partition.UpdateInterval,
+                        partition.EffectiveUpdateInterval);
+            ImGui::Text("Steps since update: %u", partition.StepsSinceLastUpdate);
+            ImGui::Text("Interpolation phase: %.3f", partition.InterpolationPhase);
+            ImGui::Text("Coarse dt: %.4f s", partition.CoarseDeltaTime);
             ImGui::Text("Last simulation frame: %llu", partition.LastSimulationFrame);
             ImGui::Text("Updated elements: %u", partition.UpdatedVoxelCount);
         }

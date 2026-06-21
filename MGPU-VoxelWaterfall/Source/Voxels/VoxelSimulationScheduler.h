@@ -36,6 +36,12 @@ struct VoxelSimulationSchedulerResult
     bool SecondaryWorkThisFrame = false;
     bool PrimaryComputeSubmitted = false;
     bool SecondaryComputeSubmitted = false;
+    uint32_t SecondaryConfiguredUpdateInterval = 1;
+    uint32_t SecondaryEffectiveUpdateInterval = 1;
+    uint64_t FixedSimulationStepIndex = 0;
+    uint32_t SecondaryStepsSinceLastUpdate = 0;
+    float SecondaryInterpolationPhase = 0.0f;
+    float SecondaryCoarseDeltaTime = 1.0f / 60.0f;
     UINT64 PrimaryComputeFenceValue = 0;
     UINT64 SecondaryComputeFenceValue = 0;
 };
@@ -49,8 +55,17 @@ private:
     static constexpr double FixedSimulationDeltaTime = 1.0 / 60.0;
     static constexpr double MaxAccumulatedSimulationTime = 0.25;
 
+    static uint32_t GetEffectiveUpdateInterval(VoxelExecutionMode mode, const VoxelPartitionState& partition);
+    static bool ShouldDispatchPartition(const VoxelPartitionState& partition,
+                                        uint64_t fixedStepIndex,
+                                        uint32_t effectiveInterval);
+    static float CalculateInterpolationPhase(const VoxelSimulationSchedulerContext& context,
+                                             const VoxelPartitionState& partition,
+                                             uint32_t effectiveInterval);
     static void PreparePartitionDispatch(const VoxelSimulationSchedulerContext& context,
-                                         VoxelPartitionState& partition);
-    static void MarkPartitionUpdated(const VoxelSimulationSchedulerContext& context,
-                                     VoxelPartitionState& partition);
+                                         VoxelPartitionState& partition,
+                                         uint32_t effectiveInterval,
+                                         uint64_t fixedStepIndex);
+    static void MarkPartitionUpdated(VoxelPartitionState& partition,
+                                     uint64_t fixedStepIndex);
 };

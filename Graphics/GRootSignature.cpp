@@ -204,11 +204,17 @@ namespace PEPEngine::Graphics
             serializedRootSig->GetBufferSize(),
             IID_PPV_ARGS(signature.GetAddressOf())));
 
+        ownerDevice = device;
         IsInitialize = true;
     }
 
     ComPtr<ID3D12RootSignature> GRootSignature::GetNativeSignature() const
     {
         return signature;
+    }
+
+    std::shared_ptr<GDevice> GRootSignature::GetDevice() const
+    {
+        return ownerDevice;
     }
 }
