@@ -6,6 +6,7 @@
 #include "Source/Voxels/VoxelTypes.h"
 
 #include <d3d12.h>
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -44,6 +45,7 @@ struct VoxelRenderPassContext
     PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
     UINT ResolveSourceSrvOffset = 0;
     bool DynamicShadowsEnabled = false;
+    std::array<float, 4> BackgroundColor = {0.03f, 0.035f, 0.04f, 1.0f};
 };
 
 class VoxelRenderPasses

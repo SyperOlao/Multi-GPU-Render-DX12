@@ -25,7 +25,8 @@ enum class VoxelResearchScenePreset
     DynamicWaterfall,
     MixedVoxelEnvironment,
     OcclusionValidation,
-    SpatialLodDemonstration
+    SpatialLodDemonstration,
+    DemoMixed
 };
 
 struct VoxelResearchSceneContext

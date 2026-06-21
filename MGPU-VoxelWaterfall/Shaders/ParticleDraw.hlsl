@@ -96,7 +96,11 @@ void GS(point VertexOut input[1], inout TriangleStream<GeoOut> stream)
 float3 ComputeVoxelColor(GeoOut input)
 {
     const float3 normal = normalize(input.NormalW);
-    const float3 lightDir = normalize(float3(0.35f, 0.85f, -0.45f));
+    const float3 lightDir = normalize(-worldBuffer.Lights[0].Direction);
+    const float3 lightStrength = max(worldBuffer.Lights[0].Strength, float3(0.05f, 0.05f, 0.05f));
+    const float lightIntensity = max(max(lightStrength.r, lightStrength.g), lightStrength.b);
+    const float ambientIntensity = max(max(worldBuffer.AmbientLight.r, worldBuffer.AmbientLight.g),
+                                      worldBuffer.AmbientLight.b);
     const float diffuse = saturate(dot(normal, lightDir));
     const float topFace = saturate(normal.y * 0.5f + 0.5f);
     const float heightFade = saturate((input.PositionW.y - EmitterBuffer.FloorHeight) /
@@ -105,20 +109,22 @@ float3 ComputeVoxelColor(GeoOut input)
     if (EmitterBuffer.StreamKind == 1u)
     {
         if (input.MaterialId == 1u)
-            baseColor = float3(0.42f, 0.47f, 0.40f);
+            baseColor = float3(0.40f, 0.46f, 0.34f);
         else if (input.MaterialId == 2u)
-            baseColor = float3(0.34f, 0.36f, 0.34f);
+            baseColor = float3(0.25f, 0.28f, 0.25f);
         else if (input.MaterialId == 3u)
-            baseColor = float3(0.20f, 0.34f, 0.38f);
+            baseColor = float3(0.16f, 0.33f, 0.39f);
         else if (input.MaterialId == 4u)
-            baseColor = float3(0.50f, 0.48f, 0.40f);
+            baseColor = float3(0.60f, 0.51f, 0.34f);
     }
     else
     {
-        const float3 foamTint = float3(0.55f, 0.85f, 1.0f);
-        baseColor = lerp(baseColor, foamTint, 0.12f + 0.18f * topFace + 0.10f * heightFade);
+        const float3 waterCore = float3(0.03f, 0.52f, 0.95f);
+        const float3 foamTint = float3(0.68f, 0.90f, 1.0f);
+        baseColor = lerp(waterCore, foamTint, 0.10f + 0.20f * topFace + 0.10f * heightFade);
     }
-    const float lighting = 0.48f + 0.42f * diffuse + 0.10f * topFace;
+    const float lighting = saturate(0.36f + 0.42f * ambientIntensity + 0.38f * lightIntensity * diffuse +
+                                    0.10f * topFace);
     float3 outputColor = baseColor * lighting;
 
     if (EmitterBuffer.SpatialLodDebugMode == 1u)

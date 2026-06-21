@@ -207,6 +207,8 @@ namespace
             return "OcclusionValidation";
         case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
             return "SpatialLodDemonstration";
+        case VoxelResearchWorkloadProfile::DemoMixed:
+            return "DemoMixed";
         default:
             return "Unknown";
         }
@@ -261,6 +263,8 @@ namespace
             return "LodSweepRoute";
         case VoxelResearchCameraMode::BenchmarkRoute:
             return "BenchmarkRoute";
+        case VoxelResearchCameraMode::DemoMixedOverview:
+            return "DemoMixedOverview";
         default:
             return "Unknown";
         }
@@ -278,6 +282,20 @@ namespace
             return "OcclusionValidationLighting";
         default:
             return "Unknown";
+        }
+    }
+
+    std::array<float, 4> BackgroundColorForLightingPreset(const VoxelResearchLightingPreset preset)
+    {
+        switch (preset)
+        {
+        case VoxelResearchLightingPreset::DemoStaticSky:
+            return {0.13f, 0.18f, 0.24f, 1.0f};
+        case VoxelResearchLightingPreset::OcclusionValidationLighting:
+            return {0.055f, 0.060f, 0.070f, 1.0f};
+        case VoxelResearchLightingPreset::BenchmarkNeutral:
+        default:
+            return {0.03f, 0.035f, 0.04f, 1.0f};
         }
     }
 
@@ -345,6 +363,7 @@ namespace
             return {VoxelBenchmarkConfigClass::Diagnostic, workload.BenchmarkConfigReason};
 
         if (workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
+            workload.Profile == VoxelResearchWorkloadProfile::DemoMixed ||
             workload.CameraMode == VoxelResearchCameraMode::Interactive ||
             workload.PartitionStrategy == VoxelPartitionStrategy::SpatialPlane ||
             workload.SpatialLod.FreezeCamera ||
@@ -354,7 +373,7 @@ namespace
         {
             return {
                 VoxelBenchmarkConfigClass::Diagnostic,
-                "Diagnostic partition, edge-share, dense-solid, or occlusion validation configuration"
+                "Diagnostic partition, edge-share, dense-solid, occlusion validation, or presentation configuration"
             };
         }
 
@@ -609,6 +628,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
                 MainWindow->GetCurrentBackBuffer()
             };
             basePassContext.DynamicShadowsEnabled = voxelWorkload.DynamicShadowsEnabled;
+            basePassContext.BackgroundColor = BackgroundColorForLightingPreset(voxelWorkload.LightingMode);
             voxelRenderPasses.RecordPrimaryBase(cmdList, basePassContext);
         }
     };
@@ -1096,6 +1116,9 @@ void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkload
     case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
         preset = VoxelResearchScenePreset::SpatialLodDemonstration;
         break;
+    case VoxelResearchWorkloadProfile::DemoMixed:
+        preset = VoxelResearchScenePreset::DemoMixed;
+        break;
     default:
         break;
     }
@@ -1196,6 +1219,9 @@ bool VoxelWaterfallApp::HandleDemoPresetHotkey(const WPARAM key)
         return true;
     case VK_F5:
         ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::SpatialLodDemonstration);
+        return true;
+    case VK_F9:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DemoMixed);
         return true;
     case VK_F6:
         voxelCompositeDebugView = VoxelCompositeDebugView::PartitionOwnershipColors;
@@ -1418,7 +1444,8 @@ void VoxelWaterfallApp::ApplyBenchmarkVoxelCount(const int totalCount)
     const auto activePreset = voxelResearchSceneManager.GetActivePreset();
     if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment)
         voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
-    else if (activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment)
+    else if (activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
+             activePreset == VoxelResearchScenePreset::DemoMixed)
     {
         voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
         if (totalCount <= 100000)
@@ -1529,6 +1556,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
     const auto activePreset = voxelResearchSceneManager.GetActivePreset();
     if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
         activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
+        activePreset == VoxelResearchScenePreset::DemoMixed ||
         activePreset == VoxelResearchScenePreset::OcclusionValidation ||
         activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
     {
@@ -2539,10 +2567,10 @@ void VoxelWaterfallApp::UpdateMainPassCB(const GameTimer& gt)
         mainPassCB.Lights[2].Strength = Vector3{0.0f, 0.0f, 0.0f};
         break;
     case VoxelResearchLightingPreset::DemoStaticSky:
-        mainPassCB.AmbientLight = Vector4{0.24f, 0.27f, 0.30f, 1.0f};
-        mainPassCB.Lights[0].Strength = Vector3{0.82f, 0.82f, 0.78f};
-        mainPassCB.Lights[1].Strength = Vector3{0.18f, 0.20f, 0.24f};
-        mainPassCB.Lights[2].Strength = Vector3{0.08f, 0.08f, 0.08f};
+        mainPassCB.AmbientLight = Vector4{0.30f, 0.34f, 0.38f, 1.0f};
+        mainPassCB.Lights[0].Strength = Vector3{0.95f, 0.92f, 0.84f};
+        mainPassCB.Lights[1].Strength = Vector3{0.20f, 0.26f, 0.34f};
+        mainPassCB.Lights[2].Strength = Vector3{0.08f, 0.10f, 0.12f};
         break;
     case VoxelResearchLightingPreset::BenchmarkNeutral:
     default:

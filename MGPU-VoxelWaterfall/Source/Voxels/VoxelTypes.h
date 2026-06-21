@@ -91,7 +91,8 @@ enum class VoxelResearchWorkloadProfile : uint32_t
     DynamicSimulationAndRender,
     MixedStaticAndDynamic,
     OcclusionValidation,
-    SpatialLodDemonstration
+    SpatialLodDemonstration,
+    DemoMixed
 };
 
 enum class VoxelPartitionStrategy : uint32_t
@@ -127,7 +128,8 @@ enum class VoxelResearchCameraMode : uint32_t
     FixedOcclusion,
     WaterfallCloseup,
     LodSweepRoute,
-    BenchmarkRoute
+    BenchmarkRoute,
+    DemoMixedOverview
 };
 
 enum class VoxelResearchLightingPreset : uint32_t

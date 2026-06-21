@@ -45,6 +45,8 @@ namespace
             return "OcclusionValidation";
         case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
             return "SpatialLodDemonstration";
+        case VoxelResearchWorkloadProfile::DemoMixed:
+            return "DemoMixed";
         default:
             return "Unknown";
         }
@@ -76,6 +78,8 @@ namespace
             return "LodSweepRoute";
         case VoxelResearchCameraMode::BenchmarkRoute:
             return "BenchmarkRoute";
+        case VoxelResearchCameraMode::DemoMixedOverview:
+            return "DemoMixedOverview";
         default:
             return "Unknown";
         }
@@ -129,6 +133,7 @@ namespace
             return "Invalid mixed-quality configuration";
         if (workload.BenchmarkConfigClass == VoxelBenchmarkConfigClass::Diagnostic ||
             workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
+            workload.Profile == VoxelResearchWorkloadProfile::DemoMixed ||
             workload.CameraMode == VoxelResearchCameraMode::Interactive ||
             workload.PartitionStrategy == VoxelPartitionStrategy::SpatialPlane ||
             workload.SpatialLod.FreezeCamera ||
@@ -354,7 +359,8 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         "DynamicSimulationAndRender",
         "MixedStaticAndDynamic",
         "OcclusionValidation",
-        "SpatialLodDemonstration"
+        "SpatialLodDemonstration",
+        "DemoMixed"
     };
     int selectedProfile = static_cast<int>(context.Workload.Profile);
     if (ImGui::Combo("Profile", &selectedProfile, profiles, IM_ARRAYSIZE(profiles)) &&
@@ -362,8 +368,8 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
     {
         context.ApplyWorkloadProfile(
             static_cast<VoxelResearchWorkloadProfile>(
-                std::clamp(selectedProfile, 0,
-                           static_cast<int>(VoxelResearchWorkloadProfile::SpatialLodDemonstration))));
+                           std::clamp(selectedProfile, 0,
+                           static_cast<int>(VoxelResearchWorkloadProfile::DemoMixed))));
     }
 
     const char* compositeDebugViews[] = {
@@ -385,7 +391,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
                            static_cast<int>(VoxelCompositeDebugView::DepthDifference)));
     }
 
-    ImGui::TextDisabled("Hotkeys: F1 static, F2 dynamic, F3 mixed, F4 occlusion, F5 LOD, F6 ownership, F7 secondary, F8 composite");
+    ImGui::TextDisabled("Hotkeys: F1 static, F2 dynamic, F3 mixed, F4 occlusion, F5 LOD, F9 demo, F6 ownership, F7 secondary, F8 composite");
 
     if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -511,7 +517,8 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
             "FixedOcclusion",
             "WaterfallCloseup",
             "LodSweepRoute",
-            "BenchmarkRoute"
+            "BenchmarkRoute",
+            "DemoMixedOverview"
         };
         int cameraMode = static_cast<int>(context.Workload.CameraMode);
         if (ImGui::Combo("Camera", &cameraMode, cameraModes, IM_ARRAYSIZE(cameraModes)) &&
@@ -519,7 +526,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         {
             context.ApplyCameraMode(
                 static_cast<VoxelResearchCameraMode>(
-                    std::clamp(cameraMode, 0, static_cast<int>(VoxelResearchCameraMode::BenchmarkRoute))));
+                    std::clamp(cameraMode, 0, static_cast<int>(VoxelResearchCameraMode::DemoMixedOverview))));
         }
 
         const char* resolutionPresets[] = {"1280x720", "1920x1080", "2560x1440", "3840x2160"};

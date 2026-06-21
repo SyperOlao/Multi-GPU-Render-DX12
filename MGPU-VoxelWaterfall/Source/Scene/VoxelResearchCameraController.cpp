@@ -76,6 +76,8 @@ const char* VoxelResearchCameraController::GetCameraPathName() const
         return "LodSweepRoute";
     case VoxelResearchCameraMode::BenchmarkRoute:
         return "BenchmarkRoute";
+    case VoxelResearchCameraMode::DemoMixedOverview:
+        return "DemoMixedOverview";
     default:
         return "Unknown";
     }
@@ -172,6 +174,9 @@ void VoxelResearchCameraController::UpdateDeterministic()
         ApplyCameraPose(pose.Position, pose.Target);
         break;
     }
+    case VoxelResearchCameraMode::DemoMixedOverview:
+        ApplyCameraPose(Vector3(0.0f, 22.0f, -48.0f), Vector3(0.0f, 17.0f, -1.0f));
+        break;
     case VoxelResearchCameraMode::FixedOverview:
     case VoxelResearchCameraMode::Interactive:
     default:

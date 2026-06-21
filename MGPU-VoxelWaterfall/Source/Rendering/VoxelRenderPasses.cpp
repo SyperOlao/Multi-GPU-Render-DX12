@@ -17,8 +17,6 @@ using namespace PEPEngine::Graphics;
 
 namespace
 {
-    constexpr float BenchmarkBackgroundColor[4] = {0.03f, 0.035f, 0.04f, 1.0f};
-
     bool HasRenderers(const VoxelRenderPassContext& context, const RenderMode mode)
     {
         return !context.TypedRenderers[static_cast<int>(mode)].empty();
@@ -132,7 +130,7 @@ void VoxelRenderPasses::RecordForwardPath(const std::shared_ptr<GCommandList>& c
     cmdList->TransitionBarrier(context.AntiAliasingPath.GetDepthMap(), D3D12_RESOURCE_STATE_DEPTH_WRITE);
     cmdList->FlushResourceBarriers();
 
-    cmdList->ClearRenderTarget(context.AntiAliasingPath.GetRTV(), 0, BenchmarkBackgroundColor);
+    cmdList->ClearRenderTarget(context.AntiAliasingPath.GetRTV(), 0, context.BackgroundColor.data());
     cmdList->ClearDepthStencil(context.AntiAliasingPath.GetDSV(), 0,
                                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0);
 
@@ -145,8 +143,11 @@ void VoxelRenderPasses::RecordForwardPath(const std::shared_ptr<GCommandList>& c
     cmdList->SetRootDescriptorTable(StandardShaderSlot::ShadowMap, context.ShadowPath.GetSrv());
     cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, context.AmbientPath.AmbientMapSrv(), 0);
 
-    cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::SkyBox));
-    RecordDraw(cmdList, context, RenderMode::SkyBox);
+    if (HasRenderers(context, RenderMode::SkyBox))
+    {
+        cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::SkyBox));
+        RecordDraw(cmdList, context, RenderMode::SkyBox);
+    }
 
     cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::Opaque));
     RecordDraw(cmdList, context, RenderMode::Opaque);

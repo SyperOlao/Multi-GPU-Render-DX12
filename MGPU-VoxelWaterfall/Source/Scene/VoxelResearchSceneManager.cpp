@@ -113,6 +113,8 @@ namespace
             return VoxelResearchWorkloadProfile::OcclusionValidation;
         case VoxelResearchScenePreset::SpatialLodDemonstration:
             return VoxelResearchWorkloadProfile::SpatialLodDemonstration;
+        case VoxelResearchScenePreset::DemoMixed:
+            return VoxelResearchWorkloadProfile::DemoMixed;
         case VoxelResearchScenePreset::EmptyBaseline:
         default:
             return VoxelResearchWorkloadProfile::StaticRenderOnly;
@@ -155,6 +157,7 @@ void VoxelResearchSceneManager::RebuildScene(const VoxelResearchSceneContext& co
     case VoxelResearchScenePreset::StaticVoxelEnvironment:
     case VoxelResearchScenePreset::DynamicWaterfall:
     case VoxelResearchScenePreset::MixedVoxelEnvironment:
+    case VoxelResearchScenePreset::DemoMixed:
         CreateEmptyBaseline(context);
         break;
     case VoxelResearchScenePreset::OcclusionValidation:
@@ -272,6 +275,23 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelR
         workload.Layers.push_back(GenerateStaticLayer(workload));
         return VoxelSceneWorkloadBuilder::Build(workload);
     }
+    case VoxelResearchScenePreset::DemoMixed:
+    {
+        workload.Profile = VoxelResearchWorkloadProfile::DemoMixed;
+        workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
+        workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
+        ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
+        workload.CameraMode = VoxelResearchCameraMode::DemoMixedOverview;
+        workload.CameraPath = "DemoMixedOverview";
+        workload.LightingMode = VoxelResearchLightingPreset::DemoStaticSky;
+        workload.LightingPreset = "DemoStaticSky";
+        workload.DynamicShadowsEnabled = false;
+        workload.BenchmarkConfigClass = VoxelBenchmarkConfigClass::Diagnostic;
+        workload.BenchmarkConfigReason = "DemoMixed is a presentation preset and is excluded from benchmark baselines";
+        assert(workload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
+        workload.Layers.push_back(GenerateStaticLayer(workload));
+        return VoxelSceneWorkloadBuilder::Build(workload);
+    }
     case VoxelResearchScenePreset::OcclusionValidation:
     {
         workload.Profile = VoxelResearchWorkloadProfile::OcclusionValidation;
@@ -359,6 +379,8 @@ const char* VoxelResearchSceneManager::PresetName(const VoxelResearchScenePreset
         return "OcclusionValidation";
     case VoxelResearchScenePreset::SpatialLodDemonstration:
         return "SpatialLodDemonstration";
+    case VoxelResearchScenePreset::DemoMixed:
+        return "DemoMixed";
     default:
         return "Unknown";
     }
