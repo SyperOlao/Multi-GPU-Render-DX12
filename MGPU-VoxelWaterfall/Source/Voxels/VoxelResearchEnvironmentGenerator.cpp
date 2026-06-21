@@ -304,6 +304,7 @@ VoxelResearchEnvironmentGenerator::Result VoxelResearchEnvironmentGenerator::Gen
     layer.RenderSettings.VoxelSize = settings.VoxelSize;
     layer.SpatialLodPolicy.Settings = settings.SpatialLod;
     layer.SpatialLodPolicy.ChunkSize = settings.ChunkSize;
+    layer.GridOrigin = desc.Origin;
     layer.BoundsMin = DirectX::SimpleMath::Vector3(
         static_cast<float>(desc.Origin.X) * settings.VoxelSize,
         0.0f,
@@ -355,7 +356,7 @@ VoxelResearchEnvironmentGenerator::Result VoxelResearchEnvironmentGenerator::Gen
         auto& stream = layer.AdapterPartitions[static_cast<size_t>(owner)];
         stream.LayerId = layer.LayerId;
         stream.LayerType = layer.LayerType;
-        stream.GridOrigin = desc.Origin;
+        stream.GridOrigin = layer.GridOrigin;
         stream.SimulationParameters = layer.SimulationParameters;
         stream.RenderSettings = layer.RenderSettings;
         stream.SimulationPolicy = layer.SimulationPolicy;
@@ -376,7 +377,13 @@ VoxelResearchEnvironmentGenerator::Result VoxelResearchEnvironmentGenerator::Gen
     result.Telemetry.SecondaryStaticVoxels =
         layer.AdapterPartitions[static_cast<size_t>(VoxelAdapterPartitionId::SecondaryPartition)].VoxelCount();
     result.Telemetry.ActualRenderedStaticVoxels = layer.LogicalVoxelCount();
+    result.Telemetry.RequestedVoxelBudget = settings.StaticVoxelBudget;
     result.Telemetry.GenerationSeed = settings.Seed;
+    result.Telemetry.BudgetPreset = settings.BudgetPreset;
     result.Telemetry.StorageMode = settings.StorageMode;
+    result.Telemetry.VoxelSize = settings.VoxelSize;
+    result.Telemetry.GridOrigin = layer.GridOrigin;
+    result.Telemetry.BoundsMin = layer.BoundsMin;
+    result.Telemetry.BoundsMax = layer.BoundsMax;
     return result;
 }

@@ -287,8 +287,14 @@ struct VoxelStaticEnvironmentTelemetry
     uint32_t PrimaryStaticVoxels = 0;
     uint32_t SecondaryStaticVoxels = 0;
     uint32_t ActualRenderedStaticVoxels = 0;
+    uint32_t RequestedVoxelBudget = 0;
     uint32_t GenerationSeed = 0;
+    StaticVoxelBudgetPreset BudgetPreset = StaticVoxelBudgetPreset::Small;
     StaticVoxelStorageMode StorageMode = StaticVoxelStorageMode::SurfaceOnly;
+    float VoxelSize = 0.65f;
+    VoxelGridCoordinate GridOrigin{};
+    DirectX::SimpleMath::Vector3 BoundsMin = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Vector3 BoundsMax = DirectX::SimpleMath::Vector3::Zero;
 };
 
 struct VoxelChunkSize
@@ -416,6 +422,7 @@ struct VoxelSceneLayer
     DirectX::SimpleMath::Matrix WorldTransform = DirectX::SimpleMath::Matrix::Identity;
     DirectX::SimpleMath::Vector3 BoundsMin = DirectX::SimpleMath::Vector3::Zero;
     DirectX::SimpleMath::Vector3 BoundsMax = DirectX::SimpleMath::Vector3::Zero;
+    VoxelGridCoordinate GridOrigin{};
     VoxelLayerRenderSettings RenderSettings{};
     std::array<VoxelPartitionDrawStream, VoxelAdapterPartitionCount> AdapterPartitions{};
     VoxelLayerSimulationPolicy SimulationPolicy{};
@@ -441,6 +448,7 @@ struct VoxelSceneWorkload
     StaticVoxelBudgetPreset StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
     StaticVoxelStorageMode StaticStorageMode = StaticVoxelStorageMode::SurfaceOnly;
     uint32_t StaticGenerationSeed = 1337;
+    float StaticVoxelSize = 0.65f;
     VoxelStaticEnvironmentTelemetry StaticTelemetry{};
     uint32_t DynamicVoxelBudget = 25000;
     DynamicVoxelBudgetPreset DynamicBudgetPreset = DynamicVoxelBudgetPreset::Small;

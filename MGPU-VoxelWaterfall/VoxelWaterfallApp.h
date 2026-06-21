@@ -89,6 +89,9 @@ protected:
     void GenerateMipMaps();
     void SortGO();
     void CreateGO();
+#if defined(DEBUG) || defined(_DEBUG)
+    void RunSceneOwnershipSettingsSelfTest();
+#endif
     void CalculateFrameStats() override;
     void LogWriting();
     void UpdateMaterials();

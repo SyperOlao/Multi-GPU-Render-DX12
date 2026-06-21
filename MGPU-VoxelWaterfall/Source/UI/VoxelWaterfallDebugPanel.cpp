@@ -191,6 +191,13 @@ namespace
         ImGui::Text(format, value);
     }
 
+    void DrawMetricVec3(const char* label, const DirectX::SimpleMath::Vector3& value)
+    {
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(170.0f);
+        ImGui::Text("%.2f, %.2f, %.2f", value.x, value.y, value.z);
+    }
+
     void DrawMetricF64(const char* label, const double value, const char* format = "%.6f")
     {
         ImGui::TextUnformatted(label);
@@ -322,6 +329,9 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricU32("static voxel count", context.Workload.ActualStaticVoxelCount);
         DrawMetricU32("dynamic voxel count", context.Workload.ActualDynamicVoxelCount);
         DrawMetricU32("total voxel count", context.Workload.TotalVoxelCount);
+        DrawMetricF32("static voxel size", context.Workload.StaticVoxelSize);
+        DrawMetricVec3("static bounds min", context.Workload.StaticTelemetry.BoundsMin);
+        DrawMetricVec3("static bounds max", context.Workload.StaticTelemetry.BoundsMax);
         DrawMetricU32("chunk count", TotalChunkCount(context.Workload));
         DrawMetricU32("seed", SeedForScene(context.Workload));
     }

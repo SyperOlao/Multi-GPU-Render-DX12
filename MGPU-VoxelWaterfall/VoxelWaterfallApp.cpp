@@ -38,6 +38,20 @@ namespace
     constexpr float DebugUiScale = 2.25f;
     constexpr const char* VoxelSceneGpuObjectName = "VoxelSceneGpuPartitions";
 
+    struct StaticLayerSnapshot
+    {
+        bool Valid = false;
+        uint32_t StaticVoxelBudget = 0;
+        StaticVoxelBudgetPreset StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
+        StaticVoxelStorageMode StaticStorageMode = StaticVoxelStorageMode::SurfaceOnly;
+        uint32_t StaticGenerationSeed = 0;
+        float StaticVoxelSize = 0.0f;
+        uint32_t ActualStaticVoxelCount = 0;
+        VoxelGridCoordinate GridOrigin{};
+        DirectX::SimpleMath::Vector3 BoundsMin = DirectX::SimpleMath::Vector3::Zero;
+        DirectX::SimpleMath::Vector3 BoundsMax = DirectX::SimpleMath::Vector3::Zero;
+    };
+
     std::string LuidToString(const LUID& luid)
     {
         std::ostringstream stream;
@@ -70,6 +84,78 @@ namespace
         const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
         path.resize(length);
         return std::filesystem::path(path).parent_path();
+    }
+
+    const VoxelSceneLayer* FindStaticLayer(const VoxelSceneWorkload& workload)
+    {
+        const auto it = std::find_if(
+            workload.Layers.begin(),
+            workload.Layers.end(),
+            [](const VoxelSceneLayer& layer)
+            {
+                return layer.LayerType == VoxelSceneLayerType::Static;
+            });
+        return it == workload.Layers.end() ? nullptr : &(*it);
+    }
+
+    StaticLayerSnapshot CaptureStaticLayerSnapshot(const VoxelSceneWorkload& workload)
+    {
+        StaticLayerSnapshot snapshot{};
+        const auto* staticLayer = FindStaticLayer(workload);
+        if (!staticLayer)
+            return snapshot;
+
+        snapshot.Valid = true;
+        snapshot.StaticVoxelBudget = workload.StaticTelemetry.RequestedVoxelBudget > 0
+                                          ? workload.StaticTelemetry.RequestedVoxelBudget
+                                          : workload.StaticVoxelBudget;
+        snapshot.StaticBudgetPreset = workload.StaticTelemetry.BudgetPreset;
+        snapshot.StaticStorageMode = workload.StaticTelemetry.StorageMode;
+        snapshot.StaticGenerationSeed = workload.StaticTelemetry.GenerationSeed;
+        snapshot.StaticVoxelSize = staticLayer->RenderSettings.VoxelSize;
+        snapshot.ActualStaticVoxelCount = staticLayer->LogicalVoxelCount();
+        snapshot.GridOrigin = staticLayer->GridOrigin;
+        snapshot.BoundsMin = staticLayer->BoundsMin;
+        snapshot.BoundsMax = staticLayer->BoundsMax;
+        return snapshot;
+    }
+
+    bool StaticGenerationInputsMatch(
+        const StaticLayerSnapshot& snapshot,
+        const VoxelSceneWorkload& workload)
+    {
+        return snapshot.Valid &&
+            snapshot.StaticVoxelBudget == workload.StaticVoxelBudget &&
+            snapshot.StaticBudgetPreset == workload.StaticBudgetPreset &&
+            snapshot.StaticStorageMode == workload.StaticStorageMode &&
+            snapshot.StaticGenerationSeed == workload.StaticGenerationSeed &&
+            snapshot.StaticVoxelSize == workload.StaticVoxelSize;
+    }
+
+    bool SameGridOrigin(const VoxelGridCoordinate& lhs, const VoxelGridCoordinate& rhs)
+    {
+        return lhs.X == rhs.X && lhs.Y == rhs.Y && lhs.Z == rhs.Z;
+    }
+
+    bool SameVector(const DirectX::SimpleMath::Vector3& lhs, const DirectX::SimpleMath::Vector3& rhs)
+    {
+        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+    }
+
+    void AssertStaticLayerShapePreserved(
+        const StaticLayerSnapshot& before,
+        const VoxelSceneWorkload& after)
+    {
+        if (!StaticGenerationInputsMatch(before, after))
+            return;
+
+        const auto* staticLayer = FindStaticLayer(after);
+        assert(staticLayer && "Static layer must survive settings changes when static generation inputs are unchanged");
+        assert(staticLayer->RenderSettings.VoxelSize == before.StaticVoxelSize);
+        assert(staticLayer->LogicalVoxelCount() == before.ActualStaticVoxelCount);
+        assert(SameGridOrigin(staticLayer->GridOrigin, before.GridOrigin));
+        assert(SameVector(staticLayer->BoundsMin, before.BoundsMin));
+        assert(SameVector(staticLayer->BoundsMax, before.BoundsMax));
     }
 
     std::filesystem::path ResolveVoxelWaterfallAssetPath(const std::filesystem::path& relativePath)
@@ -1435,6 +1521,8 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
     if (!voxelWorkloadSettingsPending)
         return;
 
+    const StaticLayerSnapshot staticLayerBefore = CaptureStaticLayerSnapshot(voxelWorkload);
+
     Flush();
     const auto activePreset = voxelResearchSceneManager.GetActivePreset();
     if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
@@ -1447,7 +1535,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         settings.StaticVoxelBudget = voxelWorkload.StaticVoxelBudget;
         settings.BudgetPreset = voxelWorkload.StaticBudgetPreset;
         settings.StorageMode = voxelWorkload.StaticStorageMode;
-        settings.VoxelSize = voxelWorkload.Parameters.VoxelSize;
+        settings.VoxelSize = voxelWorkload.StaticVoxelSize;
         settings.SecondaryShare = voxelWorkload.SecondaryShare;
         settings.PartitionStrategy = voxelWorkload.PartitionStrategy;
         settings.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
@@ -1466,6 +1554,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
         voxelWorkload.DynamicVoxelBudget = 0;
     voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
+    AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
     voxelSimulationTime = 0.0;
@@ -2105,8 +2194,51 @@ void VoxelWaterfallApp::CreateGO()
     voxelResearchSceneManager.RebuildScene(sceneContext);
     RebuildGpuPartitionsForMode();
 
+#if defined(DEBUG) || defined(_DEBUG)
+    RunSceneOwnershipSettingsSelfTest();
+#endif
+
     logQueue.Push(std::wstring(L"\nFinish create GO"));
 }
+
+#if defined(DEBUG) || defined(_DEBUG)
+void VoxelWaterfallApp::RunSceneOwnershipSettingsSelfTest()
+{
+    if (voxelResearchSceneManager.GetActivePreset() != VoxelResearchScenePreset::MixedVoxelEnvironment)
+        return;
+
+    const VoxelExecutionMode originalRequestedMode = requestedExecutionMode;
+    const float originalSecondaryShare = voxelWorkload.SecondaryShare;
+    const VoxelSpatialLodSettings originalSpatialLod = voxelWorkload.SpatialLod;
+    const VoxelTemporalPolicy originalTemporalPolicy = voxelWorkload.TemporalPolicy;
+    const uint32_t originalTemporalInterval = voxelWorkload.TemporalDecimationInterval;
+    const VoxelCompositeDebugView originalCompositeDebugView = voxelCompositeDebugView;
+    const StaticLayerSnapshot before = CaptureStaticLayerSnapshot(voxelWorkload);
+
+    assert(before.Valid);
+    assert(voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
+
+    ApplyExecutionMode(VoxelExecutionMode::SingleGpuTemporalDecimation);
+    ApplyBenchmarkSecondaryShare(0.25f);
+    ApplyBenchmarkSpatialLodEnabled(true);
+    voxelWorkloadSettingsPending = true;
+    ApplyPendingVoxelSettings();
+    ApplyBenchmarkTemporalInterval(4);
+    AssertStaticLayerShapePreserved(before, voxelWorkload);
+
+    ApplyExecutionMode(originalRequestedMode);
+    voxelWorkload.SecondaryShare = originalSecondaryShare;
+    voxelWorkload.SpatialLod = originalSpatialLod;
+    voxelWorkload.TemporalPolicy = originalTemporalPolicy;
+    voxelWorkload.TemporalDecimationInterval = originalTemporalInterval;
+    voxelCompositeDebugView = originalCompositeDebugView;
+    voxelWorkloadSettingsPending = true;
+    ApplyPendingVoxelSettings();
+
+    AssertStaticLayerShapePreserved(before, voxelWorkload);
+    assert(voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
+}
+#endif
 
 void VoxelWaterfallApp::CalculateFrameStats()
 {

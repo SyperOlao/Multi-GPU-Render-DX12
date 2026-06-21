@@ -9,11 +9,21 @@
 #include "Source/Scene/VoxelResearchCameraController.h"
 #include "Transform.h"
 
+#include <algorithm>
+#include <array>
+#include <cassert>
+
 using namespace DirectX::SimpleMath;
 using namespace PEPEngine::Graphics;
 
 namespace
 {
+    constexpr std::array<const char*, 3> OcclusionPrimitiveNames = {
+        "OcclusionMatteSlab",
+        "OcclusionRearColumn",
+        "OcclusionVoxelFrameSection"
+    };
+
     uint32_t DynamicBudgetForPreset(const DynamicVoxelBudgetPreset preset)
     {
         switch (preset)
@@ -53,7 +63,7 @@ namespace
         settings.StaticVoxelBudget = workload.StaticVoxelBudget;
         settings.BudgetPreset = workload.StaticBudgetPreset;
         settings.StorageMode = workload.StaticStorageMode;
-        settings.VoxelSize = 0.65f;
+        settings.VoxelSize = workload.StaticVoxelSize;
         settings.SecondaryShare = workload.SecondaryShare;
         settings.PartitionStrategy = workload.PartitionStrategy;
         settings.LoadBalanceScenario = workload.LoadBalanceScenario;
@@ -62,6 +72,31 @@ namespace
         auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);
         workload.StaticTelemetry = generated.Telemetry;
         return std::move(generated.Layer);
+    }
+
+    bool HasGameObjectNamed(
+        const PEPEngine::Allocator::custom_vector<std::shared_ptr<GameObject>>& gameObjects,
+        const char* name)
+    {
+        return std::any_of(
+            gameObjects.begin(),
+            gameObjects.end(),
+            [name](const std::shared_ptr<GameObject>& object)
+            {
+                return object && object->GetName() == name;
+            });
+    }
+
+    void AssertOcclusionPrimitiveOwnership(
+        const VoxelResearchSceneContext& context,
+        const VoxelResearchScenePreset preset)
+    {
+        const bool expectsOcclusionPrimitives = preset == VoxelResearchScenePreset::OcclusionValidation;
+        for (const char* name : OcclusionPrimitiveNames)
+        {
+            const bool exists = HasGameObjectNamed(context.GameObjects, name);
+            assert(expectsOcclusionPrimitives ? exists : !exists);
+        }
     }
 
     VoxelResearchWorkloadProfile ProfileForPreset(const VoxelResearchScenePreset preset)
@@ -119,9 +154,9 @@ void VoxelResearchSceneManager::RebuildScene(const VoxelResearchSceneContext& co
     case VoxelResearchScenePreset::EmptyBaseline:
     case VoxelResearchScenePreset::StaticVoxelEnvironment:
     case VoxelResearchScenePreset::DynamicWaterfall:
+    case VoxelResearchScenePreset::MixedVoxelEnvironment:
         CreateEmptyBaseline(context);
         break;
-    case VoxelResearchScenePreset::MixedVoxelEnvironment:
     case VoxelResearchScenePreset::OcclusionValidation:
         CreateEmptyBaseline(context);
         CreateOcclusionPrimitives(context);
@@ -133,6 +168,7 @@ void VoxelResearchSceneManager::RebuildScene(const VoxelResearchSceneContext& co
     }
 
     rebuildPending = false;
+    AssertOcclusionPrimitiveOwnership(context, activePreset);
 }
 
 void VoxelResearchSceneManager::ClearScene(const VoxelResearchSceneContext& context)
@@ -188,7 +224,8 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelR
     workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
     workload.StaticStorageMode = StaticVoxelStorageMode::SurfaceOnly;
     workload.StaticGenerationSeed = 1337;
-    workload.SpatialLod.Mode = VoxelSpatialLodMode::ThreeLevel;
+    workload.StaticVoxelSize = 0.65f;
+    workload.SpatialLod.Mode = VoxelSpatialLodMode::Off;
     workload.SpatialLod.Lod0Distance = 45.0f;
     workload.SpatialLod.Lod1Distance = 120.0f;
     workload.SpatialLod.Hysteresis = 8.0f;
@@ -231,6 +268,7 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelR
         workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
         workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
+        assert(workload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
         workload.Layers.push_back(GenerateStaticLayer(workload));
         return VoxelSceneWorkloadBuilder::Build(workload);
     }
