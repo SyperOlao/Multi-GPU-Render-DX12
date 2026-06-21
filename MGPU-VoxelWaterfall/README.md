@@ -58,6 +58,12 @@ The emitted `VoxelLodRenderItem` stores explicit previous/current aggregate cent
 
 Temporal Decimation and Spatial Density LOD are independent and can be benchmarked in matching combinations.
 
+## Synthetic Waterfall
+
+The dynamic waterfall is a deterministic visual workload, not a fluid solver. Small preset uses the authored waterfall width/depth to build a logical spawn grid and distributes `GlobalVoxelId` values across the full X/Z grid with a stable per-cycle permutation. Recycle uses the same X/Z mapping, so a fixed seed produces the same curtain and histogram every run.
+
+The simulation remains fixed-step with interpolation. Near the floor, particles are clamped into a shallow deterministic basin layer, spread laterally inside bounded pool extents, and recycle after a deterministic basin residence time. This keeps a readable curtain and pool without increasing particle count or using oversized LOD cubes to hide sparse LOD0 density.
+
 ## Composition
 
 GPU 1 transfers linear depth, not hardware depth. GPU 0 samples primary hardware depth through a typeless-compatible depth resource and converts it to the same linear convention. The composite pass chooses secondary color only when secondary linear depth is valid and closer than primary depth within the configured convention.

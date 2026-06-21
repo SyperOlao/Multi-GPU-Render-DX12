@@ -40,12 +40,13 @@ float3 DeterministicSpawnPosition(uint voxelIndex)
     const float voxelSize = max(EmitterBuffer.VoxelSize, 0.05f);
     const uint widthCells = max(1u, (uint)floor(EmitterBuffer.WaterfallWidth / voxelSize));
     const uint depthCells = max(1u, (uint)floor(EmitterBuffer.WaterfallDepth / voxelSize));
-    const uint horizontalCells = widthCells * depthCells;
-    const uint laneCount = max(1u, min(horizontalCells, max(3u, (horizontalCells * 3u) / 4u)));
-    const uint laneIndex = voxelIndex % laneCount;
-    const uint laneHash = HashVoxel(laneIndex ^ EmitterBuffer.Seed);
-    const uint xIndex = laneHash % widthCells;
-    const uint zIndex = HashVoxel(laneHash + EmitterBuffer.Seed * 17u) % depthCells;
+    const uint horizontalCells = max(1u, widthCells * depthCells);
+    const uint laneIndex = voxelIndex % horizontalCells;
+    const uint cycleIndex = voxelIndex / horizontalCells;
+    const uint baseX = laneIndex % widthCells;
+    const uint baseZ = laneIndex / widthCells;
+    const uint xIndex = (baseX + HashVoxel(baseZ * 73856093u ^ cycleIndex * 19349663u ^ EmitterBuffer.Seed) % widthCells) % widthCells;
+    const uint zIndex = (baseZ + HashVoxel(baseX * 83492791u ^ cycleIndex * 2654435761u ^ EmitterBuffer.Seed ^ 0x68bc21ebu) % depthCells) % depthCells;
     const uint topLayer = HashVoxel(voxelIndex + EmitterBuffer.Seed * 13u) % 3u;
 
     const float x = ((float)xIndex - 0.5f * (float)(widthCells - 1u)) * voxelSize;
@@ -124,11 +125,15 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
     const float2 basinBounds = float2(
         max(EmitterBuffer.WaterfallWidth * 0.75f, voxelSize * 4.0f),
         max(EmitterBuffer.WaterfallDepth * 2.0f, voxelSize * 6.0f));
+    const uint poolLayer = HashVoxel(particle.GlobalVoxelId ^ EmitterBuffer.Seed ^ 0x91e10da5u) % 5u;
+    const float poolSurfaceY = EmitterBuffer.FloorHeight + voxelSize * (0.35f + 0.28f * (float)poolLayer);
+    const float basinResidenceSeconds = 3.25f +
+        2.25f * HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed ^ 0x4cf5ad43u);
 
     particle.Velocity += EmitterBuffer.Force * dt;
     particle.Velocity.xz += (float2(flowX, flowZ) + spreadDirection * floorSpread * 4.0f) * dt;
     particle.Velocity.xz += spreadDirection * basinContact * 6.0f * dt;
-    particle.Velocity.y = lerp(particle.Velocity.y, -voxelSize * 2.0f, basinContact * 0.18f);
+    particle.Velocity.y = lerp(particle.Velocity.y, -voxelSize * 1.25f, basinContact * 0.22f);
     particle.CurrentContinuousPosition += particle.Velocity * dt;
     if (basinContact > 0.0f)
     {
@@ -136,10 +141,17 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
             particle.CurrentContinuousPosition.xz,
             -basinBounds,
             basinBounds);
+        if (particle.CurrentContinuousPosition.y < poolSurfaceY)
+        {
+            particle.CurrentContinuousPosition.y = poolSurfaceY;
+            particle.Velocity.y = max(particle.Velocity.y, 0.0f) * 0.15f;
+        }
+        particle.Velocity.xz *= lerp(1.0f, 0.92f, basinContact);
     }
     particle.AgeSeconds += dt;
 
-    if (particle.CurrentContinuousPosition.y <= EmitterBuffer.FloorHeight - EmitterBuffer.RecycleMargin)
+    if (particle.CurrentContinuousPosition.y <= EmitterBuffer.FloorHeight - EmitterBuffer.RecycleMargin ||
+        (basinContact > 0.95f && particle.AgeSeconds >= basinResidenceSeconds))
     {
         const float3 recyclePosition = DeterministicRecyclePosition(particle.GlobalVoxelId);
         particle.PreviousContinuousPosition = recyclePosition;

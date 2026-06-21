@@ -3,12 +3,14 @@
 #include "GCommandList.h"
 #include "GDescriptor.h"
 #include "Source/Rendering/RenderPipeline.h"
+#include "Source/Voxels/VoxelParticleSpawner.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace
 {
@@ -204,6 +206,69 @@ namespace
         ImGui::SameLine(170.0f);
         ImGui::Text(format, value);
     }
+
+    struct SpawnHistogram
+    {
+        uint32_t Width = 0;
+        uint32_t Depth = 0;
+        uint32_t OccupiedX = 0;
+        uint32_t OccupiedZ = 0;
+        uint32_t OccupiedXZ = 0;
+        uint32_t MinX = 0;
+        uint32_t MaxX = 0;
+        uint32_t MinZ = 0;
+        uint32_t MaxZ = 0;
+    };
+
+    SpawnHistogram BuildSpawnHistogram(const VoxelSceneWorkload& workload)
+    {
+        SpawnHistogram histogram{};
+        if (workload.ActualDynamicVoxelCount == 0)
+            return histogram;
+
+        const auto firstCell = VoxelParticleSpawner::ComputeSpawnGridCell(0, workload.Parameters);
+        histogram.Width = firstCell.Width;
+        histogram.Depth = firstCell.Depth;
+        std::vector<uint32_t> xBins(histogram.Width, 0);
+        std::vector<uint32_t> zBins(histogram.Depth, 0);
+        std::vector<uint8_t> xzOccupied(static_cast<size_t>(histogram.Width) * histogram.Depth, 0);
+
+        for (uint32_t i = 0; i < workload.ActualDynamicVoxelCount; ++i)
+        {
+            const auto cell = VoxelParticleSpawner::ComputeSpawnGridCell(i, workload.Parameters);
+            ++xBins[cell.X];
+            ++zBins[cell.Z];
+            xzOccupied[static_cast<size_t>(cell.X) + static_cast<size_t>(histogram.Width) * cell.Z] = 1;
+        }
+
+        histogram.MinX = workload.ActualDynamicVoxelCount;
+        histogram.MinZ = workload.ActualDynamicVoxelCount;
+        for (const auto count : xBins)
+        {
+            if (count > 0)
+            {
+                ++histogram.OccupiedX;
+                histogram.MinX = std::min(histogram.MinX, count);
+                histogram.MaxX = std::max(histogram.MaxX, count);
+            }
+        }
+        for (const auto count : zBins)
+        {
+            if (count > 0)
+            {
+                ++histogram.OccupiedZ;
+                histogram.MinZ = std::min(histogram.MinZ, count);
+                histogram.MaxZ = std::max(histogram.MaxZ, count);
+            }
+        }
+        histogram.OccupiedXZ = static_cast<uint32_t>(
+            std::count(xzOccupied.begin(), xzOccupied.end(), static_cast<uint8_t>(1)));
+        if (histogram.OccupiedX == 0)
+            histogram.MinX = 0;
+        if (histogram.OccupiedZ == 0)
+            histogram.MinZ = 0;
+        return histogram;
+    }
 }
 
 void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& context) const
@@ -365,6 +430,20 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetric("Temporal policy", TemporalPolicyName(context.Workload.TemporalPolicy));
         DrawMetricU32("simulation update interval", telemetry ? telemetry->SecondaryEffectiveUpdateInterval : context.Workload.TemporalDecimationInterval);
         DrawMetric("debug view", CompositeViewName(context.CompositeDebugView));
+    }
+
+    if (ImGui::CollapsingHeader("Spawn Grid", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const auto histogram = BuildSpawnHistogram(context.Workload);
+        DrawMetricU32("X bins occupied", histogram.OccupiedX);
+        DrawMetricU32("Z bins occupied", histogram.OccupiedZ);
+        DrawMetricU32("XZ cells occupied", histogram.OccupiedXZ);
+        DrawMetricF32("X coverage", histogram.Width > 0
+                                      ? 100.0f * static_cast<float>(histogram.OccupiedX) /
+                                        static_cast<float>(histogram.Width)
+                                      : 0.0f, "%.1f%%");
+        ImGui::Text("X bin count min/max: %u / %u", histogram.MinX, histogram.MaxX);
+        ImGui::Text("Z bin count min/max: %u / %u", histogram.MinZ, histogram.MaxZ);
     }
 
     if (ImGui::CollapsingHeader("Transfer", ImGuiTreeNodeFlags_DefaultOpen))

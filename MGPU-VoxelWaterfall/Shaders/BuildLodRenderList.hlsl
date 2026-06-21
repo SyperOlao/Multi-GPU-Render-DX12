@@ -170,7 +170,7 @@ void BuildDynamicSpatialData(
     groupKey = PackGroupKey(currentGroup, lodLevel);
     previousCenter = GroupCenter(previousGroup, blockSize, voxelSize);
     currentCenter = GroupCenter(currentGroup, blockSize, voxelSize);
-    halfExtent = 0.5f * (float)blockSize * voxelSize;
+    halfExtent = 0.56f * (float)blockSize * voxelSize;
 }
 
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

@@ -22,6 +22,16 @@ namespace
     }
 
     constexpr float TwoPi = 6.28318530717958647692f;
+
+    DWORD StableSpawnXOffset(const DWORD baseZ, const DWORD cycleIndex, const DWORD seed)
+    {
+        return HashVoxel(baseZ * 73856093u ^ cycleIndex * 19349663u ^ seed);
+    }
+
+    DWORD StableSpawnZOffset(const DWORD baseX, const DWORD cycleIndex, const DWORD seed)
+    {
+        return HashVoxel(baseX * 83492791u ^ cycleIndex * 2654435761u ^ seed ^ 0x68bc21ebu);
+    }
 }
 
 VoxelParticleSpawner::SpawnGridCell VoxelParticleSpawner::ComputeSpawnGridCell(
@@ -33,16 +43,15 @@ VoxelParticleSpawner::SpawnGridCell VoxelParticleSpawner::ComputeSpawnGridCell(
     const DWORD depthCells = std::max<DWORD>(1, static_cast<DWORD>(std::floor(parameters.WaterfallDepth / voxelSize)));
     const DWORD heightCells = std::max<DWORD>(
         1, static_cast<DWORD>(std::floor((parameters.SpawnHeight - parameters.FloorHeight) / voxelSize)));
-    const DWORD horizontalCells = widthCells * depthCells;
-
-    const DWORD laneCount = std::max<DWORD>(
-        1, std::min<DWORD>(horizontalCells, std::max<DWORD>(3, (horizontalCells * 3) / 4)));
-    const DWORD laneIndex = globalVoxelId % laneCount;
-    const DWORD laneHash = HashVoxel(laneIndex ^ parameters.Seed);
-    const DWORD xIndex = laneHash % widthCells;
-    const DWORD zIndex = HashVoxel(laneHash + parameters.Seed * 17u) % depthCells;
+    const DWORD horizontalCells = std::max<DWORD>(1, widthCells * depthCells);
+    const DWORD laneIndex = globalVoxelId % horizontalCells;
+    const DWORD cycleIndex = globalVoxelId / horizontalCells;
+    const DWORD baseX = laneIndex % widthCells;
+    const DWORD baseZ = laneIndex / widthCells;
+    const DWORD xIndex = (baseX + StableSpawnXOffset(baseZ, cycleIndex, parameters.Seed) % widthCells) % widthCells;
+    const DWORD zIndex = (baseZ + StableSpawnZOffset(baseX, cycleIndex, parameters.Seed) % depthCells) % depthCells;
     const DWORD yPhase = HashVoxel(globalVoxelId + parameters.Seed * 31u) % heightCells;
-    const DWORD yIndex = ((globalVoxelId / laneCount) + yPhase) % heightCells;
+    const DWORD yIndex = (cycleIndex + yPhase) % heightCells;
 
     return {xIndex, yIndex, zIndex, widthCells, heightCells, depthCells};
 }
