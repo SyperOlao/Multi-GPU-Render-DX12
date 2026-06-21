@@ -11,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 class VoxelBenchmarkProfiler
 {
@@ -18,63 +19,120 @@ public:
     enum class QueueId : uint8_t
     {
         PrimaryCompute = 0,
+        PrimaryGraphics,
         SecondaryCompute,
-        Transfer,
-        Graphics,
+        SecondaryGraphics,
+        SecondaryCopy,
+        PrimaryCopy,
         Count
     };
 
     enum class RangeId : uint8_t
     {
-        NearCompute = 0,
-        MediumCompute,
-        FarCompute,
-        CrossAdapterTransfer,
-        Graphics,
+        PrimaryCompute = 0,
+        PrimaryBaseGraphics,
+        SecondaryCompute,
+        SecondaryGraphics,
+        SecondaryLocalToSharedCopy,
+        PrimarySharedToLocalCopy,
+        Composite,
+        FinalResolveUi,
         Count
     };
 
     struct FrameMetadata
     {
         uint64_t FrameIndex = 0;
-        std::string ExecutionMode;
-        uint32_t NearVoxelCount = 0;
-        uint32_t MediumVoxelCount = 0;
-        uint32_t FarVoxelCount = 0;
+        std::string RequestedMode;
+        std::string ActualMode;
+        std::string TemporalPolicy;
+        std::string FallbackReason;
+        uint32_t PrimaryPartitionVoxelCount = 0;
+        uint32_t SecondaryPartitionVoxelCount = 0;
         uint32_t TotalVoxelCount = 0;
         uint32_t UpdatedVoxelCount = 0;
-        uint32_t MediumUpdateInterval = 1;
-        uint32_t FarUpdateInterval = 1;
+        uint32_t SimulationStepsThisFrame = 0;
+        uint32_t Seed = 0;
+        float SecondaryShare = 0.0f;
+        uint32_t TemporalDecimationInterval = 1;
+        uint32_t RenderWidth = 0;
+        uint32_t RenderHeight = 0;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
-        double PrimaryWaitMs = 0.0;
-        double SecondaryWaitMs = 0.0;
+        double CpuWaitMs = 0.0;
+        uint64_t TotalCrossAdapterBytes = 0;
+        uint64_t ParticleTransferBytes = 0;
+        uint32_t SecondaryDrawCalls = 0;
+        bool ReusedSecondaryImage = false;
+        bool VisualValidationPassed = false;
         std::chrono::steady_clock::time_point CpuFrameStart{};
     };
 
     struct BenchmarkSummary
     {
-        std::string Mode;
+        std::string RequestedMode;
+        std::string ActualMode;
         std::string Preset;
+        std::string TemporalPolicy;
+        std::string SkipReason;
+        std::wstring PrimaryAdapterName;
+        std::wstring SecondaryAdapterName;
         uint32_t TotalVoxelCount = 0;
-        double AverageFrameMs = 0.0;
-        double MedianFrameMs = 0.0;
-        double P95FrameMs = 0.0;
-        double AveragePrimaryComputeMs = 0.0;
-        double AverageSecondaryComputeMs = 0.0;
-        double AverageTransferMs = 0.0;
-        double AverageSyncMs = 0.0;
-        double AverageGraphicsMs = 0.0;
-        bool Target60FpsReached = false;
+        float SecondaryShare = 0.0f;
+        uint32_t RenderWidth = 0;
+        uint32_t RenderHeight = 0;
+        uint32_t Repetition = 0;
+        double AverageCpuFrameMs = 0.0;
+        double MedianCpuFrameMs = 0.0;
+        double P95CpuFrameMs = 0.0;
+        double P99CpuFrameMs = 0.0;
+        double StdDevCpuFrameMs = 0.0;
+        double CpuFrameCi95HalfWidthMs = 0.0;
+        double CriticalPathGpuMs = 0.0;
+        double GpuWorkSumMs = 0.0;
+        double PrimaryComputeMs = 0.0;
+        double PrimaryGraphicsMs = 0.0;
+        double SecondaryComputeMs = 0.0;
+        double SecondaryGraphicsMs = 0.0;
+        double TransferMs = 0.0;
+        double CompositeMs = 0.0;
+        uint64_t AverageTransferBytes = 0;
+        uint64_t AverageParticleTransferBytes = 0;
+        double AverageSecondaryDrawCalls = 0.0;
+        double ReusedSecondaryImageRate = 0.0;
+        double SpeedupVsMatchingSingleGpu = 0.0;
+        double Efficiency = 0.0;
+        bool VisualValidationPassed = false;
         std::filesystem::path CsvPath;
+    };
+
+    struct TimingSnapshot
+    {
+        bool Valid = false;
+        double PrimaryComputeMs = 0.0;
+        double PrimaryGraphicsMs = 0.0;
+        double SecondaryComputeMs = 0.0;
+        double SecondaryGraphicsMs = 0.0;
+        double TransferMs = 0.0;
+        double CompositeMs = 0.0;
+        double FinalResolveUiMs = 0.0;
+        double CriticalPathGpuMs = 0.0;
+        double GpuWorkSumMs = 0.0;
+        uint64_t TransferBytes = 0;
+        uint64_t ParticleTransferBytes = 0;
+        uint32_t SecondaryDrawCalls = 0;
+        bool ReusedSecondaryImage = false;
+        bool VisualValidationPassed = false;
     };
 
     void Initialize(const std::shared_ptr<PEPEngine::Graphics::GDevice>& primaryDevice,
                     const std::shared_ptr<PEPEngine::Graphics::GDevice>& secondaryDevice,
                     const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& primaryComputeQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& primaryGraphicsQueue,
                     const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& secondaryComputeQueue,
-                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& transferQueue,
-                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& graphicsQueue);
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& secondaryGraphicsQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& secondaryCopyQueue,
+                    const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& primaryCopyQueue);
 
     bool IsInitialized() const { return initialized; }
     bool IsActive() const { return active; }
@@ -86,10 +144,11 @@ public:
 
     bool Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata);
     bool Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata,
-               const std::string& fileName, const std::string& presetName);
+               const std::string& fileName, const std::string& presetName, uint32_t repetition);
     void Stop();
     bool HasCompletedSummary() const { return completedSummaryReady; }
     BenchmarkSummary ConsumeCompletedSummary();
+    const TimingSnapshot& GetLatestTimingSnapshot() const { return latestTimingSnapshot; }
 
     void BeginFrame(const FrameMetadata& metadata);
     void UpdateCurrentFrameMetadata(const FrameMetadata& metadata);
@@ -105,7 +164,7 @@ public:
     static constexpr uint32_t RecordedFrameCount = 500;
 
 private:
-    static constexpr uint32_t RingFrameCount = 16;
+    static constexpr uint32_t RingFrameCount = 32;
     static constexpr uint32_t QueueCount = static_cast<uint32_t>(QueueId::Count);
     static constexpr uint32_t RangeCount = static_cast<uint32_t>(RangeId::Count);
     static constexpr uint32_t QueryCountPerFrame = RangeCount * 2;
@@ -118,6 +177,8 @@ private:
         Microsoft::WRL::ComPtr<ID3D12QueryHeap> QueryHeap;
         Microsoft::WRL::ComPtr<ID3D12Resource> ReadbackBuffer;
         uint64_t Frequency = 1;
+        uint64_t CalibrationGpuTimestamp = 0;
+        uint64_t CalibrationCpuQpc = 0;
         bool Valid = false;
     };
 
@@ -125,6 +186,13 @@ private:
     {
         bool Active = false;
         QueueId Queue = QueueId::PrimaryCompute;
+    };
+
+    struct RangeTiming
+    {
+        double Ms = 0.0;
+        double StartQpc = 0.0;
+        double EndQpc = 0.0;
     };
 
     struct FrameRecord
@@ -142,21 +210,32 @@ private:
     std::array<QueueContext, QueueCount> queues{};
     std::array<FrameRecord, RingFrameCount> frames{};
     FrameRecord* currentFrame = nullptr;
+    LARGE_INTEGER qpcFrequency{};
     bool initialized = false;
     bool active = false;
     uint32_t framesSeen = 0;
     uint32_t rowsWritten = 0;
+    uint32_t currentRepetition = 0;
     std::ofstream csv;
     std::filesystem::path csvPath;
     std::string currentPresetName;
     BenchmarkSummary completedSummary{};
+    TimingSnapshot latestTimingSnapshot{};
     bool completedSummaryReady = false;
-    std::vector<double> frameMsSamples;
+
+    std::vector<double> cpuFrameMsSamples;
+    std::vector<double> criticalPathGpuMsSamples;
+    std::vector<double> gpuWorkSumMsSamples;
     std::vector<double> primaryComputeMsSamples;
+    std::vector<double> primaryGraphicsMsSamples;
     std::vector<double> secondaryComputeMsSamples;
+    std::vector<double> secondaryGraphicsMsSamples;
     std::vector<double> transferMsSamples;
-    std::vector<double> syncMsSamples;
-    std::vector<double> graphicsMsSamples;
+    std::vector<double> compositeMsSamples;
+    std::vector<uint64_t> transferBytesSamples;
+    std::vector<uint64_t> particleTransferBytesSamples;
+    std::vector<double> secondaryDrawCallSamples;
+    std::vector<double> reusedSecondaryImageSamples;
 
     static uint32_t ToIndex(QueueId id) { return static_cast<uint32_t>(id); }
     static uint32_t ToIndex(RangeId id) { return static_cast<uint32_t>(id); }
@@ -169,11 +248,14 @@ private:
     uint64_t QueryOffset(uint32_t slot, RangeId range) const;
     bool IsQueueComplete(const QueueContext& queue, uint64_t fenceValue) const;
     bool IsFrameReady(const FrameRecord& frame) const;
-    double ReadRangeMs(const FrameRecord& frame, RangeId range) const;
+    RangeTiming ReadRangeTiming(const FrameRecord& frame, RangeId range) const;
     void WriteFrame(const FrameRecord& frame);
     void CreateQueueResources(QueueContext& context);
+    void CalibrateQueues();
     void ResetSamples();
     void FinalizeCompletedSummary();
     static double Average(const std::vector<double>& values);
+    static double AverageUint64(const std::vector<uint64_t>& values);
+    static double StdDev(const std::vector<double>& values);
     static double Percentile(std::vector<double> values, double percentile);
 };

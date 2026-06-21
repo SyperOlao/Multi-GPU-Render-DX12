@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-class VoxelEmitterGpuResources
+class VoxelPartitionGpuResources
 {
 public:
     std::shared_ptr<PEPEngine::Graphics::ConstantUploadBuffer<ObjectConstants>> ObjectPositionBuffer;
@@ -15,6 +15,9 @@ public:
     std::shared_ptr<PEPEngine::Graphics::CounteredStructBuffer<DWORD>> ParticlesAlive;
     std::shared_ptr<PEPEngine::Graphics::CounteredStructBuffer<DWORD>> ParticlesDead;
     std::shared_ptr<PEPEngine::Graphics::GBuffer> InjectedParticles;
+    std::shared_ptr<PEPEngine::Graphics::GBuffer> SimulationStats;
+    std::shared_ptr<PEPEngine::Graphics::UploadBuffer> SimulationStatsUpload;
+    std::shared_ptr<PEPEngine::Graphics::ReadBackBuffer<DWORD>> SimulationStatsReadback;
 
     std::vector<VoxelParticleData> NewParticles;
     PEPEngine::Graphics::GDescriptor ComputeDescriptors;
@@ -22,7 +25,7 @@ public:
     DWORD InjectionCapacity = 1;
 
     void AllocateDescriptors(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device);
-    void ResetParticleBuffers();
+    void ResetResources();
     void EnsureObjectPositionBuffer(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device);
     void CreateParticleBuffers(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, DWORD particleCount);
     void InitializeDeadParticleList(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, DWORD particleCount) const;

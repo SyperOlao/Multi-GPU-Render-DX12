@@ -82,7 +82,9 @@ namespace PEPEngine::Graphics
 
     UINT64 GCommandQueue::GetTimestamp(const UINT index)
     {
-        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&
+            type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
+            type != D3D12_COMMAND_LIST_TYPE_COPY)
         {
             return 0;
         }
@@ -265,7 +267,9 @@ namespace PEPEngine::Graphics
 
     UINT64 GCommandQueue::GetTimestampFreq()
     {
-        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&
+            type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
+            type != D3D12_COMMAND_LIST_TYPE_COPY)
         {
             return 0;
         }

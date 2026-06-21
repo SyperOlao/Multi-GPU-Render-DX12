@@ -666,9 +666,23 @@ namespace PEPEngine::Graphics
         TrackResource(srcRes.Get());
     }
 
+    void GCommandList::CopyResourceNoBarrier(const ComPtr<ID3D12Resource>& dstRes,
+                                             const ComPtr<ID3D12Resource>& srcRes)
+    {
+        cmdList->CopyResource(dstRes.Get(), srcRes.Get());
+
+        TrackResource(dstRes.Get());
+        TrackResource(srcRes.Get());
+    }
+
     void GCommandList::CopyResource(const GResource& dstRes, const GResource& srcRes)
     {
         CopyResource(dstRes.GetD3D12Resource(), srcRes.GetD3D12Resource());
+    }
+
+    void GCommandList::CopyResourceNoBarrier(const GResource& dstRes, const GResource& srcRes)
+    {
+        CopyResourceNoBarrier(dstRes.GetD3D12Resource(), srcRes.GetD3D12Resource());
     }
 
     void GCommandList::CopyResourceToCubeMap(const GResource& dstCube, const GResource& srcTex, UINT faceIndex)

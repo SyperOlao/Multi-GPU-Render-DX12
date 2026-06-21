@@ -1,6 +1,8 @@
 #include "Source/Benchmark/AutomaticBenchmarkRunner.h"
 
+#include <algorithm>
 #include <iterator>
+#include <random>
 #include <utility>
 
 std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildDefaultConfigs()
@@ -8,42 +10,52 @@ std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildDefaultConf
     struct Preset
     {
         const char* Name;
-        int Near;
-        int Medium;
-        int Far;
+        uint32_t Total;
     };
 
     constexpr Preset presets[] = {
-        {"Low", 76000, 19000, 5000},
-        {"Medium", 190000, 47500, 12500},
-        {"High", 380000, 95000, 25000},
-        {"VeryHigh", 760000, 190000, 50000}
+        {"Low", 100000},
+        {"Medium", 250000},
+        {"High", 500000},
+        {"VeryHigh", 1000000}
     };
 
     constexpr std::pair<VoxelExecutionMode, const char*> modes[] = {
-        {VoxelExecutionMode::PrimaryOnly, "PrimaryOnly"},
-        {VoxelExecutionMode::SplitMultiGpu, "SplitMultiGpu"},
-        {VoxelExecutionMode::SplitMultiGpuLod, "SplitMultiGpuLod"}
+        {VoxelExecutionMode::SingleGpuFull, "SingleGpuFull"},
+        {VoxelExecutionMode::MultiGpuFull, "MultiGpuFull"},
+        {VoxelExecutionMode::SingleGpuTemporalDecimation, "SingleGpuTemporalDecimation"},
+        {VoxelExecutionMode::MultiGpuTemporalDecimation, "MultiGpuTemporalDecimation"}
     };
 
+    constexpr float secondaryShares[] = {0.25f, 0.50f, 0.75f};
+    constexpr uint32_t repetitions = 3;
+    constexpr uint32_t benchmarkSeed = 0x5eed2026u;
+
     std::vector<AutomaticBenchmarkConfig> configs;
-    configs.reserve(std::size(presets) * std::size(modes));
+    configs.reserve(std::size(presets) * std::size(modes) * std::size(secondaryShares) * repetitions);
 
     for (const auto& mode : modes)
     {
         for (const auto& preset : presets)
         {
-            configs.push_back({
-                mode.first,
-                mode.second,
-                preset.Name,
-                preset.Near,
-                preset.Medium,
-                preset.Far,
-                static_cast<uint32_t>(preset.Near + preset.Medium + preset.Far)
-            });
+            for (const float share : secondaryShares)
+            {
+                for (uint32_t repetition = 0; repetition < repetitions; ++repetition)
+                {
+                    configs.push_back({
+                        mode.first,
+                        mode.second,
+                        preset.Name,
+                        preset.Total,
+                        share,
+                        repetition
+                    });
+                }
+            }
         }
     }
 
+    std::mt19937 rng(benchmarkSeed);
+    std::shuffle(configs.begin(), configs.end(), rng);
     return configs;
 }

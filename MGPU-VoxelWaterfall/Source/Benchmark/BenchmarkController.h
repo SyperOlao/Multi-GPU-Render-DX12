@@ -17,8 +17,9 @@ struct BenchmarkControllerContext
     std::function<void(bool)> SetVSync;
     std::function<void()> Flush;
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;
-    std::function<void(int, int, int)> ApplyVoxelCounts;
-    bool SplitMultiGpuAvailable = false;
+    std::function<void(int)> ApplyVoxelCount;
+    std::function<void(float)> ApplySecondaryShare;
+    bool MultiGpuAvailable = false;
 };
 
 class BenchmarkController
@@ -51,7 +52,6 @@ private:
     std::filesystem::path automaticBenchmarkSummaryPath;
 
     void StartAutomaticTest(const BenchmarkControllerContext& context);
-    void ApplyBenchmarkVoxelCounts(const BenchmarkControllerContext& context,
-                                   int nearCount, int mediumCount, int farCount) const;
+    void ApplyBenchmarkVoxelCount(const BenchmarkControllerContext& context, int totalCount) const;
     void WriteAutomaticSummary(const BenchmarkControllerContext& context);
 };

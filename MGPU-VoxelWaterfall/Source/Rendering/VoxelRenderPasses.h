@@ -35,13 +35,17 @@ struct VoxelRenderPassContext
     RenderModeFactory& PipelineResources;
     PEPEngine::Allocator::custom_vector<PEPEngine::Allocator::custom_vector<std::shared_ptr<Renderer>>>& TypedRenderers;
     PEPEngine::Graphics::GTexture& BackBuffer;
+    PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
+    UINT ResolveSourceSrvOffset = 0;
 };
 
 class VoxelRenderPasses
 {
 public:
-    void RecordFrame(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
-                     const VoxelRenderPassContext& context) const;
+    void RecordPrimaryBase(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
+                           const VoxelRenderPassContext& context) const;
+    void RecordFinalPresent(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
+                            const VoxelRenderPassContext& context) const;
 
 private:
     static void RecordShadowMap(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,

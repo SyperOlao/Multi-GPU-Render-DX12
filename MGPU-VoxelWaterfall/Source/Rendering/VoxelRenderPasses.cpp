@@ -14,13 +14,18 @@
 using namespace DirectX;
 using namespace PEPEngine::Graphics;
 
-void VoxelRenderPasses::RecordFrame(const std::shared_ptr<GCommandList>& cmdList,
-                                    const VoxelRenderPassContext& context) const
+void VoxelRenderPasses::RecordPrimaryBase(const std::shared_ptr<GCommandList>& cmdList,
+                                          const VoxelRenderPassContext& context) const
 {
     RecordNormalMap(cmdList, context);
     RecordAmbientMap(cmdList, context);
     RecordShadowMap(cmdList, context);
     RecordForwardPath(cmdList, context);
+}
+
+void VoxelRenderPasses::RecordFinalPresent(const std::shared_ptr<GCommandList>& cmdList,
+                                           const VoxelRenderPassContext& context) const
+{
     RecordBackBufferInit(cmdList, context);
     RecordFullQuad(cmdList, context);
 }
@@ -164,9 +169,15 @@ void VoxelRenderPasses::RecordFullQuad(const std::shared_ptr<GCommandList>& cmdL
                                        const VoxelRenderPassContext& context)
 {
     cmdList->SetRootSignature(*context.PrimeDeviceSignature.get());
-    cmdList->SetDescriptorsHeap(context.AntiAliasingPath.GetSRV());
+    auto* resolveSource = context.ResolveSourceSrv != nullptr
+                              ? context.ResolveSourceSrv
+                              : context.AntiAliasingPath.GetSRV();
+    const auto resolveSourceOffset = context.ResolveSourceSrv != nullptr
+                                     ? context.ResolveSourceSrvOffset
+                                     : 0u;
+    cmdList->SetDescriptorsHeap(resolveSource);
 
-    cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, context.AntiAliasingPath.GetSRV(), 0);
+    cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, resolveSource, resolveSourceOffset);
 
     cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::Quad));
     RecordDraw(cmdList, context, RenderMode::Quad);
@@ -179,4 +190,3 @@ void VoxelRenderPasses::RecordDraw(const std::shared_ptr<GCommandList>& cmdList,
     for (auto&& renderer : context.TypedRenderers[static_cast<int>(mode)])
         renderer->Draw(cmdList);
 }
-

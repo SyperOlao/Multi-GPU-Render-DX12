@@ -22,7 +22,7 @@ void SSAA::SetMultiplier(const UINT multi, const UINT newWidth, const UINT newHe
 
 float SSAA::GetMultiplier()
 {
-    return ResolutionMultiplier;
+    return static_cast<float>(ResolutionMultiplier);
 }
 
 GTexture& SSAA::GetRenderTarget()
@@ -41,6 +41,11 @@ GDescriptor* SSAA::GetRTV()
 }
 
 GDescriptor* SSAA::GetSRV()
+{
+    return &srvMemory;
+}
+
+GDescriptor* SSAA::GetDepthSRV()
 {
     return &srvMemory;
 }
@@ -103,7 +108,9 @@ void SSAA::OnResize(UINT newWidth, UINT newHeight)
         depthStencilDesc.Height = height;
         depthStencilDesc.DepthOrArraySize = 1;
         depthStencilDesc.MipLevels = 1;
-        depthStencilDesc.Format = depthStencilFormat;
+        depthStencilDesc.Format = depthStencilFormat == DXGI_FORMAT_D32_FLOAT
+                                      ? DXGI_FORMAT_R32_TYPELESS
+                                      : depthStencilFormat;
         depthStencilDesc.SampleDesc.Count = 1;
         depthStencilDesc.SampleDesc.Quality = 0;
         depthStencilDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -138,6 +145,9 @@ void SSAA::OnResize(UINT newWidth, UINT newHeight)
     srvDesc.Texture2D.MipLevels = 1;
     renderTarget.CreateShaderResourceView(&srvDesc, &srvMemory);
 
+    srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    depthMap.CreateShaderResourceView(&srvDesc, &srvMemory, 1);
+
     D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
     dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
     dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
@@ -149,7 +159,7 @@ void SSAA::OnResize(UINT newWidth, UINT newHeight)
 SSAA::SSAA(const std::shared_ptr<GDevice>& device, const UINT multiplier, const UINT width,
            const UINT height, DXGI_FORMAT depthStencilFormat) : ResolutionMultiplier(multiplier), depthStencilFormat(depthStencilFormat), device(device)
 {
-    srvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    srvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
     rtvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
     dsvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 

@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace PEPEngine::Graphics
 {
@@ -15,6 +16,7 @@ namespace PEPEngine::Graphics
 }
 
 class SceneTransformController;
+struct VoxelFrameGraphTelemetry;
 
 struct VoxelWaterfallDebugPanelContext
 {
@@ -22,13 +24,23 @@ struct VoxelWaterfallDebugPanelContext
     std::shared_ptr<PEPEngine::Graphics::GCommandList> CommandList;
     PEPEngine::Graphics::GDescriptor* ImGuiSrvMemory = nullptr;
 
-    VoxelLodArray& Lods;
-    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::PrimaryOnly;
-    bool SplitMultiGpuAvailable = false;
-    std::wstring SplitMultiGpuStatus;
+    VoxelWaterfallWorkload& Workload;
+    VoxelExecutionMode RequestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    bool MultiGpuAvailable = false;
+    std::wstring MultiGpuStatus;
     std::wstring PrimaryAdapterName;
     std::wstring SecondaryAdapterName;
+    const std::vector<std::wstring>* AdapterReportLines = nullptr;
     uint64_t SimulationFrameIndex = 0;
+    double AccumulatedSimulationTime = 0.0;
+    uint32_t SimulationStepsThisFrame = 0;
+    float InterpolationAlpha = 0.0f;
+    uint32_t RecycledVoxelCount = 0;
+    uint32_t AliveVoxelCount = 0;
+    uint32_t ExpectedVoxelCount = 0;
+    const VoxelFrameGraphTelemetry* FrameGraphTelemetry = nullptr;
+    VoxelCompositeDebugView& CompositeDebugView;
 
     VoxelBenchmarkProfiler& BenchmarkProfiler;
     bool BenchmarkVSyncWasEnabled = true;
@@ -45,8 +57,7 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void()> StopBenchmark;
     std::function<void()> StartAutomaticBenchmark;
     std::function<void()> StopAutomaticBenchmark;
-    std::function<void(size_t, bool)> SetLodEnabled;
-    std::function<void(size_t)> RequestApplyLodSettings;
+    std::function<void()> RequestApplyWorkloadSettings;
 };
 
 class VoxelWaterfallDebugPanel

@@ -1,5 +1,5 @@
 #include "pch.h"
-#include "Source/Voxels/VoxelEmitterGpuResources.h"
+#include "Source/Voxels/VoxelPartitionGpuResources.h"
 
 #include "GCommandList.h"
 #include "GCommandQueue.h"
@@ -10,21 +10,24 @@
 using PEPEngine::Graphics::CounteredStructBuffer;
 using PEPEngine::Graphics::GBuffer;
 
-void VoxelEmitterGpuResources::AllocateDescriptors(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
+void VoxelPartitionGpuResources::AllocateDescriptors(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
 {
-    ComputeDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4);
+    ComputeDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5);
     RenderDescriptors = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
 }
 
-void VoxelEmitterGpuResources::ResetParticleBuffers()
+void VoxelPartitionGpuResources::ResetResources()
 {
     ParticlesPool.reset();
     InjectedParticles.reset();
     ParticlesAlive.reset();
     ParticlesDead.reset();
+    SimulationStats.reset();
+    SimulationStatsUpload.reset();
+    SimulationStatsReadback.reset();
 }
 
-void VoxelEmitterGpuResources::EnsureObjectPositionBuffer(
+void VoxelPartitionGpuResources::EnsureObjectPositionBuffer(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
 {
     if (!ObjectPositionBuffer)
@@ -32,7 +35,7 @@ void VoxelEmitterGpuResources::EnsureObjectPositionBuffer(
             device, 1, L"Voxel Emitter Position");
 }
 
-void VoxelEmitterGpuResources::CreateParticleBuffers(
+void VoxelPartitionGpuResources::CreateParticleBuffers(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount)
 {
     const auto particleStride = static_cast<UINT>(sizeof(VoxelParticleData));
@@ -41,6 +44,13 @@ void VoxelEmitterGpuResources::CreateParticleBuffers(
                                               L"Voxel Pool Buffer", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     InjectedParticles = std::make_shared<GBuffer>(device, particleStride, InjectionCapacity,
                                                   L"Injected Voxel Buffer", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    SimulationStats = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 1u,
+                                                L"Voxel Simulation Stats",
+                                                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    SimulationStatsUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
+        device, 1u, static_cast<UINT>(sizeof(DWORD)), L"Voxel Simulation Stats Upload");
+    SimulationStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
+        device, 1, L"Voxel Simulation Stats Readback");
 
 #pragma warning(push)
 #pragma warning(disable : 4267)
@@ -53,7 +63,7 @@ void VoxelEmitterGpuResources::CreateParticleBuffers(
 
 #pragma warning(push)
 #pragma warning(disable : 4267)
-void VoxelEmitterGpuResources::InitializeDeadParticleList(
+void VoxelPartitionGpuResources::InitializeDeadParticleList(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount) const
 {
     std::vector<UINT> deadIndices(particleCount);
@@ -62,13 +72,19 @@ void VoxelEmitterGpuResources::InitializeDeadParticleList(
     auto initList = queue->GetCommandList();
     ParticlesDead->LoadData(deadIndices.data(), initList);
     ParticlesDead->SetCounterValue(initList, particleCount);
+    const DWORD zero = 0;
+    SimulationStatsUpload->CopyData(0, &zero, sizeof(DWORD));
+    initList->TransitionBarrier(SimulationStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    initList->FlushResourceBarriers();
+    initList->CopyBufferRegion(*SimulationStats, 0, *SimulationStatsUpload, 0, sizeof(DWORD), false);
     initList->TransitionBarrier(ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(SimulationStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     initList->FlushResourceBarriers();
     queue->WaitForFenceValue(queue->ExecuteCommandList(initList));
 }
 #pragma warning(pop)
 
-void VoxelEmitterGpuResources::CreateParticleViews()
+void VoxelPartitionGpuResources::CreateParticleViews()
 {
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
     uavDesc.Format = DXGI_FORMAT_UNKNOWN;
@@ -88,6 +104,10 @@ void VoxelEmitterGpuResources::CreateParticleViews()
     uavDesc.Buffer.CounterOffsetInBytes = 0;
     InjectedParticles->CreateUnorderedAccessView(&uavDesc, &ComputeDescriptors, 3);
 
+    uavDesc.Buffer.NumElements = SimulationStats->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = SimulationStats->GetStride();
+    SimulationStats->CreateUnorderedAccessView(&uavDesc, &ComputeDescriptors, 4);
+
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_UNKNOWN;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -101,7 +121,7 @@ void VoxelEmitterGpuResources::CreateParticleViews()
     ParticlesAlive->CreateShaderResourceView(&srvDesc, &RenderDescriptors, 1);
 }
 
-void VoxelEmitterGpuResources::ResizeInjectionScratch()
+void VoxelPartitionGpuResources::ResizeInjectionScratch()
 {
     NewParticles.resize(InjectionCapacity);
 }

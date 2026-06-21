@@ -3,19 +3,46 @@
 #include "ShaderBuffersData.h"
 
 #include <array>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
-class CrossAdapterVoxelEmitter;
-class VoxelWaterfallEmitter;
+class VoxelGpuPartition;
 
 enum class VoxelExecutionMode
 {
-    PrimaryOnly,
-    SplitMultiGpu,
-    SplitMultiGpuLod
+    SingleGpuFull,
+    MultiGpuFull,
+    SingleGpuTemporalDecimation,
+    MultiGpuTemporalDecimation
 };
+
+enum class VoxelPartitionId : uint8_t
+{
+    PrimaryPartition = 0,
+    SecondaryPartition,
+    Count
+};
+
+enum class VoxelAdapterOwner : uint8_t
+{
+    Primary,
+    Secondary
+};
+
+enum class VoxelCompositeDebugView : uint32_t
+{
+    FinalComposite,
+    PrimaryOnly,
+    SecondaryColorOnly,
+    SecondaryLinearDepth,
+    PrimaryLinearDepth,
+    PartitionOwnershipColors,
+    DepthDifference
+};
+
+static constexpr size_t VoxelPartitionCount = static_cast<size_t>(VoxelPartitionId::Count);
 
 struct VoxelSimulationParameters
 {
@@ -31,12 +58,12 @@ struct VoxelSimulationParameters
 
 struct alignas(16) VoxelParticleData
 {
-    DirectX::SimpleMath::Vector3 Position = DirectX::SimpleMath::Vector3::Zero;
-    float Reserved = 0.0f;
+    DirectX::SimpleMath::Vector3 PreviousContinuousPosition = DirectX::SimpleMath::Vector3::Zero;
+    float AgeSeconds = 0.0f;
     DirectX::SimpleMath::Vector3 Velocity = DirectX::SimpleMath::Vector3::Zero;
-    float Reserved1 = 0.0f;
-    DWORD VoxelIndex = 0;
-    DirectX::SimpleMath::Vector3 ContinuousPosition = DirectX::SimpleMath::Vector3::Zero;
+    float FlowPhase = 0.0f;
+    DWORD GlobalVoxelId = 0;
+    DirectX::SimpleMath::Vector3 CurrentContinuousPosition = DirectX::SimpleMath::Vector3::Zero;
 };
 
 struct alignas(16) VoxelEmitterData
@@ -59,30 +86,45 @@ struct alignas(16) VoxelEmitterData
     float WaterfallDepth = 6.0f;
     float InitialFallSpeed = 3.0f;
     DWORD Seed = 1337;
+
+    float SimulationTime = 0.0f;
+    float InterpolationAlpha = 0.0f;
+    float RecycleMargin = 4.0f;
+    float GridSnapEnabled = 0.0f;
 };
 
 static_assert(sizeof(VoxelParticleData) == sizeof(ParticleData));
-static_assert(sizeof(VoxelEmitterData) == sizeof(EmitterData));
+static_assert(sizeof(VoxelParticleData) == 48);
+static_assert(offsetof(VoxelParticleData, CurrentContinuousPosition) == 36);
+static_assert(sizeof(VoxelEmitterData) == 96);
+static_assert(offsetof(VoxelEmitterData, SimulationTime) == 80);
 
-struct VoxelLodState
+struct VoxelPartitionState
 {
     const char* DisplayName = "";
     const char* ObjectName = "";
-    bool Enabled = true;
-    bool SettingsPending = false;
-    int VoxelCount = 1;
+    VoxelPartitionId PartitionId = VoxelPartitionId::PrimaryPartition;
+    VoxelAdapterOwner AdapterOwner = VoxelAdapterOwner::Primary;
     uint32_t UpdateInterval = 1;
     uint64_t LastSimulationFrame = 0;
     bool UpdatedThisFrame = false;
     UINT UpdatedVoxelCount = 0;
-    VoxelSimulationParameters Parameters{};
-    DirectX::SimpleMath::Vector3 Position = DirectX::SimpleMath::Vector3::Zero;
-    std::shared_ptr<VoxelWaterfallEmitter> Emitter;
-    std::shared_ptr<CrossAdapterVoxelEmitter> CrossEmitter;
+    std::vector<DWORD> GlobalVoxelIds;
+    std::shared_ptr<VoxelGpuPartition> GpuPartition;
+
+    uint32_t VoxelCount() const
+    {
+        return static_cast<uint32_t>(GlobalVoxelIds.size());
+    }
 };
 
-static constexpr size_t NearVoxelWaterfall = 0;
-static constexpr size_t MediumVoxelWaterfall = 1;
-static constexpr size_t FarVoxelWaterfall = 2;
-static constexpr size_t VoxelWaterfallLodCount = 3;
-using VoxelLodArray = std::array<VoxelLodState, VoxelWaterfallLodCount>;
+struct VoxelWaterfallWorkload
+{
+    DirectX::SimpleMath::Vector3 Position = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Vector3 Rotation = DirectX::SimpleMath::Vector3::Zero;
+    VoxelSimulationParameters Parameters{};
+    uint32_t TotalVoxelCount = 1;
+    float SecondaryShare = 0.35f;
+    uint32_t TemporalDecimationInterval = 2;
+    std::array<VoxelPartitionState, VoxelPartitionCount> Partitions{};
+};

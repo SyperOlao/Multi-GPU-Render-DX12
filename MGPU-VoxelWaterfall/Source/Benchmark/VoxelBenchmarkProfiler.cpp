@@ -3,8 +3,11 @@
 #include "d3dUtil.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <locale>
+#include <numeric>
 #include <sstream>
 
 using Microsoft::WRL::ComPtr;
@@ -23,19 +26,30 @@ namespace
         stream << std::put_time(&localTime, "%Y%m%d_%H%M%S");
         return stream.str();
     }
+
+    const char* BoolText(const bool value)
+    {
+        return value ? "true" : "false";
+    }
 }
 
 void VoxelBenchmarkProfiler::Initialize(const std::shared_ptr<GDevice>& primaryDevice,
                                         const std::shared_ptr<GDevice>& secondaryDevice,
                                         const std::shared_ptr<GCommandQueue>& primaryComputeQueue,
+                                        const std::shared_ptr<GCommandQueue>& primaryGraphicsQueue,
                                         const std::shared_ptr<GCommandQueue>& secondaryComputeQueue,
-                                        const std::shared_ptr<GCommandQueue>& transferQueue,
-                                        const std::shared_ptr<GCommandQueue>& graphicsQueue)
+                                        const std::shared_ptr<GCommandQueue>& secondaryGraphicsQueue,
+                                        const std::shared_ptr<GCommandQueue>& secondaryCopyQueue,
+                                        const std::shared_ptr<GCommandQueue>& primaryCopyQueue)
 {
     queues[ToIndex(QueueId::PrimaryCompute)] = {primaryDevice, primaryComputeQueue};
+    queues[ToIndex(QueueId::PrimaryGraphics)] = {primaryDevice, primaryGraphicsQueue};
     queues[ToIndex(QueueId::SecondaryCompute)] = {secondaryDevice, secondaryComputeQueue};
-    queues[ToIndex(QueueId::Transfer)] = {primaryDevice, transferQueue};
-    queues[ToIndex(QueueId::Graphics)] = {primaryDevice, graphicsQueue};
+    queues[ToIndex(QueueId::SecondaryGraphics)] = {secondaryDevice, secondaryGraphicsQueue};
+    queues[ToIndex(QueueId::SecondaryCopy)] = {secondaryDevice, secondaryCopyQueue};
+    queues[ToIndex(QueueId::PrimaryCopy)] = {primaryDevice, primaryCopyQueue};
+
+    QueryPerformanceFrequency(&qpcFrequency);
 
     for (auto& queue : queues)
     {
@@ -47,8 +61,10 @@ void VoxelBenchmarkProfiler::Initialize(const std::shared_ptr<GDevice>& primaryD
         }
     }
 
+    CalibrateQueues();
     initialized = queues[ToIndex(QueueId::PrimaryCompute)].Valid &&
-        queues[ToIndex(QueueId::Graphics)].Valid;
+        queues[ToIndex(QueueId::PrimaryGraphics)].Valid &&
+        queues[ToIndex(QueueId::PrimaryCopy)].Valid;
 }
 
 float VoxelBenchmarkProfiler::GetProgress() const
@@ -62,20 +78,24 @@ float VoxelBenchmarkProfiler::GetProgress() const
 
 bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata)
 {
-    const std::string modeToken = SanitizeFileToken(metadata.ExecutionMode);
+    const std::string modeToken = SanitizeFileToken(metadata.RequestedMode);
     return Start(outputDirectory, metadata,
                  "VoxelBenchmark_" + modeToken + "_" + TimestampForFile() + "_" +
                  std::to_string(metadata.TotalVoxelCount) + ".csv",
-                 "");
+                 "", 0);
 }
 
-bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata,
-                                   const std::string& fileName, const std::string& presetName)
+bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
+                                   const FrameMetadata& metadata,
+                                   const std::string& fileName,
+                                   const std::string& presetName,
+                                   const uint32_t repetition)
 {
     if (!initialized)
         return false;
 
     Stop();
+    CalibrateQueues();
 
     std::filesystem::create_directories(outputDirectory);
     csvPath = outputDirectory / fileName;
@@ -85,14 +105,19 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         return false;
 
     ResetSamples();
+    latestTimingSnapshot = {};
     currentPresetName = presetName;
+    currentRepetition = repetition;
     completedSummaryReady = false;
     csv.imbue(std::locale::classic());
-    csv << "frame_index,execution_mode,near_voxel_count,medium_voxel_count,far_voxel_count,"
-        << "total_voxel_count,updated_voxel_count,medium_update_interval,far_update_interval,"
-        << "primary_adapter_name,secondary_adapter_name,primary_compute_ms,secondary_compute_ms,"
-        << "cross_adapter_transfer_ms,graphics_ms,primary_wait_ms,secondary_wait_ms,"
-        << "synchronization_ms,cpu_frame_ms,gpu_frame_ms\n";
+    csv << "frame_index,requested_mode,actual_mode,fallback_reason,temporal_policy,total_voxels,secondary_share,"
+        << "primary_partition_voxels,secondary_partition_voxels,updated_voxels,simulation_steps,"
+        << "seed,render_width,render_height,primary_adapter,secondary_adapter,cpu_wait_ms,"
+        << "cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
+        << "primary_base_graphics_ms,secondary_compute_ms,secondary_graphics_ms,"
+        << "secondary_local_to_shared_copy_ms,primary_shared_to_local_copy_ms,transfer_ms,"
+        << "composite_ms,final_resolve_ui_ms,present_ready_gpu_ms,total_cross_adapter_bytes,"
+        << "particle_transfer_bytes,secondary_draw_calls,reused_secondary_image,visual_validation_passed\n";
 
     framesSeen = 0;
     rowsWritten = 0;
@@ -123,8 +148,16 @@ void VoxelBenchmarkProfiler::BeginFrame(const FrameMetadata& metadata)
 
     const uint32_t slot = static_cast<uint32_t>(metadata.FrameIndex % RingFrameCount);
     auto& frame = frames[slot];
-    if (frame.Active && frame.CsvEligible && !frame.Written && IsFrameReady(frame))
-        WriteFrame(frame);
+    if (frame.Active && !frame.Written)
+    {
+        if (frame.CsvEligible && IsFrameReady(frame))
+            WriteFrame(frame);
+        if (frame.Active && !frame.Written)
+        {
+            currentFrame = nullptr;
+            return;
+        }
+    }
 
     frame = {};
     frame.Active = true;
@@ -238,12 +271,15 @@ std::string VoxelBenchmarkProfiler::ToUtf8(const std::wstring& value)
     if (value.empty())
         return {};
 
-    const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    const int required = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                             static_cast<int>(value.size()),
+                                             nullptr, 0, nullptr, nullptr);
     if (required <= 0)
         return {};
 
-    std::string result(static_cast<size_t>(required - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), required, nullptr, nullptr);
+    std::string result(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                        result.data(), required, nullptr, nullptr);
     return result;
 }
 
@@ -311,15 +347,17 @@ bool VoxelBenchmarkProfiler::IsFrameReady(const FrameRecord& frame) const
     return true;
 }
 
-double VoxelBenchmarkProfiler::ReadRangeMs(const FrameRecord& frame, const RangeId range) const
+VoxelBenchmarkProfiler::RangeTiming VoxelBenchmarkProfiler::ReadRangeTiming(
+    const FrameRecord& frame,
+    const RangeId range) const
 {
     const auto& rangeRecord = frame.Ranges[ToIndex(range)];
     if (!rangeRecord.Active)
-        return 0.0;
+        return {};
 
     const auto& queue = queues[ToIndex(rangeRecord.Queue)];
     if (!queue.Valid)
-        return 0.0;
+        return {};
 
     const uint64_t offset = QueryOffset(frame.Slot, range);
     D3D12_RANGE readRange{offset, offset + 2 * sizeof(uint64_t)};
@@ -328,12 +366,24 @@ double VoxelBenchmarkProfiler::ReadRangeMs(const FrameRecord& frame, const Range
 
     const auto* timestamps = reinterpret_cast<const uint64_t*>(
         static_cast<const uint8_t*>(mappedData) + offset);
-    const uint64_t delta = timestamps[1] >= timestamps[0] ? timestamps[1] - timestamps[0] : 0;
+    const uint64_t start = timestamps[0];
+    const uint64_t end = timestamps[1];
 
     const D3D12_RANGE emptyRange{0, 0};
     queue.ReadbackBuffer->Unmap(0, &emptyRange);
 
-    return static_cast<double>(delta) * 1000.0 / static_cast<double>(queue.Frequency);
+    const uint64_t delta = end >= start ? end - start : 0;
+    const double ms = static_cast<double>(delta) * 1000.0 / static_cast<double>(queue.Frequency);
+    const double qpcPerGpuTick = static_cast<double>(qpcFrequency.QuadPart) /
+        static_cast<double>(queue.Frequency);
+
+    return {
+        ms,
+        static_cast<double>(queue.CalibrationCpuQpc) +
+        (static_cast<double>(start) - static_cast<double>(queue.CalibrationGpuTimestamp)) * qpcPerGpuTick,
+        static_cast<double>(queue.CalibrationCpuQpc) +
+        (static_cast<double>(end) - static_cast<double>(queue.CalibrationGpuTimestamp)) * qpcPerGpuTick
+    };
 }
 
 void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
@@ -341,57 +391,110 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     if (!csv.is_open() || rowsWritten >= RecordedFrameCount)
         return;
 
-    double primaryComputeMs = 0.0;
-    double secondaryComputeMs = 0.0;
-    const std::array computeRanges = {
-        RangeId::NearCompute,
-        RangeId::MediumCompute,
-        RangeId::FarCompute
+    const auto primaryCompute = ReadRangeTiming(frame, RangeId::PrimaryCompute);
+    const auto primaryBaseGraphics = ReadRangeTiming(frame, RangeId::PrimaryBaseGraphics);
+    const auto secondaryCompute = ReadRangeTiming(frame, RangeId::SecondaryCompute);
+    const auto secondaryGraphics = ReadRangeTiming(frame, RangeId::SecondaryGraphics);
+    const auto secondaryCopy = ReadRangeTiming(frame, RangeId::SecondaryLocalToSharedCopy);
+    const auto primaryCopy = ReadRangeTiming(frame, RangeId::PrimarySharedToLocalCopy);
+    const auto composite = ReadRangeTiming(frame, RangeId::Composite);
+    const auto finalResolveUi = ReadRangeTiming(frame, RangeId::FinalResolveUi);
+
+    const std::array timings = {
+        primaryCompute, primaryBaseGraphics, secondaryCompute, secondaryGraphics,
+        secondaryCopy, primaryCopy, composite, finalResolveUi
     };
 
-    for (const auto range : computeRanges)
+    double firstStart = std::numeric_limits<double>::max();
+    double finalEnd = 0.0;
+    double gpuWorkSum = 0.0;
+    for (uint32_t i = 0; i < RangeCount; ++i)
     {
-        const auto& rangeRecord = frame.Ranges[ToIndex(range)];
-        const double ms = ReadRangeMs(frame, range);
-        if (rangeRecord.Active && rangeRecord.Queue == QueueId::SecondaryCompute)
-            secondaryComputeMs += ms;
-        else
-            primaryComputeMs += ms;
+        if (!frame.Ranges[i].Active)
+            continue;
+        firstStart = std::min(firstStart, timings[i].StartQpc);
+        finalEnd = std::max(finalEnd, timings[i].EndQpc);
+        gpuWorkSum += timings[i].Ms;
     }
 
-    const double transferMs = ReadRangeMs(frame, RangeId::CrossAdapterTransfer);
-    const double graphicsMs = ReadRangeMs(frame, RangeId::Graphics);
-    const double synchronizationMs = frame.Metadata.PrimaryWaitMs + frame.Metadata.SecondaryWaitMs;
-    const double gpuFrameMs = primaryComputeMs + secondaryComputeMs + transferMs + graphicsMs;
+    if (frame.Ranges[ToIndex(RangeId::FinalResolveUi)].Active)
+        finalEnd = finalResolveUi.EndQpc;
 
-    frameMsSamples.push_back(frame.CpuFrameMs);
-    primaryComputeMsSamples.push_back(primaryComputeMs);
-    secondaryComputeMsSamples.push_back(secondaryComputeMs);
+    const double criticalPathGpuMs =
+        firstStart < std::numeric_limits<double>::max() && finalEnd >= firstStart
+            ? (finalEnd - firstStart) * 1000.0 / static_cast<double>(qpcFrequency.QuadPart)
+            : 0.0;
+    const double transferMs = secondaryCopy.Ms + primaryCopy.Ms;
+    const double presentReadyGpuMs = criticalPathGpuMs;
+
+    cpuFrameMsSamples.push_back(frame.CpuFrameMs);
+    criticalPathGpuMsSamples.push_back(criticalPathGpuMs);
+    gpuWorkSumMsSamples.push_back(gpuWorkSum);
+    primaryComputeMsSamples.push_back(primaryCompute.Ms);
+    primaryGraphicsMsSamples.push_back(primaryBaseGraphics.Ms);
+    secondaryComputeMsSamples.push_back(secondaryCompute.Ms);
+    secondaryGraphicsMsSamples.push_back(secondaryGraphics.Ms);
     transferMsSamples.push_back(transferMs);
-    syncMsSamples.push_back(synchronizationMs);
-    graphicsMsSamples.push_back(graphicsMs);
+    compositeMsSamples.push_back(composite.Ms);
+    transferBytesSamples.push_back(frame.Metadata.TotalCrossAdapterBytes);
+    particleTransferBytesSamples.push_back(frame.Metadata.ParticleTransferBytes);
+    secondaryDrawCallSamples.push_back(static_cast<double>(frame.Metadata.SecondaryDrawCalls));
+    reusedSecondaryImageSamples.push_back(frame.Metadata.ReusedSecondaryImage ? 1.0 : 0.0);
+
+    latestTimingSnapshot = {
+        true,
+        primaryCompute.Ms,
+        primaryBaseGraphics.Ms,
+        secondaryCompute.Ms,
+        secondaryGraphics.Ms,
+        transferMs,
+        composite.Ms,
+        finalResolveUi.Ms,
+        criticalPathGpuMs,
+        gpuWorkSum,
+        frame.Metadata.TotalCrossAdapterBytes,
+        frame.Metadata.ParticleTransferBytes,
+        frame.Metadata.SecondaryDrawCalls,
+        frame.Metadata.ReusedSecondaryImage,
+        frame.Metadata.VisualValidationPassed
+    };
 
     csv << frame.Metadata.FrameIndex << ','
-        << EscapeCsv(frame.Metadata.ExecutionMode) << ','
-        << frame.Metadata.NearVoxelCount << ','
-        << frame.Metadata.MediumVoxelCount << ','
-        << frame.Metadata.FarVoxelCount << ','
+        << EscapeCsv(frame.Metadata.RequestedMode) << ','
+        << EscapeCsv(frame.Metadata.ActualMode) << ','
+        << EscapeCsv(frame.Metadata.FallbackReason) << ','
+        << EscapeCsv(frame.Metadata.TemporalPolicy) << ','
         << frame.Metadata.TotalVoxelCount << ','
+        << frame.Metadata.SecondaryShare << ','
+        << frame.Metadata.PrimaryPartitionVoxelCount << ','
+        << frame.Metadata.SecondaryPartitionVoxelCount << ','
         << frame.Metadata.UpdatedVoxelCount << ','
-        << frame.Metadata.MediumUpdateInterval << ','
-        << frame.Metadata.FarUpdateInterval << ','
+        << frame.Metadata.SimulationStepsThisFrame << ','
+        << frame.Metadata.Seed << ','
+        << frame.Metadata.RenderWidth << ','
+        << frame.Metadata.RenderHeight << ','
         << EscapeCsv(frame.Metadata.PrimaryAdapterName) << ','
         << EscapeCsv(frame.Metadata.SecondaryAdapterName) << ','
         << std::fixed << std::setprecision(6)
-        << primaryComputeMs << ','
-        << secondaryComputeMs << ','
-        << transferMs << ','
-        << graphicsMs << ','
-        << frame.Metadata.PrimaryWaitMs << ','
-        << frame.Metadata.SecondaryWaitMs << ','
-        << synchronizationMs << ','
+        << frame.Metadata.CpuWaitMs << ','
         << frame.CpuFrameMs << ','
-        << gpuFrameMs << '\n';
+        << criticalPathGpuMs << ','
+        << gpuWorkSum << ','
+        << primaryCompute.Ms << ','
+        << primaryBaseGraphics.Ms << ','
+        << secondaryCompute.Ms << ','
+        << secondaryGraphics.Ms << ','
+        << secondaryCopy.Ms << ','
+        << primaryCopy.Ms << ','
+        << transferMs << ','
+        << composite.Ms << ','
+        << finalResolveUi.Ms << ','
+        << presentReadyGpuMs << ','
+        << frame.Metadata.TotalCrossAdapterBytes << ','
+        << frame.Metadata.ParticleTransferBytes << ','
+        << frame.Metadata.SecondaryDrawCalls << ','
+        << BoolText(frame.Metadata.ReusedSecondaryImage) << ','
+        << BoolText(frame.Metadata.VisualValidationPassed) << '\n';
 
     ++rowsWritten;
     if (rowsWritten % 32 == 0)
@@ -419,19 +522,43 @@ void VoxelBenchmarkProfiler::CreateQueueResources(QueueContext& context)
         IID_PPV_ARGS(&context.ReadbackBuffer)));
 }
 
+void VoxelBenchmarkProfiler::CalibrateQueues()
+{
+    for (auto& queue : queues)
+    {
+        if (!queue.Valid || !queue.Queue)
+            continue;
+
+        uint64_t gpuTimestamp = 0;
+        uint64_t cpuTimestamp = 0;
+        if (SUCCEEDED(queue.Queue->GetD3D12CommandQueue()->GetClockCalibration(&gpuTimestamp, &cpuTimestamp)))
+        {
+            queue.CalibrationGpuTimestamp = gpuTimestamp;
+            queue.CalibrationCpuQpc = cpuTimestamp;
+        }
+    }
+}
+
 void VoxelBenchmarkProfiler::ResetSamples()
 {
-    frameMsSamples.clear();
+    cpuFrameMsSamples.clear();
+    criticalPathGpuMsSamples.clear();
+    gpuWorkSumMsSamples.clear();
     primaryComputeMsSamples.clear();
+    primaryGraphicsMsSamples.clear();
     secondaryComputeMsSamples.clear();
+    secondaryGraphicsMsSamples.clear();
     transferMsSamples.clear();
-    syncMsSamples.clear();
-    graphicsMsSamples.clear();
+    compositeMsSamples.clear();
+    transferBytesSamples.clear();
+    particleTransferBytesSamples.clear();
+    secondaryDrawCallSamples.clear();
+    reusedSecondaryImageSamples.clear();
 }
 
 void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
 {
-    if (completedSummaryReady || rowsWritten < RecordedFrameCount || frameMsSamples.empty())
+    if (completedSummaryReady || rowsWritten < RecordedFrameCount || cpuFrameMsSamples.empty())
         return;
 
     FrameRecord* lastWritten = nullptr;
@@ -445,18 +572,42 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     }
 
     completedSummary = {};
-    completedSummary.Mode = lastWritten ? lastWritten->Metadata.ExecutionMode : "";
+    completedSummary.RequestedMode = lastWritten ? lastWritten->Metadata.RequestedMode : "";
+    completedSummary.ActualMode = lastWritten ? lastWritten->Metadata.ActualMode : "";
     completedSummary.Preset = currentPresetName;
+    completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
+    completedSummary.PrimaryAdapterName = lastWritten ? lastWritten->Metadata.PrimaryAdapterName : L"";
+    completedSummary.SecondaryAdapterName = lastWritten ? lastWritten->Metadata.SecondaryAdapterName : L"";
     completedSummary.TotalVoxelCount = lastWritten ? lastWritten->Metadata.TotalVoxelCount : 0;
-    completedSummary.AverageFrameMs = Average(frameMsSamples);
-    completedSummary.MedianFrameMs = Percentile(frameMsSamples, 0.50);
-    completedSummary.P95FrameMs = Percentile(frameMsSamples, 0.95);
-    completedSummary.AveragePrimaryComputeMs = Average(primaryComputeMsSamples);
-    completedSummary.AverageSecondaryComputeMs = Average(secondaryComputeMsSamples);
-    completedSummary.AverageTransferMs = Average(transferMsSamples);
-    completedSummary.AverageSyncMs = Average(syncMsSamples);
-    completedSummary.AverageGraphicsMs = Average(graphicsMsSamples);
-    completedSummary.Target60FpsReached = completedSummary.AverageFrameMs <= 16.67;
+    completedSummary.SecondaryShare = lastWritten ? lastWritten->Metadata.SecondaryShare : 0.0f;
+    completedSummary.RenderWidth = lastWritten ? lastWritten->Metadata.RenderWidth : 0;
+    completedSummary.RenderHeight = lastWritten ? lastWritten->Metadata.RenderHeight : 0;
+    completedSummary.Repetition = currentRepetition;
+    completedSummary.AverageCpuFrameMs = Average(cpuFrameMsSamples);
+    completedSummary.MedianCpuFrameMs = Percentile(cpuFrameMsSamples, 0.50);
+    completedSummary.P95CpuFrameMs = Percentile(cpuFrameMsSamples, 0.95);
+    completedSummary.P99CpuFrameMs = Percentile(cpuFrameMsSamples, 0.99);
+    completedSummary.StdDevCpuFrameMs = StdDev(cpuFrameMsSamples);
+    completedSummary.CpuFrameCi95HalfWidthMs =
+        cpuFrameMsSamples.size() > 1
+            ? 1.96 * completedSummary.StdDevCpuFrameMs /
+              std::sqrt(static_cast<double>(cpuFrameMsSamples.size()))
+            : 0.0;
+    completedSummary.CriticalPathGpuMs = Average(criticalPathGpuMsSamples);
+    completedSummary.GpuWorkSumMs = Average(gpuWorkSumMsSamples);
+    completedSummary.PrimaryComputeMs = Average(primaryComputeMsSamples);
+    completedSummary.PrimaryGraphicsMs = Average(primaryGraphicsMsSamples);
+    completedSummary.SecondaryComputeMs = Average(secondaryComputeMsSamples);
+    completedSummary.SecondaryGraphicsMs = Average(secondaryGraphicsMsSamples);
+    completedSummary.TransferMs = Average(transferMsSamples);
+    completedSummary.CompositeMs = Average(compositeMsSamples);
+    completedSummary.AverageTransferBytes = static_cast<uint64_t>(AverageUint64(transferBytesSamples));
+    completedSummary.AverageParticleTransferBytes =
+        static_cast<uint64_t>(AverageUint64(particleTransferBytesSamples));
+    completedSummary.AverageSecondaryDrawCalls = Average(secondaryDrawCallSamples);
+    completedSummary.ReusedSecondaryImageRate = Average(reusedSecondaryImageSamples);
+    completedSummary.VisualValidationPassed =
+        lastWritten ? lastWritten->Metadata.VisualValidationPassed : false;
     completedSummary.CsvPath = csvPath;
     completedSummaryReady = true;
 }
@@ -466,10 +617,33 @@ double VoxelBenchmarkProfiler::Average(const std::vector<double>& values)
     if (values.empty())
         return 0.0;
 
-    double sum = 0.0;
+    return std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+}
+
+double VoxelBenchmarkProfiler::AverageUint64(const std::vector<uint64_t>& values)
+{
+    if (values.empty())
+        return 0.0;
+
+    long double sum = 0.0;
+    for (const auto value : values)
+        sum += static_cast<long double>(value);
+    return static_cast<double>(sum / static_cast<long double>(values.size()));
+}
+
+double VoxelBenchmarkProfiler::StdDev(const std::vector<double>& values)
+{
+    if (values.size() < 2)
+        return 0.0;
+
+    const double mean = Average(values);
+    double sumSquares = 0.0;
     for (const double value : values)
-        sum += value;
-    return sum / static_cast<double>(values.size());
+    {
+        const double delta = value - mean;
+        sumSquares += delta * delta;
+    }
+    return std::sqrt(sumSquares / static_cast<double>(values.size() - 1));
 }
 
 double VoxelBenchmarkProfiler::Percentile(std::vector<double> values, const double percentile)

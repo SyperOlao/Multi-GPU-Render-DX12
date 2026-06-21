@@ -179,6 +179,7 @@ namespace PEPEngine::Graphics
         void FlushResourceBarriers() const;
 
         void CopyResource(const GResource& dstRes, const GResource& srcRes);
+        void CopyResourceNoBarrier(const GResource& dstRes, const GResource& srcRes);
         void CopyResourceToCubeMap(const GResource& dstCube, const GResource& srcTex, UINT faceIndex);
         void CopyResourceToCubeMap(const ComPtr<ID3D12Resource>& dstCube, const ComPtr<ID3D12Resource>& srcTex, UINT faceIndex);
         void CopyResourceFromCubeMap(const GResource& dstTex, const GResource& srcCube, UINT faceIndex);
@@ -189,6 +190,8 @@ namespace PEPEngine::Graphics
                               UINT SrcOffset,
                               UINT numBytes, bool copyBarier = true);
         void CopyResource(const ComPtr<ID3D12Resource>& dstRes, const ComPtr<ID3D12Resource>& srcRes);
+        void CopyResourceNoBarrier(const ComPtr<ID3D12Resource>& dstRes,
+                                   const ComPtr<ID3D12Resource>& srcRes);
 
         /**
              * Resolve a multisampled resource into a non-multisampled resource.

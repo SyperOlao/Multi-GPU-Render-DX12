@@ -172,16 +172,18 @@
         <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"/>
         <ClCompile Include="Source\Platform\Win32InputRouter.cpp"/>
         <ClCompile Include="Source\Rendering\RenderPipeline.cpp"/>
+        <ClCompile Include="Source\Rendering\MultiGpuVoxelRenderTargets.cpp"/>
+        <ClCompile Include="Source\Rendering\VoxelCompositePass.cpp"/>
         <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"/>
         <ClCompile Include="Source\Scene\SceneFactory.cpp"/>
         <ClCompile Include="Source\Scene\SceneTransformController.cpp"/>
         <ClCompile Include="Source\Scene\SceneTransformPersistence.cpp"/>
         <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"/>
-        <ClCompile Include="Source\Voxels\CrossAdapterVoxelEmitter.cpp"/>
-        <ClCompile Include="Source\Voxels\VoxelEmitterGpuResources.cpp"/>
+        <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"/>
-        <ClCompile Include="Source\Voxels\VoxelWaterfallEmitter.cpp"/>
+        <ClCompile Include="Source\Voxels\VoxelWaterfallWorkload.cpp"/>
+        <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"/>
         <ClCompile Include="VoxelWaterfallApp.cpp"/>
         <ClCompile Include="Source.cpp"/>
     </ItemGroup>
@@ -219,18 +221,20 @@
         <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"/>
         <ClInclude Include="Source\Platform\Win32InputRouter.h"/>
         <ClInclude Include="Source\Rendering\RenderPipeline.h"/>
+        <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"/>
+        <ClInclude Include="Source\Rendering\VoxelCompositePass.h"/>
         <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"/>
         <ClInclude Include="Source\Scene\SceneFactory.h"/>
         <ClInclude Include="Source\Scene\SceneTransformController.h"/>
         <ClInclude Include="Source\Scene\SceneTransformPersistence.h"/>
         <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"/>
-        <ClInclude Include="Source\Voxels\CrossAdapterVoxelEmitter.h"/>
-        <ClInclude Include="Source\Voxels\VoxelEmitterGpuResources.h"/>
+        <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"/>
         <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"/>
         <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"/>
         <ClInclude Include="Source\Voxels\VoxelTypes.h"/>
+        <ClInclude Include="Source\Voxels\VoxelWaterfallWorkload.h"/>
         <ClInclude Include="VoxelWaterfallApp.h"/>
-        <ClInclude Include="Source\Voxels\VoxelWaterfallEmitter.h"/>
+        <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"/>
     </ItemGroup>
     <ItemGroup>
         <None Include="README.md"/>
@@ -347,6 +351,9 @@
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
+        </None>
+        <None Include="Shaders\VoxelComposite.hlsl">
+            <FileType>Document</FileType>
         </None>
     </ItemGroup>
     <ItemGroup>

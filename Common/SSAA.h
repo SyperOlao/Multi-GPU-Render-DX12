@@ -43,6 +43,8 @@ public:
 
     GDescriptor* GetSRV();
 
+    GDescriptor* GetDepthSRV();
+
     GDescriptor* GetDSV();
 
     void OnResize(UINT newWidth, UINT newHeight);

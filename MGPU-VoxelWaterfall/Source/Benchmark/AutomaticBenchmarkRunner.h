@@ -7,13 +7,12 @@
 
 struct AutomaticBenchmarkConfig
 {
-    VoxelExecutionMode Mode = VoxelExecutionMode::PrimaryOnly;
-    const char* ModeName = "PrimaryOnly";
+    VoxelExecutionMode Mode = VoxelExecutionMode::SingleGpuFull;
+    const char* ModeName = "SingleGpuFull";
     const char* Preset = "Low";
-    int NearCount = 0;
-    int MediumCount = 0;
-    int FarCount = 0;
     uint32_t TotalCount = 0;
+    float SecondaryShare = 0.25f;
+    uint32_t Repetition = 0;
 };
 
 class AutomaticBenchmarkRunner
@@ -21,4 +20,3 @@ class AutomaticBenchmarkRunner
 public:
     static std::vector<AutomaticBenchmarkConfig> BuildDefaultConfigs();
 };
-

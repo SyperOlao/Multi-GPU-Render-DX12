@@ -12,6 +12,7 @@ RWStructuredBuffer<ParticleData> InjectionParticles : register(u3);
 #ifdef SIMULATION
 AppendStructuredBuffer<uint> DeadParticles : register(u1);
 RWStructuredBuffer<uint> AliveParticles : register(u2);
+RWStructuredBuffer<uint> SimulationStats : register(u4);
 #endif
 
 #define THREAD_GROUP_X 32
@@ -53,10 +54,28 @@ float3 DeterministicSpawnPosition(uint voxelIndex)
     return float3(x, y, z);
 }
 
+float3 DeterministicRecyclePosition(uint voxelIndex)
+{
+    const float voxelSize = max(EmitterBuffer.VoxelSize, 0.05f);
+    const float3 basePosition = DeterministicSpawnPosition(voxelIndex);
+    const uint topLayer = HashVoxel(voxelIndex + EmitterBuffer.Seed * 13u) % 3u;
+    return float3(basePosition.x, EmitterBuffer.SpawnHeight + (float)topLayer * voxelSize, basePosition.z);
+}
+
 float3 DeterministicInitialVelocity(uint voxelIndex)
 {
     const float speedVariation = 0.75f + 0.5f * HashUnitFloat(voxelIndex ^ EmitterBuffer.Seed ^ 0x9e3779b9u);
-    return float3(0.0f, -EmitterBuffer.InitialFallSpeed * speedVariation, 0.0f);
+    const float lateralX = (HashUnitFloat(voxelIndex ^ EmitterBuffer.Seed ^ 0x85ebca6bu) - 0.5f) * 0.8f;
+    const float lateralZ = (HashUnitFloat(voxelIndex ^ EmitterBuffer.Seed ^ 0xc2b2ae35u) - 0.5f) * 0.45f;
+    return float3(lateralX, -EmitterBuffer.InitialFallSpeed * speedVariation, lateralZ);
+}
+
+float2 SafeNormalize2(float2 value)
+{
+    const float lengthSquared = dot(value, value);
+    if (lengthSquared <= 1.0e-5f)
+        return float2(1.0f, 0.0f);
+    return value * rsqrt(lengthSquared);
 }
 
 [numthreads(THREAD_GROUP_X, THREAD_GROUP_Y, 1)]
@@ -87,18 +106,35 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
     const uint aliveIndex = AliveParticles.Load(threadParticleIndex);
     ParticleData particle = ParticlesPool.Load(aliveIndex);
-
-    particle.Velocity += EmitterBuffer.Force * EmitterBuffer.DeltaTime;
-    particle.ContinuousPosition += particle.Velocity * EmitterBuffer.DeltaTime;
-
-    if (particle.ContinuousPosition.y <= EmitterBuffer.FloorHeight)
-    {
-        particle.ContinuousPosition = DeterministicSpawnPosition(particle.VoxelIndex);
-        particle.Velocity = DeterministicInitialVelocity(particle.VoxelIndex);
-    }
+    particle.PreviousContinuousPosition = particle.CurrentContinuousPosition;
 
     const float voxelSize = max(EmitterBuffer.VoxelSize, 0.05f);
-    particle.Position = round(particle.ContinuousPosition / voxelSize) * voxelSize;
+    const float dt = EmitterBuffer.DeltaTime;
+    const float time = EmitterBuffer.SimulationTime;
+    const float phase = particle.FlowPhase;
+    const float flowX = sin(phase + time * 0.91f + particle.CurrentContinuousPosition.y * 0.037f) * 0.85f;
+    const float flowZ = cos(phase * 1.37f + time * 0.67f + particle.CurrentContinuousPosition.x * 0.041f) * 0.45f;
+    const float floorSpread = saturate((EmitterBuffer.FloorHeight + voxelSize * 6.0f -
+        particle.CurrentContinuousPosition.y) / max(voxelSize * 8.0f, 0.001f));
+    const float2 spreadDirection = SafeNormalize2(particle.CurrentContinuousPosition.xz +
+        float2(HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed) - 0.5f,
+               HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed ^ 0x68bc21ebu) - 0.5f));
+
+    particle.Velocity += EmitterBuffer.Force * dt;
+    particle.Velocity.xz += (float2(flowX, flowZ) + spreadDirection * floorSpread * 4.0f) * dt;
+    particle.CurrentContinuousPosition += particle.Velocity * dt;
+    particle.AgeSeconds += dt;
+
+    if (particle.CurrentContinuousPosition.y <= EmitterBuffer.FloorHeight - EmitterBuffer.RecycleMargin)
+    {
+        const float3 recyclePosition = DeterministicRecyclePosition(particle.GlobalVoxelId);
+        particle.PreviousContinuousPosition = recyclePosition;
+        particle.CurrentContinuousPosition = recyclePosition;
+        particle.Velocity = DeterministicInitialVelocity(particle.GlobalVoxelId);
+        particle.AgeSeconds = 0.0f;
+        InterlockedAdd(SimulationStats[0], 1u);
+    }
+
     ParticlesPool[aliveIndex] = particle;
 #endif
 }

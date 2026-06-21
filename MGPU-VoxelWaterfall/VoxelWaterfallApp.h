@@ -1,7 +1,7 @@
 #pragma once
 #include "AssetsLoader.h"
-#include "Source/Voxels/CrossAdapterVoxelEmitter.h"
-#include "Source/Voxels/VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelGpuPartition.h"
+#include "Source/Voxels/VoxelWaterfallWorkload.h"
 #include "d3dApp.h"
 #include "Renderer.h"
 #include "RenderModeFactory.h"
@@ -9,13 +9,14 @@
 #include "SSAA.h"
 #include "SSAO.h"
 #include "FrameResource.h"
-#include "GCrossAdapterResource.h"
 #include "GDeviceFactory.h"
 #include "Light.h"
 #include "Source/Benchmark/BenchmarkController.h"
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Platform/Win32InputRouter.h"
 #include "Source/Rendering/RenderPipeline.h"
+#include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
+#include "Source/Rendering/VoxelCompositePass.h"
 #include "Source/Rendering/VoxelRenderPasses.h"
 #include "Source/Scene/SceneFactory.h"
 #include "Source/Scene/SceneTransformController.h"
@@ -46,30 +47,34 @@ protected:
     void DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList);
     void StartManualBenchmark();
     void StopManualBenchmark();
-    void SetVoxelLodEnabled(size_t lodIndex, bool enabled);
-    void RequestApplyVoxelLodSettings(size_t lodIndex);
+    void RequestApplyVoxelWorkloadSettings();
     bool ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const;
     void DrawVoxelWaterfallSceneLabels();
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
     std::string GetExecutionModeName() const;
+    std::string GetExecutionModeName(VoxelExecutionMode mode) const;
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
     BenchmarkControllerContext BuildBenchmarkControllerContext();
     void StartAutomaticBenchmark();
     void StopAutomaticBenchmark();
-    void ApplyBenchmarkVoxelCounts(int nearCount, int mediumCount, int farCount);
+    void ApplyBenchmarkVoxelCount(int totalCount);
+    void ApplyBenchmarkSecondaryShare(float secondaryShare);
     void InitFrameResource();
     void InitRootSignature();
     void InitPipeLineResource();
     void CreateMaterials();
     void InitSRVMemoryAndMaterials();
     void InitRenderPaths();
+    MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc() const;
+    void RebuildMultiGpuVoxelRenderTargets();
+    void DisableMultiGpu(const std::wstring& reason);
     void LoadStudyTexture();
     void LoadModels();
     void GenerateMipMaps();
     void SortGO();
     void CreateGO();
-    void SyncVoxelLodPosition(const GameObject& object, const Vector3& position);
+    void SyncVoxelWaterfallPosition(const GameObject& object, const Vector3& position);
     void CalculateFrameStats() override;
     void LogWriting();
     void UpdateMaterials();
@@ -86,12 +91,6 @@ protected:
     std::shared_ptr<GDevice> secondDevice;
 
     LockThreadQueue<std::wstring> logQueue{};
-    UINT64 primeGPURenderingTime = 0;
-    UINT64 secondGPURenderingTime = 0;
-
-    UINT64 primeGPUComputingTime = 0;
-    UINT64 secondGPUComputingTime = 0;
-
     D3D12_VIEWPORT fullViewport{};
     D3D12_RECT fullRect;
 
@@ -121,20 +120,33 @@ protected:
     custom_vector<custom_vector<std::shared_ptr<Renderer>>> typedRenderer = MemoryAllocator::CreateVector<custom_vector<
         std::shared_ptr<Renderer>>>();
 
-    bool UseCrossAdapter = false;
-    bool UseCrossSync = false;
-
-    VoxelLodArray voxelLods{};
-    VoxelExecutionMode executionMode = VoxelExecutionMode::PrimaryOnly;
-    bool splitMultiGpuAvailable = false;
-    std::wstring splitMultiGpuStatus = L"SplitMultiGpu is not initialized";
+    VoxelWaterfallWorkload voxelWorkload{};
+    bool voxelWorkloadSettingsPending = false;
+    VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
+    bool multiGpuAvailable = false;
+    std::wstring multiGpuStatus = L"MultiGpu is not initialized";
+    std::vector<std::wstring> adapterReportLines;
+    MultiGpuVoxelRenderTargets multiGpuVoxelRenderTargets;
     UINT64 primaryComputeQueueFenceValue = 0;
     UINT64 secondaryComputeQueueFenceValue = 0;
-    UINT64 crossAdapterDataReadyFenceValue = 0;
+    UINT64 crossAdapterRenderReadyFenceValue = 0;
     UINT64 graphicsPassFenceValue = 0;
+    UINT64 lastPrimaryPartitionGraphicsFenceValue = 0;
+    UINT64 lastSecondaryPartitionGraphicsFenceValue = 0;
+    VoxelAdapterOwner lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Primary;
     uint64_t simulationFrameIndex = 0;
+    double voxelSimulationAccumulator = 0.0;
+    double voxelSimulationTime = 0.0;
+    uint32_t voxelSimulationStepsThisFrame = 0;
+    float voxelInterpolationAlpha = 0.0f;
+    uint32_t voxelRecycledCount = 0;
+    uint32_t voxelAliveCount = 0;
+    uint32_t voxelExpectedCount = 0;
+    VoxelFrameGraphTelemetry frameGraphTelemetry{};
     VoxelSimulationScheduler voxelScheduler;
     RenderPipeline renderPipeline;
+    VoxelCompositePass voxelCompositePass;
     VoxelRenderPasses voxelRenderPasses;
     VoxelWaterfallDebugPanel debugPanel;
     SceneFactory sceneFactory;
@@ -145,18 +157,13 @@ protected:
     BenchmarkController benchmarkController;
     std::chrono::steady_clock::time_point cpuFrameStart{};
     double currentPrimaryWaitMs = 0.0;
-    double currentSecondaryWaitMs = 0.0;
+    VoxelCompositeDebugView voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
 
     GDescriptor imguiSrvMemory;
     bool imguiInitialized = false;
 
-    ComPtr<ID3D12Fence> primeComputeFence;
-    ComPtr<ID3D12Fence> secondComputeFence;
-    UINT64 sharedComputeFenceValue = 0;
-
-    ComPtr<ID3D12Fence> primeRenderFence;
-    ComPtr<ID3D12Fence> secondRenderFence;
-    UINT64 sharedRenderFenceValue = 0;
+    ComPtr<ID3D12Fence> primeCrossAdapterRenderReadyFence;
+    ComPtr<ID3D12Fence> secondCrossAdapterRenderReadyFence;
 
     PassConstants mainPassCB;
     PassConstants shadowPassCB;

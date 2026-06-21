@@ -1,11 +1,11 @@
 struct ParticleData
 {
-    float3 Position;
-    float Reserved;
+    float3 PreviousContinuousPosition;
+    float AgeSeconds;
     float3 Velocity;
-    float Reserved1;
-    uint VoxelIndex;
-    float3 ContinuousPosition;
+    float FlowPhase;
+    uint GlobalVoxelId;
+    float3 CurrentContinuousPosition;
 };
 
 struct EmitterData
@@ -28,4 +28,9 @@ struct EmitterData
     float WaterfallDepth;
     float InitialFallSpeed;
     uint Seed;
+
+    float SimulationTime;
+    float InterpolationAlpha;
+    float RecycleMargin;
+    float GridSnapEnabled;
 };

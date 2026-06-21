@@ -4,30 +4,27 @@
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Voxels/VoxelTypes.h"
 
-#include <wrl.h>
-
 struct VoxelSimulationSchedulerContext
 {
-    VoxelLodArray& Lods;
-    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::PrimaryOnly;
-    bool SplitMultiGpuAvailable = false;
-    uint64_t SimulationFrameIndex = 0;
+    VoxelWaterfallWorkload& Workload;
+    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    bool MultiGpuAvailable = false;
+    uint64_t& SimulationFrameIndex;
     uint32_t TimestampHeapIndex = 0;
+    double FrameDeltaTime = 0.0;
+    double& SimulationAccumulator;
+    double& SimulationTime;
+    uint32_t& SimulationStepsThisFrame;
+    float& InterpolationAlpha;
+    uint32_t& RecycledVoxelCount;
+    uint32_t& AliveVoxelCount;
+    uint32_t& ExpectedVoxelCount;
 
     std::shared_ptr<PEPEngine::Graphics::GCommandQueue> PrimaryComputeQueue;
     std::shared_ptr<PEPEngine::Graphics::GCommandQueue> SecondaryComputeQueue;
-    std::shared_ptr<PEPEngine::Graphics::GCommandQueue> CrossAdapterCopyQueue;
-    std::shared_ptr<PEPEngine::Graphics::GCommandQueue> RenderQueue;
 
-    Microsoft::WRL::ComPtr<ID3D12Fence> PrimeComputeFence;
-    Microsoft::WRL::ComPtr<ID3D12Fence> SecondComputeFence;
-    Microsoft::WRL::ComPtr<ID3D12Fence> SecondRenderFence;
-
-    UINT64 SecondRenderFenceValue = 0;
     UINT64& PrimaryComputeFenceValue;
     UINT64& SecondaryComputeFenceValue;
-    UINT64& SharedComputeFenceValue;
-    UINT64& CrossAdapterDataReadyFenceValue;
     UINT64& CurrentFrameComputeFenceValue;
 
     VoxelBenchmarkProfiler& BenchmarkProfiler;
@@ -35,8 +32,12 @@ struct VoxelSimulationSchedulerContext
 
 struct VoxelSimulationSchedulerResult
 {
-    bool UsedSplitMultiGpu = false;
+    bool UsedMultiGpuMode = false;
     bool SecondaryWorkThisFrame = false;
+    bool PrimaryComputeSubmitted = false;
+    bool SecondaryComputeSubmitted = false;
+    UINT64 PrimaryComputeFenceValue = 0;
+    UINT64 SecondaryComputeFenceValue = 0;
 };
 
 class VoxelSimulationScheduler
@@ -45,11 +46,11 @@ public:
     VoxelSimulationSchedulerResult DispatchFrame(const VoxelSimulationSchedulerContext& context) const;
 
 private:
-    static constexpr float FixedSimulationDeltaTime = 1.0f / 60.0f;
-    static constexpr float MaxSimulationDeltaTime = 1.0f / 15.0f;
+    static constexpr double FixedSimulationDeltaTime = 1.0 / 60.0;
+    static constexpr double MaxAccumulatedSimulationTime = 0.25;
 
-    static uint32_t EffectiveInterval(const VoxelSimulationSchedulerContext& context, size_t lodIndex);
-    static bool ShouldUpdateLod(const VoxelSimulationSchedulerContext& context, size_t lodIndex);
-    static void PrepareLodDispatch(const VoxelSimulationSchedulerContext& context, size_t lodIndex);
-    static void MarkLodUpdated(const VoxelSimulationSchedulerContext& context, size_t lodIndex);
+    static void PreparePartitionDispatch(const VoxelSimulationSchedulerContext& context,
+                                         VoxelPartitionState& partition);
+    static void MarkPartitionUpdated(const VoxelSimulationSchedulerContext& context,
+                                     VoxelPartitionState& partition);
 };

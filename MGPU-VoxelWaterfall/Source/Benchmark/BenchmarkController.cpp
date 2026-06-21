@@ -80,9 +80,11 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
         if (automaticBenchmarkIndex < automaticBenchmarkConfigs.size())
         {
             const auto& config = automaticBenchmarkConfigs[automaticBenchmarkIndex];
-            summary.Mode = config.ModeName;
+            summary.RequestedMode = config.ModeName;
             summary.Preset = config.Preset;
             summary.TotalVoxelCount = config.TotalCount;
+            summary.SecondaryShare = config.SecondaryShare;
+            summary.Repetition = config.Repetition;
         }
         automaticBenchmarkSummaries.push_back(summary);
         context.Log(L"\nFinished benchmark CSV: " + summary.CsvPath.wstring());
@@ -124,23 +126,39 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         return;
 
     const auto& config = automaticBenchmarkConfigs[automaticBenchmarkIndex];
-    if (config.Mode != VoxelExecutionMode::PrimaryOnly && !context.SplitMultiGpuAvailable)
+    const bool requestsMultiGpu = config.Mode == VoxelExecutionMode::MultiGpuFull ||
+        config.Mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    if (requestsMultiGpu && !context.MultiGpuAvailable)
     {
         context.Log(L"\nSkipped benchmark " + ToWide(config.ModeName) +
             L" / " + ToWide(config.Preset) +
             L": secondary hardware adapter unavailable");
+        VoxelBenchmarkProfiler::BenchmarkSummary skipped{};
+        skipped.RequestedMode = config.ModeName;
+        skipped.ActualMode = "Skipped";
+        skipped.Preset = config.Preset;
+        skipped.TotalVoxelCount = config.TotalCount;
+        skipped.SecondaryShare = config.SecondaryShare;
+        skipped.Repetition = config.Repetition;
+        skipped.SkipReason = "secondary hardware adapter unavailable";
+        automaticBenchmarkSummaries.push_back(skipped);
         ++automaticBenchmarkIndex;
         return;
     }
 
     context.Flush();
     context.ApplyExecutionMode(config.Mode);
-    ApplyBenchmarkVoxelCounts(context, config.NearCount, config.MediumCount, config.FarCount);
+    ApplyBenchmarkVoxelCount(context, static_cast<int>(config.TotalCount));
+    if (context.ApplySecondaryShare)
+        context.ApplySecondaryShare(config.SecondaryShare);
     context.Flush();
 
     const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +
-        config.Preset + "_" + std::to_string(config.TotalCount) + ".csv";
-    if (!context.Profiler.Start(benchmarkDirectory, context.BuildMetadata(), fileName, config.Preset))
+        config.Preset + "_" + std::to_string(config.TotalCount) +
+        "_share" + std::to_string(static_cast<int>(config.SecondaryShare * 100.0f)) +
+        "_rep" + std::to_string(config.Repetition) + ".csv";
+    if (!context.Profiler.Start(benchmarkDirectory, context.BuildMetadata(), fileName,
+                                config.Preset, config.Repetition))
     {
         context.Log(L"\nFailed to start benchmark " + ToWide(config.ModeName));
         ++automaticBenchmarkIndex;
@@ -149,14 +167,14 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
 
     context.Log(L"\nStarted benchmark: " + ToWide(config.ModeName) +
         L" / " + ToWide(config.Preset) +
-        L" / " + std::to_wstring(config.TotalCount) + L" voxels");
+        L" / " + std::to_wstring(config.TotalCount) + L" voxels" +
+        L" / secondary share " + std::to_wstring(config.SecondaryShare));
 }
 
-void BenchmarkController::ApplyBenchmarkVoxelCounts(const BenchmarkControllerContext& context,
-                                                    const int nearCount, const int mediumCount,
-                                                    const int farCount) const
+void BenchmarkController::ApplyBenchmarkVoxelCount(const BenchmarkControllerContext& context,
+                                                   const int totalCount) const
 {
-    context.ApplyVoxelCounts(nearCount, mediumCount, farCount);
+    context.ApplyVoxelCount(totalCount);
 }
 
 void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext& context)
@@ -167,4 +185,3 @@ void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext
     if (BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries))
         context.Log(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());
 }
-

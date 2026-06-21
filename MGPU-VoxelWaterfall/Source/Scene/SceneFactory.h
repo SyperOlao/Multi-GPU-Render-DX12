@@ -27,8 +27,9 @@ struct SceneFactoryContext
     PEPEngine::Graphics::GDescriptor& SrvTexturesMemory;
     PEPEngine::Allocator::custom_vector<std::shared_ptr<GameObject>>& GameObjects;
     PEPEngine::Allocator::custom_vector<PEPEngine::Allocator::custom_vector<std::shared_ptr<Renderer>>>& TypedRenderers;
-    VoxelLodArray& VoxelLods;
-    bool SplitMultiGpuAvailable = false;
+    VoxelWaterfallWorkload& Workload;
+    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    bool MultiGpuAvailable = false;
     float AspectRatio = 1.0f;
 };
 
@@ -40,10 +41,5 @@ public:
 private:
     static void AddRenderer(const SceneFactoryContext& context, PEPEngine::Graphics::RenderMode mode,
                             const std::shared_ptr<Renderer>& renderer);
-    static void CreateVoxelLod(const SceneFactoryContext& context, const char* displayName,
-                               const char* objectName, size_t lodIndex,
-                               const DirectX::SimpleMath::Vector3& position,
-                               const DirectX::SimpleMath::Vector3& rotation,
-                               int count,
-                               const VoxelSimulationParameters& parameters);
+    static void CreateVoxelWaterfall(const SceneFactoryContext& context);
 };

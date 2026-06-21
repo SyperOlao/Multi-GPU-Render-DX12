@@ -3,7 +3,6 @@
 #include "AssetsLoader.h"
 #include "Camera.h"
 #include "CameraController.h"
-#include "Source/Voxels/CrossAdapterVoxelEmitter.h"
 #include "GameObject.h"
 #include "GModel.h"
 #include "Light.h"
@@ -11,7 +10,7 @@
 #include "Rotater.h"
 #include "SkyBox.h"
 #include "Transform.h"
-#include "Source/Voxels/VoxelWaterfallEmitter.h"
+#include "Source/Voxels/VoxelGpuPartition.h"
 
 #include <algorithm>
 
@@ -20,9 +19,21 @@ using namespace PEPEngine::Graphics;
 
 namespace
 {
-    constexpr float PlatformEdgeWaterfallX = 150.0f;
-    constexpr float PlatformWaterfallFloorY = -80.0f;
-    const Vector3 PlatformEdgeWaterfallRotation(0.0f, 90.0f, 0.0f);
+    bool UsesSecondaryAdapter(const SceneFactoryContext& context, const VoxelPartitionState& partition)
+    {
+        const bool multiGpuMode = context.ExecutionMode == VoxelExecutionMode::MultiGpuFull ||
+            context.ExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+        return multiGpuMode &&
+            context.MultiGpuAvailable &&
+            partition.PartitionId == VoxelPartitionId::SecondaryPartition &&
+            context.SecondaryDevice != nullptr;
+    }
+
+    std::shared_ptr<GDevice> DeviceForPartition(const SceneFactoryContext& context,
+                                                const VoxelPartitionState& partition)
+    {
+        return UsesSecondaryAdapter(context, partition) ? context.SecondaryDevice : context.PrimaryDevice;
+    }
 }
 
 void SceneFactory::AddRenderer(const SceneFactoryContext& context, const RenderMode mode,
@@ -31,44 +42,26 @@ void SceneFactory::AddRenderer(const SceneFactoryContext& context, const RenderM
     context.TypedRenderers[static_cast<int>(mode)].push_back(renderer);
 }
 
-void SceneFactory::CreateVoxelLod(const SceneFactoryContext& context, const char* displayName,
-                                  const char* objectName, const size_t lodIndex,
-                                  const Vector3& position, const Vector3& rotation, const int count,
-                                  const VoxelSimulationParameters& parameters)
+void SceneFactory::CreateVoxelWaterfall(const SceneFactoryContext& context)
 {
-    auto voxelObject = std::make_unique<GameObject>(objectName);
-    voxelObject->GetTransform()->SetPosition(position);
-    voxelObject->GetTransform()->SetEulerRotate(rotation);
+    auto voxelObject = std::make_unique<GameObject>("VoxelWaterfall");
+    voxelObject->GetTransform()->SetPosition(context.Workload.Position);
+    voxelObject->GetTransform()->SetEulerRotate(context.Workload.Rotation);
 
-    std::shared_ptr<VoxelWaterfallEmitter> emitter;
-    std::shared_ptr<CrossAdapterVoxelEmitter> crossEmitter;
-    if (lodIndex != NearVoxelWaterfall && context.SplitMultiGpuAvailable)
+    for (auto& partition : context.Workload.Partitions)
     {
-        crossEmitter = std::make_shared<CrossAdapterVoxelEmitter>(
-            context.PrimaryDevice, context.SecondaryDevice, static_cast<DWORD>(std::max(1, count)), parameters);
-        crossEmitter->SetEnabled(true);
-        voxelObject->AddComponent(crossEmitter);
-        AddRenderer(context, RenderMode::Particle, crossEmitter);
+        partition.AdapterOwner = UsesSecondaryAdapter(context, partition)
+                                     ? VoxelAdapterOwner::Secondary
+                                     : VoxelAdapterOwner::Primary;
+        auto gpuPartition = std::make_shared<VoxelGpuPartition>(
+            DeviceForPartition(context, partition), partition.GlobalVoxelIds, context.Workload.Parameters);
+        gpuPartition->SetSimulationEnabled(true);
+        gpuPartition->SetRenderEnabled(true);
+        voxelObject->AddComponent(gpuPartition);
+        if (partition.AdapterOwner == VoxelAdapterOwner::Primary)
+            AddRenderer(context, RenderMode::Particle, gpuPartition);
+        partition.GpuPartition = gpuPartition;
     }
-    else
-    {
-        emitter = std::make_shared<VoxelWaterfallEmitter>(
-            context.PrimaryDevice, static_cast<DWORD>(std::max(1, count)), parameters);
-        emitter->SetEnabled(true);
-        voxelObject->AddComponent(emitter);
-        AddRenderer(context, RenderMode::Particle, emitter);
-    }
-
-    auto& lod = context.VoxelLods[lodIndex];
-    lod.DisplayName = displayName;
-    lod.ObjectName = objectName;
-    lod.Enabled = true;
-    lod.SettingsPending = false;
-    lod.VoxelCount = std::max(1, count);
-    lod.Parameters = parameters;
-    lod.Position = position;
-    lod.Emitter = emitter;
-    lod.CrossEmitter = crossEmitter;
 
     context.GameObjects.push_back(std::move(voxelObject));
 }
@@ -152,47 +145,11 @@ void SceneFactory::CreateScene(const SceneFactoryContext& context) const
         }
     }
 
-    VoxelSimulationParameters nearParameters{};
-    nearParameters.VoxelSize = 0.50f;
-    nearParameters.SpawnHeight = 14.0f;
-    nearParameters.FloorHeight = PlatformWaterfallFloorY;
-    nearParameters.WaterfallWidth = 26.0f;
-    nearParameters.WaterfallDepth = 3.0f;
-    nearParameters.InitialFallSpeed = 7.0f;
-    nearParameters.Gravity = 34.0f;
-    nearParameters.Seed = 1337;
-
-    VoxelSimulationParameters mediumParameters = nearParameters;
-    mediumParameters.VoxelSize = nearParameters.VoxelSize * 2.0f;
-    mediumParameters.SpawnHeight = 13.0f;
-    mediumParameters.WaterfallWidth = 30.0f;
-    mediumParameters.WaterfallDepth = 3.6f;
-    mediumParameters.Seed = 7331;
-
-    VoxelSimulationParameters farParameters = nearParameters;
-    farParameters.VoxelSize = nearParameters.VoxelSize * 4.0f;
-    farParameters.SpawnHeight = 12.0f;
-    farParameters.WaterfallWidth = 36.0f;
-    farParameters.WaterfallDepth = 4.8f;
-    farParameters.Seed = 9001;
-
-    CreateVoxelLod(context, "NearVoxelWaterfall", "NearVoxelWaterfall", NearVoxelWaterfall,
-                   Vector3(PlatformEdgeWaterfallX, 0.0f, 16.0f), PlatformEdgeWaterfallRotation,
-                   18432, nearParameters);
-    CreateVoxelLod(context, "MediumVoxelWaterfall", "MediumVoxelWaterfall", MediumVoxelWaterfall,
-                   Vector3(PlatformEdgeWaterfallX, 0.0f, 50.0f), PlatformEdgeWaterfallRotation,
-                   4608, mediumParameters);
-    CreateVoxelLod(context, "FarVoxelWaterfall", "FarVoxelWaterfall", FarVoxelWaterfall,
-                   Vector3(PlatformEdgeWaterfallX, 0.0f, 88.0f), PlatformEdgeWaterfallRotation,
-                   1152, farParameters);
-
-    context.VoxelLods[NearVoxelWaterfall].UpdateInterval = 1;
-    context.VoxelLods[MediumVoxelWaterfall].UpdateInterval = 2;
-    context.VoxelLods[FarVoxelWaterfall].UpdateInterval = 4;
+    CreateVoxelWaterfall(context);
 
     auto voxelFloor = std::make_unique<GameObject>();
     voxelFloor->GetTransform()->SetEulerRotate(Vector3(90.0f, 0.0f, 0.0f));
-    voxelFloor->GetTransform()->SetPosition(Vector3(0.0f, nearParameters.FloorHeight, 28.0f));
+    voxelFloor->GetTransform()->SetPosition(Vector3(0.0f, context.Workload.Parameters.FloorHeight, 28.0f));
     voxelFloor->GetTransform()->SetScale(Vector3(3.0f, 1.0f, 3.0f));
     auto renderer = std::make_shared<ModelRenderer>(context.PrimaryDevice, context.Models[L"quad"]);
     voxelFloor->AddComponent(renderer);

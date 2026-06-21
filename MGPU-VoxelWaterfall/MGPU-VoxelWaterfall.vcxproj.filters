@@ -74,16 +74,18 @@
     <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
     <ClCompile Include="Source\Platform\Win32InputRouter.cpp"><Filter>Source Files\Platform</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\RenderPipeline.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\MultiGpuVoxelRenderTargets.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\VoxelCompositePass.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Scene\SceneFactory.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\Scene\SceneTransformController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\Scene\SceneTransformPersistence.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
-    <ClCompile Include="Source\Voxels\CrossAdapterVoxelEmitter.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
-    <ClCompile Include="Source\Voxels\VoxelEmitterGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
-    <ClCompile Include="Source\Voxels\VoxelWaterfallEmitter.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelWaterfallWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
@@ -103,17 +105,19 @@
     <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>
     <ClInclude Include="Source\Platform\Win32InputRouter.h"><Filter>Header Files\Platform</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\RenderPipeline.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\VoxelCompositePass.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Scene\SceneFactory.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\Scene\SceneTransformController.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\Scene\SceneTransformPersistence.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
-    <ClInclude Include="Source\Voxels\CrossAdapterVoxelEmitter.h"><Filter>Header Files\Voxels</Filter></ClInclude>
-    <ClInclude Include="Source\Voxels\VoxelEmitterGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
-    <ClInclude Include="Source\Voxels\VoxelWaterfallEmitter.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelWaterfallWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"><Filter>Header Files\Voxels</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />
@@ -130,6 +134,7 @@
     <None Include="Shaders\Ssao.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\SsaoBlur.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\TreeSprite.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VoxelComposite.hlsl"><Filter>Shaders</Filter></None>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\ComputeParticle.hlsl"><Filter>Shaders</Filter></FxCompile>

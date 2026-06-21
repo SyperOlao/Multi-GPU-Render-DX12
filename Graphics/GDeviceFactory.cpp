@@ -10,6 +10,17 @@
 
 namespace PEPEngine::Graphics
 {
+    namespace
+    {
+        bool IsGpuBasedValidationRequested()
+        {
+            wchar_t value[8] = {};
+            const DWORD length = GetEnvironmentVariableW(L"MGPU_ENABLE_GPU_BASED_VALIDATION", value,
+                                                         static_cast<DWORD>(std::size(value)));
+            return length > 0 && length < std::size(value) && value[0] == L'1';
+        }
+    }
+
     ComPtr<IDXGIFactory4> GDeviceFactory::dxgiFactory = CreateFactory();
     Lazy<bool> GDeviceFactory::isTearingSupport = Lazy<bool>(CheckTearingSupport);
     std::vector<ComPtr<IDXGIAdapter3>> GDeviceFactory::adapters = GetAdapters();
@@ -24,9 +35,12 @@ namespace PEPEngine::Graphics
             ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
             debugController->EnableDebugLayer();
 
-            ComPtr<ID3D12Debug1> spDebugController1;
-            ThrowIfFailed(debugController->QueryInterface(IID_PPV_ARGS(&spDebugController1)));
-            //spDebugController1->SetEnableGPUBasedValidation(true);
+            if (IsGpuBasedValidationRequested())
+            {
+                ComPtr<ID3D12Debug1> spDebugController1;
+                ThrowIfFailed(debugController->QueryInterface(IID_PPV_ARGS(&spDebugController1)));
+                spDebugController1->SetEnableGPUBasedValidation(true);
+            }
         }
 #endif
 

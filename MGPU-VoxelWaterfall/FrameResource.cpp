@@ -8,6 +8,9 @@ FrameResource::FrameResource(std::shared_ptr<GDevice> primeDevices, std::shared_
     PrimePassConstantUploadBuffer = (std::make_shared<ConstantUploadBuffer<PassConstants>>(
         primeDevices, passCount, primeDevices->GetName() + L"Prime Path Data Buffer"));
 
+    SecondaryPassConstantUploadBuffer = (std::make_shared<ConstantUploadBuffer<PassConstants>>(
+        secondDevice, passCount, secondDevice->GetName() + L" Secondary Voxel Path Data Buffer"));
+
     SsaoConstantUploadBuffer = (std::make_shared<ConstantUploadBuffer<SsaoConstants>>(
         primeDevices, 1, primeDevices->GetName() + L" SSAO Path Data Buffer"));
 

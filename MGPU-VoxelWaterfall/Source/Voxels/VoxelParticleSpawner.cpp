@@ -20,36 +20,50 @@ namespace
     {
         return static_cast<float>(HashVoxel(value) & 0x00ffffffu) / static_cast<float>(0x01000000u);
     }
+
+    constexpr float TwoPi = 6.28318530717958647692f;
 }
 
-VoxelParticleData VoxelParticleSpawner::Generate(const DWORD index, const VoxelSimulationParameters& parameters)
+VoxelParticleSpawner::SpawnGridCell VoxelParticleSpawner::ComputeSpawnGridCell(
+    const DWORD globalVoxelId,
+    const VoxelSimulationParameters& parameters)
 {
     const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
     const DWORD widthCells = std::max<DWORD>(1, static_cast<DWORD>(std::floor(parameters.WaterfallWidth / voxelSize)));
     const DWORD depthCells = std::max<DWORD>(1, static_cast<DWORD>(std::floor(parameters.WaterfallDepth / voxelSize)));
-    const DWORD horizontalCells = widthCells * depthCells;
-    const DWORD verticalCells = std::max<DWORD>(
+    const DWORD heightCells = std::max<DWORD>(
         1, static_cast<DWORD>(std::floor((parameters.SpawnHeight - parameters.FloorHeight) / voxelSize)));
+    const DWORD horizontalCells = widthCells * depthCells;
 
     const DWORD laneCount = std::max<DWORD>(
         1, std::min<DWORD>(horizontalCells, std::max<DWORD>(3, (horizontalCells * 3) / 4)));
-    const DWORD laneIndex = index % laneCount;
+    const DWORD laneIndex = globalVoxelId % laneCount;
     const DWORD laneHash = HashVoxel(laneIndex ^ parameters.Seed);
     const DWORD xIndex = laneHash % widthCells;
     const DWORD zIndex = HashVoxel(laneHash + parameters.Seed * 17u) % depthCells;
-    const DWORD yPhase = HashVoxel(index + parameters.Seed * 31u) % verticalCells;
-    const DWORD yIndex = ((index / laneCount) + yPhase) % verticalCells;
+    const DWORD yPhase = HashVoxel(globalVoxelId + parameters.Seed * 31u) % heightCells;
+    const DWORD yIndex = ((globalVoxelId / laneCount) + yPhase) % heightCells;
 
-    const float x = (static_cast<float>(xIndex) - 0.5f * static_cast<float>(widthCells - 1)) * voxelSize;
-    const float y = parameters.SpawnHeight - static_cast<float>(yIndex) * voxelSize;
-    const float z = (static_cast<float>(zIndex) - 0.5f * static_cast<float>(depthCells - 1)) * voxelSize;
-    const float speedVariation = 0.75f + 0.5f * HashUnitFloat(index ^ parameters.Seed ^ 0x9e3779b9u);
-
-    VoxelParticleData particle{};
-    particle.Position = DirectX::SimpleMath::Vector3(x, y, z);
-    particle.ContinuousPosition = particle.Position;
-    particle.Velocity = DirectX::SimpleMath::Vector3(0.0f, -parameters.InitialFallSpeed * speedVariation, 0.0f);
-    particle.VoxelIndex = index;
-    return particle;
+    return {xIndex, yIndex, zIndex, widthCells, heightCells, depthCells};
 }
 
+VoxelParticleData VoxelParticleSpawner::Generate(const DWORD globalVoxelId, const VoxelSimulationParameters& parameters)
+{
+    const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
+    const auto cell = ComputeSpawnGridCell(globalVoxelId, parameters);
+
+    const float x = (static_cast<float>(cell.X) - 0.5f * static_cast<float>(cell.Width - 1)) * voxelSize;
+    const float y = parameters.SpawnHeight - static_cast<float>(cell.Y) * voxelSize;
+    const float z = (static_cast<float>(cell.Z) - 0.5f * static_cast<float>(cell.Depth - 1)) * voxelSize;
+    const float speedVariation = 0.75f + 0.5f * HashUnitFloat(globalVoxelId ^ parameters.Seed ^ 0x9e3779b9u);
+    const float lateralX = (HashUnitFloat(globalVoxelId ^ parameters.Seed ^ 0x85ebca6bu) - 0.5f) * 0.8f;
+    const float lateralZ = (HashUnitFloat(globalVoxelId ^ parameters.Seed ^ 0xc2b2ae35u) - 0.5f) * 0.45f;
+
+    VoxelParticleData particle{};
+    particle.PreviousContinuousPosition = DirectX::SimpleMath::Vector3(x, y, z);
+    particle.CurrentContinuousPosition = particle.PreviousContinuousPosition;
+    particle.Velocity = DirectX::SimpleMath::Vector3(lateralX, -parameters.InitialFallSpeed * speedVariation, lateralZ);
+    particle.FlowPhase = HashUnitFloat(globalVoxelId ^ parameters.Seed ^ 0x27d4eb2fu) * TwoPi;
+    particle.GlobalVoxelId = globalVoxelId;
+    return particle;
+}

@@ -13,9 +13,16 @@ VertexOut VS(uint vertexID : SV_VertexID)
 {
     const uint particleIndex = RenderingParticles[vertexID];
     const ParticleData particle = Particles[particleIndex];
+    float3 center = lerp(particle.PreviousContinuousPosition, particle.CurrentContinuousPosition,
+                         saturate(EmitterBuffer.InterpolationAlpha));
+    if (EmitterBuffer.GridSnapEnabled > 0.5f)
+    {
+        const float voxelSize = max(EmitterBuffer.VoxelSize, 0.05f);
+        center = round(center / voxelSize) * voxelSize;
+    }
 
     VertexOut output;
-    output.PositionW = mul(float4(particle.Position, 1.0f), objectBuffer.World).xyz;
+    output.PositionW = mul(float4(center, 1.0f), objectBuffer.World).xyz;
     return output;
 }
 
@@ -78,7 +85,7 @@ void GS(point VertexOut input[1], inout TriangleStream<GeoOut> stream)
     stream.RestartStrip();
 }
 
-float4 PS(GeoOut input) : SV_Target
+float3 ComputeVoxelColor(GeoOut input)
 {
     const float3 normal = normalize(input.NormalW);
     const float3 lightDir = normalize(float3(0.35f, 0.85f, -0.45f));
@@ -90,5 +97,26 @@ float4 PS(GeoOut input) : SV_Target
     const float3 foamTint = float3(0.55f, 0.85f, 1.0f);
     const float3 baseColor = lerp(deepWater, foamTint, 0.12f + 0.18f * topFace + 0.10f * heightFade);
     const float lighting = 0.48f + 0.42f * diffuse + 0.10f * topFace;
-    return float4(baseColor * lighting, 1.0f);
+    return baseColor * lighting;
+}
+
+float4 PS(GeoOut input) : SV_Target
+{
+    return float4(ComputeVoxelColor(input), 1.0f);
+}
+
+struct SecondaryPixelOut
+{
+    float4 Color : SV_Target0;
+    float LinearDepth : SV_Target1;
+};
+
+SecondaryPixelOut PSSecondary(GeoOut input)
+{
+    SecondaryPixelOut output;
+    output.Color = float4(ComputeVoxelColor(input), 1.0f);
+
+    const float3 viewPosition = mul(float4(input.PositionW, 1.0f), worldBuffer.View).xyz;
+    output.LinearDepth = max(viewPosition.z, 0.0f);
+    return output;
 }
