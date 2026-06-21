@@ -235,18 +235,33 @@ struct alignas(16) VoxelLodBuildData
     DWORD SpatialLodMode = 0;
     DWORD AdapterOwner = 0;
     DWORD StreamKind = 0;
+    DWORD GroupTableCapacity = 0;
+
+    int32_t GridOriginX = 0;
+    int32_t GridOriginY = 0;
+    int32_t GridOriginZ = 0;
     DWORD Padding1 = 0;
 };
 
-static_assert(sizeof(VoxelLodBuildData) == 80);
+static_assert(sizeof(VoxelLodBuildData) == 96);
 
 struct alignas(16) VoxelLodRenderItem
 {
-    DWORD ParticleIndex = 0;
+    DirectX::SimpleMath::Vector3 PreviousCenter = DirectX::SimpleMath::Vector3::Zero;
+    float HalfExtentX = 0.0f;
+    DirectX::SimpleMath::Vector3 CurrentCenter = DirectX::SimpleMath::Vector3::Zero;
+    float HalfExtentY = 0.0f;
+    float HalfExtentZ = 0.0f;
     DWORD LodLevel = 0;
+    DWORD MaterialId = 0;
+    DWORD StreamKind = 0;
+    DWORD RepresentativeIndex = 0;
     DWORD Padding0 = 0;
     DWORD Padding1 = 0;
+    DWORD Padding2 = 0;
 };
+
+static_assert(sizeof(VoxelLodRenderItem) == 64);
 
 struct VoxelSpatialLodSettings
 {

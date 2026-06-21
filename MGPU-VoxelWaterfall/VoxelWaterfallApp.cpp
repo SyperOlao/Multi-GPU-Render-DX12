@@ -27,6 +27,7 @@
 #include "ModelRenderer.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
 #include "Source/Voxels/VoxelResearchEnvironmentGenerator.h"
+#include "Source/Voxels/VoxelSpatialLodReferenceTests.h"
 #include "Source/Scene/VoxelResearchCameraController.h"
 #include "Transform.h"
 #include "Window.h"
@@ -2204,6 +2205,8 @@ void VoxelWaterfallApp::CreateGO()
 #if defined(DEBUG) || defined(_DEBUG)
 void VoxelWaterfallApp::RunSceneOwnershipSettingsSelfTest()
 {
+    RunVoxelSpatialLodReferenceTests();
+
     if (voxelResearchSceneManager.GetActivePreset() != VoxelResearchScenePreset::MixedVoxelEnvironment)
         return;
 

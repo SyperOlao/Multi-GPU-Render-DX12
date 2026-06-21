@@ -21,6 +21,11 @@ struct LodBuildData
     uint SpatialLodMode;
     uint AdapterOwner;
     uint StreamKind;
+    uint GroupTableCapacity;
+
+    int GridOriginX;
+    int GridOriginY;
+    int GridOriginZ;
     uint Padding1;
 };
 
@@ -30,16 +35,14 @@ StructuredBuffer<uint> AliveParticles : register(t1);
 AppendStructuredBuffer<VoxelLodRenderItem> RenderParticles : register(u0);
 RWByteAddressBuffer DrawArguments : register(u1);
 RWStructuredBuffer<uint> LodStats : register(u2);
-RWStructuredBuffer<uint> PreviousLodLevels : register(u3);
+RWStructuredBuffer<uint> LodGroupKeys : register(u3);
 
 #define THREAD_GROUP_SIZE 256
-#define CHUNK_WIDTH_CELLS 8u
-#define CHUNK_HEIGHT_CELLS 8u
-#define CHUNK_DEPTH_CELLS 4u
+#define EMPTY_GROUP_KEY 0xffffffffu
 
-uint HashVoxel(uint value)
+uint HashGroupKey(uint key)
 {
-    uint x = value;
+    uint x = key;
     x ^= x >> 16;
     x *= 0x7feb352d;
     x ^= x >> 15;
@@ -48,67 +51,126 @@ uint HashVoxel(uint value)
     return x;
 }
 
-void ComputeSpawnGridCell(uint globalVoxelId, out uint3 cell, out uint3 gridSize)
-{
-    const float voxelSize = max(LodData.VoxelSize, 0.05f);
-    const uint widthCells = max(1u, (uint)floor(LodData.WaterfallWidth / voxelSize));
-    const uint depthCells = max(1u, (uint)floor(LodData.WaterfallDepth / voxelSize));
-    const uint heightCells = max(1u, (uint)floor((LodData.SpawnHeight - LodData.FloorHeight) / voxelSize));
-    const uint horizontalCells = widthCells * depthCells;
-    const uint laneCount = max(1u, min(horizontalCells, max(3u, (horizontalCells * 3u) / 4u)));
-    const uint laneIndex = globalVoxelId % laneCount;
-    const uint laneHash = HashVoxel(laneIndex ^ LodData.Seed);
-
-    cell.x = laneHash % widthCells;
-    cell.z = HashVoxel(laneHash + LodData.Seed * 17u) % depthCells;
-    const uint yPhase = HashVoxel(globalVoxelId + LodData.Seed * 31u) % heightCells;
-    cell.y = ((globalVoxelId / laneCount) + yPhase) % heightCells;
-    gridSize = uint3(widthCells, heightCells, depthCells);
-}
-
 uint3 DecodePackedGridCoordinate(uint packed)
 {
     return uint3(packed & 0x3ffu, (packed >> 10u) & 0x3ffu, (packed >> 20u) & 0x3ffu);
 }
 
-uint SelectLodLevel(float distanceToCamera, uint previousLevel)
+int FloorDiv(const int value, const int divisor)
 {
-    uint selectedLevel = 0u;
-    const float h = max(LodData.Hysteresis, 0.0f);
-    previousLevel = min(previousLevel, 2u);
-
-    if (LodData.SpatialLodMode != 0u)
-    {
-        if (previousLevel == 0u && distanceToCamera <= LodData.Lod0Distance + h)
-            selectedLevel = 0u;
-        else if (previousLevel == 1u &&
-                 distanceToCamera > LodData.Lod0Distance - h &&
-                 distanceToCamera <= LodData.Lod1Distance + h)
-            selectedLevel = 1u;
-        else if (previousLevel == 2u && distanceToCamera > LodData.Lod1Distance - h)
-            selectedLevel = 2u;
-        else if (distanceToCamera <= LodData.Lod0Distance)
-            selectedLevel = 0u;
-        else if (distanceToCamera <= LodData.Lod1Distance)
-            selectedLevel = 1u;
-        else
-            selectedLevel = 2u;
-    }
-
-    return selectedLevel;
+    return value >= 0 ? value / divisor : -((-value + divisor - 1) / divisor);
 }
 
-bool IsRepresentative(uint3 cell, uint lodLevel)
+int3 FloorDiv3(const int3 value, const int divisor)
 {
-    const uint localX = cell.x % CHUNK_WIDTH_CELLS;
-    const uint localY = cell.y % CHUNK_HEIGHT_CELLS;
-    const uint localZ = cell.z % CHUNK_DEPTH_CELLS;
-    const uint chunkLocalOrdinal = localX + CHUNK_WIDTH_CELLS * (localY + CHUNK_HEIGHT_CELLS * localZ);
-    const uint groupSize = lodLevel == 1u ? 8u : 64u;
-    bool representative = true;
-    if (lodLevel != 0u)
-        representative = (chunkLocalOrdinal % groupSize) == 0u;
-    return representative;
+    return int3(FloorDiv(value.x, divisor), FloorDiv(value.y, divisor), FloorDiv(value.z, divisor));
+}
+
+uint EncodeSigned10(const int value)
+{
+    return (uint)(value & 1023);
+}
+
+uint PackGroupKey(const int3 groupCoord, const uint lodLevel)
+{
+    return (min(lodLevel, 2u) << 30u) |
+        (EncodeSigned10(groupCoord.z) << 20u) |
+        (EncodeSigned10(groupCoord.y) << 10u) |
+        EncodeSigned10(groupCoord.x);
+}
+
+uint SelectLodLevel(float distanceToCamera)
+{
+    if (LodData.SpatialLodMode == 0u)
+        return 0u;
+
+    if (distanceToCamera <= LodData.Lod0Distance)
+        return 0u;
+    if (distanceToCamera <= LodData.Lod1Distance)
+        return 1u;
+    return 2u;
+}
+
+uint BlockSizeForLod(const uint lodLevel)
+{
+    return lodLevel == 0u ? 1u : (lodLevel == 1u ? 2u : 4u);
+}
+
+float3 CellCenter(const int3 signedCellCoord, const float voxelSize)
+{
+    return (float3(signedCellCoord) + 0.5f) * voxelSize;
+}
+
+float3 GroupCenter(const int3 groupCoord, const uint blockSize, const float voxelSize)
+{
+    return (float3(groupCoord * (int)blockSize) + 0.5f * (float)blockSize) * voxelSize;
+}
+
+bool ClaimGroup(const uint groupKey)
+{
+    const uint capacity = max(1u, LodData.GroupTableCapacity);
+    uint slot = HashGroupKey(groupKey) % capacity;
+
+    [loop]
+    for (uint probe = 0u; probe < capacity; ++probe)
+    {
+        uint original;
+        InterlockedCompareExchange(LodGroupKeys[slot], EMPTY_GROUP_KEY, groupKey, original);
+        if (original == EMPTY_GROUP_KEY)
+            return true;
+        if (original == groupKey)
+            return false;
+        slot = (slot + 1u) % capacity;
+    }
+
+    return false;
+}
+
+void BuildStaticSpatialData(
+    const ParticleData particle,
+    const uint lodLevel,
+    out uint groupKey,
+    out float3 previousCenter,
+    out float3 currentCenter,
+    out float3 halfExtent)
+{
+    const float voxelSize = max(LodData.VoxelSize, 0.05f);
+    const uint3 localCell = DecodePackedGridCoordinate(particle.PackedGridCoordinate);
+    const int3 signedCell = int3(localCell) + int3(LodData.GridOriginX, LodData.GridOriginY, LodData.GridOriginZ);
+    const uint blockSize = BlockSizeForLod(lodLevel);
+    const int3 groupCoord = FloorDiv3(signedCell, (int)blockSize);
+
+    groupKey = PackGroupKey(groupCoord, lodLevel);
+    previousCenter = GroupCenter(groupCoord, blockSize, voxelSize);
+    currentCenter = previousCenter;
+    halfExtent = 0.5f * (float)blockSize * voxelSize;
+}
+
+void BuildDynamicSpatialData(
+    const ParticleData particle,
+    const uint lodLevel,
+    out uint groupKey,
+    out float3 previousCenter,
+    out float3 currentCenter,
+    out float3 halfExtent)
+{
+    const float voxelSize = max(LodData.VoxelSize, 0.05f);
+    const uint blockSize = BlockSizeForLod(lodLevel);
+    const int3 currentCell = int3(
+        (int)floor(particle.CurrentContinuousPosition.x / voxelSize),
+        (int)floor(particle.CurrentContinuousPosition.y / voxelSize),
+        (int)floor(particle.CurrentContinuousPosition.z / voxelSize));
+    const int3 previousCell = int3(
+        (int)floor(particle.PreviousContinuousPosition.x / voxelSize),
+        (int)floor(particle.PreviousContinuousPosition.y / voxelSize),
+        (int)floor(particle.PreviousContinuousPosition.z / voxelSize));
+    const int3 currentGroup = FloorDiv3(currentCell, (int)blockSize);
+    const int3 previousGroup = FloorDiv3(previousCell, (int)blockSize);
+
+    groupKey = PackGroupKey(currentGroup, lodLevel);
+    previousCenter = GroupCenter(previousGroup, blockSize, voxelSize);
+    currentCenter = GroupCenter(currentGroup, blockSize, voxelSize);
+    halfExtent = 0.5f * (float)blockSize * voxelSize;
 }
 
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
@@ -120,46 +182,57 @@ void CS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     const uint particleIndex = AliveParticles[aliveOrdinal];
     const ParticleData particle = ParticlesPool[particleIndex];
+    const bool staticStream = LodData.StreamKind == 1u || particle.StreamKind == 1u;
 
-    uint3 cell;
-    uint3 gridSize;
-    if (LodData.StreamKind == 1u || particle.StreamKind == 1u)
+    float3 distanceCenter;
+    if (staticStream)
     {
-        cell = DecodePackedGridCoordinate(particle.PackedGridCoordinate);
-        gridSize = uint3(
-            max(1u, (uint)floor(LodData.WaterfallWidth / max(LodData.VoxelSize, 0.05f))),
-            max(1u, (uint)floor((LodData.SpawnHeight - LodData.FloorHeight) / max(LodData.VoxelSize, 0.05f))),
-            max(1u, (uint)floor(LodData.WaterfallDepth / max(LodData.VoxelSize, 0.05f))));
+        const float voxelSize = max(LodData.VoxelSize, 0.05f);
+        const uint3 localCell = DecodePackedGridCoordinate(particle.PackedGridCoordinate);
+        const int3 signedCell = int3(localCell) + int3(LodData.GridOriginX, LodData.GridOriginY, LodData.GridOriginZ);
+        distanceCenter = CellCenter(signedCell, voxelSize);
     }
     else
     {
-        ComputeSpawnGridCell(particle.GlobalVoxelId, cell, gridSize);
+        distanceCenter = particle.CurrentContinuousPosition;
     }
 
-    const uint3 chunk = uint3(
-        cell.x / CHUNK_WIDTH_CELLS,
-        cell.y / CHUNK_HEIGHT_CELLS,
-        cell.z / CHUNK_DEPTH_CELLS);
-    const float voxelSize = max(LodData.VoxelSize, 0.05f);
-    const float3 chunkCenterLocal = float3(
-        ((float)(chunk.x * CHUNK_WIDTH_CELLS) + 0.5f * (float)min(CHUNK_WIDTH_CELLS, max(1u, gridSize.x - chunk.x * CHUNK_WIDTH_CELLS)) - 0.5f * (float)(gridSize.x - 1u)) * voxelSize,
-        LodData.SpawnHeight - ((float)(chunk.y * CHUNK_HEIGHT_CELLS) + 0.5f * (float)min(CHUNK_HEIGHT_CELLS, max(1u, gridSize.y - chunk.y * CHUNK_HEIGHT_CELLS))) * voxelSize,
-        ((float)(chunk.z * CHUNK_DEPTH_CELLS) + 0.5f * (float)min(CHUNK_DEPTH_CELLS, max(1u, gridSize.z - chunk.z * CHUNK_DEPTH_CELLS)) - 0.5f * (float)(gridSize.z - 1u)) * voxelSize);
-    const float distanceToCamera = length(chunkCenterLocal + LodData.ObjectPosition - LodData.CameraPosition);
-    const uint lodLevel = SelectLodLevel(distanceToCamera, PreviousLodLevels[particleIndex]);
-    PreviousLodLevels[particleIndex] = lodLevel;
+    const float distanceToCamera = length(distanceCenter + LodData.ObjectPosition - LodData.CameraPosition);
+    const uint lodLevel = SelectLodLevel(distanceToCamera);
 
-    if (!IsRepresentative(cell, lodLevel))
+    uint groupKey;
+    float3 previousCenter;
+    float3 currentCenter;
+    float3 halfExtent;
+    if (staticStream)
+    {
+        BuildStaticSpatialData(particle, lodLevel, groupKey, previousCenter, currentCenter, halfExtent);
+    }
+    else
+    {
+        BuildDynamicSpatialData(particle, lodLevel, groupKey, previousCenter, currentCenter, halfExtent);
+    }
+
+    if (!ClaimGroup(groupKey))
     {
         InterlockedAdd(LodStats[3], 1u);
         return;
     }
 
     VoxelLodRenderItem item;
-    item.ParticleIndex = particleIndex;
+    item.PreviousCenter = previousCenter;
+    item.HalfExtentX = halfExtent.x;
+    item.CurrentCenter = currentCenter;
+    item.HalfExtentY = halfExtent.y;
+    item.HalfExtentZ = halfExtent.z;
     item.LodLevel = lodLevel;
+    item.MaterialId = particle.MaterialId;
+    item.StreamKind = particle.StreamKind;
+    item.RepresentativeIndex = particleIndex;
     item.Padding0 = 0u;
     item.Padding1 = 0u;
+    item.Padding2 = 0u;
+
     RenderParticles.Append(item);
     DrawArguments.InterlockedAdd(0, 1u);
     InterlockedAdd(LodStats[lodLevel], 1u);

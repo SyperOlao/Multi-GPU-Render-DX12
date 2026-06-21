@@ -46,8 +46,16 @@ struct EmitterData
 
 struct VoxelLodRenderItem
 {
-    uint ParticleIndex;
+    float3 PreviousCenter;
+    float HalfExtentX;
+    float3 CurrentCenter;
+    float HalfExtentY;
+    float HalfExtentZ;
     uint LodLevel;
+    uint MaterialId;
+    uint StreamKind;
+    uint RepresentativeIndex;
     uint Padding0;
     uint Padding1;
+    uint Padding2;
 };

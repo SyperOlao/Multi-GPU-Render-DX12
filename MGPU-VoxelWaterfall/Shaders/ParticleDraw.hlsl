@@ -7,27 +7,23 @@ StructuredBuffer<VoxelLodRenderItem> RenderingParticles : register(t1, space1);
 struct VertexOut
 {
     float3 PositionW : POSITION;
-    float LodLevel : TEXCOORD0;
-    uint MaterialId : TEXCOORD1;
+    float3 HalfExtentW : TEXCOORD0;
+    float LodLevel : TEXCOORD1;
+    uint MaterialId : TEXCOORD2;
 };
 
 VertexOut VS(uint vertexID : SV_VertexID)
 {
     const VoxelLodRenderItem renderItem = RenderingParticles[vertexID];
-    const uint particleIndex = renderItem.ParticleIndex;
-    const ParticleData particle = Particles[particleIndex];
-    float3 center = lerp(particle.PreviousContinuousPosition, particle.CurrentContinuousPosition,
+    float3 center = lerp(renderItem.PreviousCenter, renderItem.CurrentCenter,
                          saturate(EmitterBuffer.InterpolationAlpha));
-    if (EmitterBuffer.GridSnapEnabled > 0.5f)
-    {
-        const float voxelSize = max(EmitterBuffer.VoxelSize, 0.05f);
-        center = round(center / voxelSize) * voxelSize;
-    }
+    const float3 halfExtent = float3(renderItem.HalfExtentX, renderItem.HalfExtentY, renderItem.HalfExtentZ);
 
     VertexOut output = (VertexOut)0;
     output.PositionW = mul(float4(center, 1.0f), objectBuffer.World).xyz;
+    output.HalfExtentW = halfExtent;
     output.LodLevel = (float)min(renderItem.LodLevel, 2u);
-    output.MaterialId = particle.MaterialId;
+    output.MaterialId = renderItem.MaterialId;
     return output;
 }
 
@@ -57,44 +53,43 @@ void GS(point VertexOut input[1], inout TriangleStream<GeoOut> stream)
 {
     const float lodLevel = min(input[0].LodLevel, 2.0f);
     const uint materialId = input[0].MaterialId;
-    const float scale = lodLevel < 0.5f ? 1.0f : (lodLevel < 1.5f ? 2.0f : 4.0f);
-    const float h = max(EmitterBuffer.VoxelSize, 0.05f) * 0.38f * scale;
     const float3 center = input[0].PositionW;
+    const float3 h = max(input[0].HalfExtentW, max(EmitterBuffer.VoxelSize, 0.05f) * 0.5f);
 
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h,  h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h, -h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h,  h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y,  h.z), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x,  h.y,  h.z), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, -h.y,  h.z), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x,  h.y,  h.z), float3(0, 0, 1), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3( h, -h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h,  h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h,  h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, -h.y, -h.z), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x,  h.y, -h.z), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y, -h.z), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x,  h.y, -h.z), float3(0, 0, -1), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(-1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h,  h, -h), float3(-1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(-1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h,  h,  h), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y, -h.z), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x,  h.y, -h.z), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y,  h.z), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x,  h.y,  h.z), float3(-1, 0, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(h, -h,  h), float3(1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(h,  h,  h), float3(1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(h, -h, -h), float3(1, 0, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(h,  h, -h), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h.x, -h.y,  h.z), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h.x,  h.y,  h.z), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h.x, -h.y, -h.z), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h.x,  h.y, -h.z), float3(1, 0, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, h,  h), float3(0, 1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h, h, -h), float3(0, 1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h, h,  h), float3(0, 1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h, h, -h), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, h.y,  h.z), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, h.y, -h.z), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, h.y,  h.z), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, h.y, -h.z), float3(0, 1, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, -1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, -1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h, -h, -h), float3(0, -1, 0), lodLevel, materialId, stream);
-    EmitCubeVertex(center, float3( h, -h,  h), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y, -h.z), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h.x, -h.y,  h.z), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, -h.y, -h.z), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h.x, -h.y,  h.z), float3(0, -1, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 }
 

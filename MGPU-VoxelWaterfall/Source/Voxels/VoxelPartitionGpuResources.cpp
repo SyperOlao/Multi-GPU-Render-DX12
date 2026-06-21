@@ -39,7 +39,8 @@ void VoxelPartitionGpuResources::ResetResources()
     SimulationStatsUpload.reset();
     SimulationStatsReadback.reset();
     LodRenderItems.reset();
-    LodPreviousLevels.reset();
+    LodGroupKeys.reset();
+    LodGroupKeysUpload.reset();
     LodDrawArguments.reset();
     LodDrawArgumentsUpload.reset();
     LodStats.reset();
@@ -73,9 +74,11 @@ void VoxelPartitionGpuResources::CreateParticleBuffers(
         device, 1u, static_cast<UINT>(sizeof(DWORD)), L"Voxel Simulation Stats Upload");
     SimulationStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
         device, 1, L"Voxel Simulation Stats Readback");
-    LodPreviousLevels = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), particleCount,
-                                                  L"Voxel Previous LOD Levels",
-                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    LodGroupKeys = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), particleCount,
+                                             L"Voxel LOD Group Keys",
+                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    LodGroupKeysUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
+        device, particleCount, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Group Keys Upload");
     LodDrawArguments = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 4u,
                                                  L"Voxel LOD Indirect Draw Arguments",
                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -126,11 +129,17 @@ void VoxelPartitionGpuResources::InitializeDeadParticleList(
 void VoxelPartitionGpuResources::InitializeLodState(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount) const
 {
-    std::vector<DWORD> initialLevels(particleCount, 0u);
+    std::vector<DWORD> emptyGroupKeys(particleCount, 0xffffffffu);
     auto queue = device->GetCommandQueue();
     auto initList = queue->GetCommandList();
     if (particleCount > 0)
-        LodPreviousLevels->LoadData(initialLevels.data(), initList);
+    {
+        LodGroupKeysUpload->CopyData(0, emptyGroupKeys.data(), sizeof(DWORD) * emptyGroupKeys.size());
+        initList->TransitionBarrier(LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+        initList->FlushResourceBarriers();
+        initList->CopyBufferRegion(*LodGroupKeys, 0, *LodGroupKeysUpload, 0,
+                                   static_cast<UINT>(sizeof(DWORD) * emptyGroupKeys.size()), false);
+    }
     LodRenderItems->SetCounterValue(initList, 0u);
 
     const DWORD initialArgs[4] = {0u, 1u, 0u, 0u};
@@ -147,7 +156,7 @@ void VoxelPartitionGpuResources::InitializeLodState(
     initList->CopyBufferRegion(*LodStats, 0, *LodStatsUpload, 0,
                                static_cast<UINT>(sizeof(zeroStats)), false);
 
-    initList->TransitionBarrier(LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     initList->TransitionBarrier(LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     initList->TransitionBarrier(LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     initList->TransitionBarrier(LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
@@ -221,9 +230,9 @@ void VoxelPartitionGpuResources::CreateParticleViews()
     uavDesc.Buffer.StructureByteStride = LodStats->GetStride();
     LodStats->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 4);
 
-    uavDesc.Buffer.NumElements = LodPreviousLevels->GetElementCount();
-    uavDesc.Buffer.StructureByteStride = LodPreviousLevels->GetStride();
-    LodPreviousLevels->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 5);
+    uavDesc.Buffer.NumElements = LodGroupKeys->GetElementCount();
+    uavDesc.Buffer.StructureByteStride = LodGroupKeys->GetStride();
+    LodGroupKeys->CreateUnorderedAccessView(&uavDesc, &LodBuildDescriptors, 5);
 }
 
 void VoxelPartitionGpuResources::ResizeInjectionScratch()

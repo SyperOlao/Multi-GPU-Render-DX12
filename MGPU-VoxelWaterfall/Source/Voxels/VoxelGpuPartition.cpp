@@ -273,7 +273,8 @@ void VoxelGpuPartition::ValidateGpuResourceOwnership(const char* operation) cons
     ValidateBufferOwnership(gpuResources.SimulationStatsReadback.get(), "SimulationStatsReadback", operation);
     ValidateDescriptorOwnership(gpuResources.LodBuildDescriptors, "LodBuildDescriptors", operation);
     ValidateBufferOwnership(gpuResources.LodRenderItems.get(), "LodRenderItems", operation);
-    ValidateBufferOwnership(gpuResources.LodPreviousLevels.get(), "LodPreviousLevels", operation);
+    ValidateBufferOwnership(gpuResources.LodGroupKeys.get(), "LodGroupKeys", operation);
+    ValidateBufferOwnership(gpuResources.LodGroupKeysUpload.get(), "LodGroupKeysUpload", operation);
     ValidateBufferOwnership(gpuResources.LodDrawArguments.get(), "LodDrawArguments", operation);
     ValidateBufferOwnership(gpuResources.LodDrawArgumentsUpload.get(), "LodDrawArgumentsUpload", operation);
     ValidateBufferOwnership(gpuResources.LodStats.get(), "LodStats", operation);
@@ -734,6 +735,11 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     UpdateLodStatsReadback();
 
     gpuResources.LodRenderItems->SetCounterValue(cmdList, 0u);
+    cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->FlushResourceBarriers();
+    cmdList->CopyBufferRegion(*gpuResources.LodGroupKeys, 0, *gpuResources.LodGroupKeysUpload, 0,
+                              static_cast<UINT>(sizeof(DWORD) * emitterData.ParticlesTotalCount), false);
+
     const DWORD initialArgs[4] = {0u, 1u, 0u, 0u};
     gpuResources.LodDrawArgumentsUpload->CopyData(0, initialArgs, sizeof(initialArgs));
     cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
@@ -764,13 +770,24 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     lodData.SpatialLodMode = static_cast<DWORD>(spatialLodSettings.Mode);
     lodData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
     lodData.StreamKind = emitterData.StreamKind;
+    lodData.GroupTableCapacity = emitterData.ParticlesTotalCount;
+    for (const auto& stream : drawStreams)
+    {
+        if (stream.LayerType == VoxelSceneLayerType::Static)
+        {
+            lodData.GridOriginX = stream.GridOrigin.X;
+            lodData.GridOriginY = stream.GridOrigin.Y;
+            lodData.GridOriginZ = stream.GridOrigin.Z;
+            break;
+        }
+    }
 
     cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cmdList->TransitionBarrier(gpuResources.LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->FlushResourceBarriers();
 
     cmdList->SetComputeRootSignature(*lodBuildSignature);
@@ -854,7 +871,7 @@ VoxelPartitionRenderResult VoxelGpuPartition::RecordRender(
     cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(gpuResources.LodPreviousLevels->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
     return result;
 }

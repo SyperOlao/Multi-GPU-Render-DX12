@@ -28,7 +28,8 @@ public:
     std::shared_ptr<PEPEngine::Graphics::UploadBuffer> SimulationStatsUpload;
     std::shared_ptr<PEPEngine::Graphics::ReadBackBuffer<DWORD>> SimulationStatsReadback;
     std::shared_ptr<PEPEngine::Graphics::CounteredStructBuffer<VoxelLodRenderItem>> LodRenderItems;
-    std::shared_ptr<PEPEngine::Graphics::GBuffer> LodPreviousLevels;
+    std::shared_ptr<PEPEngine::Graphics::GBuffer> LodGroupKeys;
+    std::shared_ptr<PEPEngine::Graphics::UploadBuffer> LodGroupKeysUpload;
     std::shared_ptr<PEPEngine::Graphics::GBuffer> LodDrawArguments;
     std::shared_ptr<PEPEngine::Graphics::UploadBuffer> LodDrawArgumentsUpload;
     std::shared_ptr<PEPEngine::Graphics::GBuffer> LodStats;

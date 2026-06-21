@@ -93,6 +93,7 @@
     <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSceneWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSpatialLodReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
@@ -126,6 +127,7 @@
     <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSceneWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSpatialLodReferenceTests.h"><Filter>Header Files\Voxels</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />

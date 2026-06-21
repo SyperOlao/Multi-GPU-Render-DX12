@@ -184,6 +184,7 @@
         <ClCompile Include="Source\Voxels\VoxelResearchEnvironmentGenerator.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelSceneWorkload.cpp"/>
+        <ClCompile Include="Source\Voxels\VoxelSpatialLodReferenceTests.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"/>
         <ClCompile Include="VoxelWaterfallApp.cpp"/>
         <ClCompile Include="Source.cpp"/>
@@ -235,6 +236,7 @@
         <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"/>
         <ClInclude Include="Source\Voxels\VoxelTypes.h"/>
         <ClInclude Include="Source\Voxels\VoxelSceneWorkload.h"/>
+        <ClInclude Include="Source\Voxels\VoxelSpatialLodReferenceTests.h"/>
         <ClInclude Include="VoxelWaterfallApp.h"/>
         <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"/>
     </ItemGroup>

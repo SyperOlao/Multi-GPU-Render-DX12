@@ -42,9 +42,19 @@ Temporal Decimation is a simulation cadence policy. Full modes simulate both par
 
 Spatial Density LOD is a render-list policy. The simulation dataset is unchanged. Each adapter builds its own compacted render list:
 
-- LOD0 renders all voxels near the camera.
-- LOD1 renders one representative from each stable group of 8 and scales it by 2.
-- LOD2 renders one representative from each stable group of 64 and scales it by 4.
+- LOD0 uses a `1x1x1` cell block.
+- LOD1 uses a `2x2x2` cell block.
+- LOD2 uses a `4x4x4` cell block.
+
+For every occupied voxel selected for rendering, the build shader computes a signed cell coordinate and then derives a true 3D group key:
+
+```text
+groupCoord = floorDiv(signedCellCoord, blockSize)
+```
+
+Static streams use `signedCellCoord = GridOrigin + localGridCoordinate`, and camera distance is evaluated from the actual world-space cell center plus the object transform. Static LOD never reconstructs position from waterfall width, depth, spawn height, or floor height. Dynamic streams use the particle continuous position divided by the dynamic voxel size. Each adapter owns a local hash table for group claims and emits exactly one render item per occupied `(lod, groupCoord)` key; the representative particle is only metadata.
+
+The emitted `VoxelLodRenderItem` stores explicit previous/current aggregate centers, explicit half extents, LOD level, material, stream kind, and optional representative index. The draw shader renders that aggregate AABB directly instead of scaling a cube around an arbitrary representative particle.
 
 Temporal Decimation and Spatial Density LOD are independent and can be benchmarked in matching combinations.
 
