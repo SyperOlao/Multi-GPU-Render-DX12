@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <DirectXMath.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -16,7 +17,6 @@
 #include <unordered_set>
 #include <utility>
 
-#include "CameraController.h"
 #include "GameObject.h"
 #include "GDeviceFactory.h"
 #include "GModel.h"
@@ -26,8 +26,8 @@
 #include "MathHelper.h"
 #include "ModelRenderer.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
-#include "Rotater.h"
-#include "SkyBox.h"
+#include "Source/Voxels/VoxelResearchEnvironmentGenerator.h"
+#include "Source/Scene/VoxelResearchCameraController.h"
 #include "Transform.h"
 #include "Window.h"
 
@@ -36,7 +36,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 namespace
 {
     constexpr float DebugUiScale = 2.25f;
-    constexpr float SceneLabelUiScale = 2.0f;
+    constexpr const char* VoxelSceneGpuObjectName = "VoxelSceneGpuPartitions";
 
     std::string LuidToString(const LUID& luid)
     {
@@ -82,23 +82,7 @@ namespace
             GetExecutableDirectory() / L"..\\.." / L"MGPU-VoxelWaterfall" / relativePath
         };
 
-        const std::array<std::filesystem::path, 4> sharedAssetCandidates =
-        {
-            std::filesystem::path(L"..\\MGPU-Particles") / relativePath,
-            std::filesystem::path(L"MGPU-Particles") / relativePath,
-            GetExecutableDirectory() / L"..\\.." / L"MGPU-Particles" / relativePath,
-            GetExecutableDirectory() / L"..\\.." / L"MGPU-VoxelWaterfall" / L"..\\MGPU-Particles" / relativePath
-        };
-
         for (const auto& candidate : candidates)
-        {
-            if (std::filesystem::exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        for (const auto& candidate : sharedAssetCandidates)
         {
             if (std::filesystem::exists(candidate))
             {
@@ -115,13 +99,187 @@ namespace
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
+    bool UsesTemporalExecution(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::SingleGpuTemporalDecimation ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
+    const char* ProfileName(const VoxelResearchWorkloadProfile profile)
+    {
+        switch (profile)
+        {
+        case VoxelResearchWorkloadProfile::StaticRenderOnly:
+            return "StaticRenderOnly";
+        case VoxelResearchWorkloadProfile::DynamicSimulationAndRender:
+            return "DynamicSimulationAndRender";
+        case VoxelResearchWorkloadProfile::MixedStaticAndDynamic:
+            return "MixedStaticAndDynamic";
+        case VoxelResearchWorkloadProfile::OcclusionValidation:
+            return "OcclusionValidation";
+        case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
+            return "SpatialLodDemonstration";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* PartitionStrategyName(const VoxelPartitionStrategy strategy)
+    {
+        switch (strategy)
+        {
+        case VoxelPartitionStrategy::HashedChunks:
+            return "HashedChunks";
+        case VoxelPartitionStrategy::SpatialPlane:
+            return "SpatialPlane";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* LoadBalanceScenarioName(const VoxelLoadBalanceScenario scenario)
+    {
+        switch (scenario)
+        {
+        case VoxelLoadBalanceScenario::Balanced:
+            return "Balanced";
+        case VoxelLoadBalanceScenario::PrimaryHeavy:
+            return "PrimaryHeavy";
+        case VoxelLoadBalanceScenario::SecondaryHeavy:
+            return "SecondaryHeavy";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* TemporalPolicyName(const VoxelTemporalPolicy policy)
+    {
+        return policy == VoxelTemporalPolicy::Decimated ? "Decimated" : "Full";
+    }
+
+    const char* CameraModeName(const VoxelResearchCameraMode mode)
+    {
+        switch (mode)
+        {
+        case VoxelResearchCameraMode::Interactive:
+            return "Interactive";
+        case VoxelResearchCameraMode::FixedOverview:
+            return "FixedOverview";
+        case VoxelResearchCameraMode::FixedOcclusion:
+            return "FixedOcclusion";
+        case VoxelResearchCameraMode::WaterfallCloseup:
+            return "WaterfallCloseup";
+        case VoxelResearchCameraMode::LodSweepRoute:
+            return "LodSweepRoute";
+        case VoxelResearchCameraMode::BenchmarkRoute:
+            return "BenchmarkRoute";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* LightingPresetName(const VoxelResearchLightingPreset preset)
+    {
+        switch (preset)
+        {
+        case VoxelResearchLightingPreset::BenchmarkNeutral:
+            return "BenchmarkNeutral";
+        case VoxelResearchLightingPreset::DemoStaticSky:
+            return "DemoStaticSky";
+        case VoxelResearchLightingPreset::OcclusionValidationLighting:
+            return "OcclusionValidationLighting";
+        default:
+            return "Unknown";
+        }
+    }
+
+    std::pair<uint32_t, uint32_t> ResolutionForPreset(const VoxelRenderResolutionPreset preset)
+    {
+        switch (preset)
+        {
+        case VoxelRenderResolutionPreset::R1280x720:
+            return {1280, 720};
+        case VoxelRenderResolutionPreset::R2560x1440:
+            return {2560, 1440};
+        case VoxelRenderResolutionPreset::R3840x2160:
+            return {3840, 2160};
+        case VoxelRenderResolutionPreset::R1920x1080:
+        default:
+            return {1920, 1080};
+        }
+    }
+
+    const char* ResolutionPresetName(const VoxelRenderResolutionPreset preset)
+    {
+        switch (preset)
+        {
+        case VoxelRenderResolutionPreset::R1280x720:
+            return "1280x720";
+        case VoxelRenderResolutionPreset::R1920x1080:
+            return "1920x1080";
+        case VoxelRenderResolutionPreset::R2560x1440:
+            return "2560x1440";
+        case VoxelRenderResolutionPreset::R3840x2160:
+            return "3840x2160";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* BenchmarkConfigClassName(const VoxelBenchmarkConfigClass configClass)
+    {
+        switch (configClass)
+        {
+        case VoxelBenchmarkConfigClass::ValidMatchingBenchmark:
+            return "Valid matching benchmark configuration";
+        case VoxelBenchmarkConfigClass::Diagnostic:
+            return "Diagnostic configuration";
+        case VoxelBenchmarkConfigClass::InvalidMixedQuality:
+            return "Invalid mixed-quality configuration";
+        default:
+            return "Invalid mixed-quality configuration";
+        }
+    }
+
+    std::pair<VoxelBenchmarkConfigClass, std::string> ClassifyBenchmarkConfig(
+        const VoxelSceneWorkload& workload,
+        const VoxelExecutionMode requestedMode)
+    {
+        const bool requestedTemporal = UsesTemporalExecution(requestedMode);
+        const bool workloadTemporal = workload.TemporalPolicy == VoxelTemporalPolicy::Decimated;
+        if (requestedTemporal != workloadTemporal)
+            return {
+                VoxelBenchmarkConfigClass::InvalidMixedQuality,
+                "Requested execution mode temporal policy does not match workload temporal policy"
+            };
+
+        if (workload.BenchmarkConfigClass == VoxelBenchmarkConfigClass::Diagnostic)
+            return {VoxelBenchmarkConfigClass::Diagnostic, workload.BenchmarkConfigReason};
+
+        if (workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
+            workload.CameraMode == VoxelResearchCameraMode::Interactive ||
+            workload.PartitionStrategy == VoxelPartitionStrategy::SpatialPlane ||
+            workload.SpatialLod.FreezeCamera ||
+            workload.SecondaryShare <= 0.0f ||
+            workload.SecondaryShare >= 1.0f ||
+            workload.StaticStorageMode == StaticVoxelStorageMode::DenseSolidStress)
+        {
+            return {
+                VoxelBenchmarkConfigClass::Diagnostic,
+                "Diagnostic partition, edge-share, dense-solid, or occlusion validation configuration"
+            };
+        }
+
+        return {VoxelBenchmarkConfigClass::ValidMatchingBenchmark, ""};
+    }
+
     VoxelAdapterOwner AdapterOwnerForPartition(const VoxelExecutionMode mode,
                                                const bool multiGpuAvailable,
-                                               const VoxelPartitionState& partition)
+                                               const VoxelAdapterPartition& partition)
     {
         return UsesMultiGpuExecution(mode) &&
                    multiGpuAvailable &&
-                   partition.PartitionId == VoxelPartitionId::SecondaryPartition
+                   partition.PartitionId == VoxelAdapterPartitionId::SecondaryPartition
                    ? VoxelAdapterOwner::Secondary
                    : VoxelAdapterOwner::Primary;
     }
@@ -148,6 +306,7 @@ namespace
     {
         return ResolveVoxelWaterfallAssetPath(relativePath).string();
     }
+
 }
 
 VoxelWaterfallApp::VoxelWaterfallApp(const HINSTANCE hInstance) : D3DApp(hInstance)
@@ -185,14 +344,13 @@ void VoxelWaterfallApp::Update(const GameTimer& gt)
         return;
     }
 
-    mLightRotationAngle += 0.1f * gt.DeltaTime();
-
-    const Matrix R = Matrix::CreateRotationY(mLightRotationAngle);
-    for (int i = 0; i < 3; ++i)
+    if (researchCameraController)
     {
-        auto lightDir = mBaseLightDirections[i];
-        lightDir = Vector3::TransformNormal(lightDir, R);
-        mRotatedLightDirections[i] = lightDir;
+        researchCameraController->SetMode(voxelWorkload.CameraMode);
+        researchCameraController->SetInputBlocked(voxelWorkload.CameraMode != VoxelResearchCameraMode::Interactive ||
+                                                  benchmarkProfiler.IsActive() ||
+                                                  benchmarkController.IsAutomaticActive());
+        researchCameraController->SetDeterministicTime(static_cast<double>(simulationFrameIndex) / 60.0);
     }
 
     for (auto& e : gameObjects)
@@ -327,7 +485,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
     const bool hasSecondaryVoxelDrawWork = std::any_of(
         voxelRenderWorkload.SecondaryOwnedPartitions.begin(),
         voxelRenderWorkload.SecondaryOwnedPartitions.end(),
-        [](const VoxelPartitionState* partition)
+        [](const VoxelAdapterPartition* partition)
         {
             return partition && partition->GpuPartition && partition->VoxelCount() > 0;
         });
@@ -362,6 +520,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
                 &benchmarkProfiler,
                 MainWindow->GetCurrentBackBuffer()
             };
+            basePassContext.DynamicShadowsEnabled = voxelWorkload.DynamicShadowsEnabled;
             voxelRenderPasses.RecordPrimaryBase(cmdList, basePassContext);
         }
     };
@@ -376,16 +535,11 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
             frameGraphTelemetry.PrimaryIndirectDrawCalls += result.DrawCallCount;
     }
     lastPrimaryPartitionGraphicsFenceValue = currentFrameResource->PrimaryBaseRenderFenceValue;
-    auto& primaryRenderedSecondaryPartition =
-        voxelWorkload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
-    if (primaryRenderedSecondaryPartition.AdapterOwner == VoxelAdapterOwner::Primary)
+    if (!hasSecondaryVoxelDrawWork)
     {
         lastSecondaryPartitionGraphicsFenceValue = currentFrameResource->PrimaryBaseRenderFenceValue;
         lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Primary;
     }
-
-    auto& secondaryPartition =
-        voxelWorkload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
     const bool runSecondaryGraphics =
         simulationResult.UsedMultiGpuMode &&
         multiGpuVoxelRenderTargets.IsInitialized() &&
@@ -607,7 +761,6 @@ bool VoxelWaterfallApp::Initialize()
     CreateGO();
     Flush();
     SortGO();
-    sceneTransformController.Load();
     Flush();
     InitFrameResource();
     Flush();
@@ -741,8 +894,6 @@ void VoxelWaterfallApp::InitUserInterface()
 
 void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList)
 {
-    sceneTransformController.Refresh();
-
     VoxelWaterfallDebugPanelContext context{
         imguiInitialized,
         cmdList,
@@ -771,8 +922,10 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         benchmarkController.GetAutomaticIndex(),
         benchmarkController.GetAutomaticCount(),
         benchmarkController.GetAutomaticSummaryPath(),
-        &sceneTransformController,
-        [this] { DrawVoxelWaterfallSceneLabels(); },
+        [this](const VoxelResearchWorkloadProfile profile) { ApplyResearchWorkloadProfile(profile); },
+        [this](const VoxelResearchCameraMode mode) { ApplyResearchCameraMode(mode); },
+        [this](const VoxelResearchLightingPreset preset) { ApplyResearchLightingPreset(preset); },
+        [this](const VoxelRenderResolutionPreset preset) { ApplyRenderResolutionPreset(preset); },
         [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
         [this] { StartManualBenchmark(); },
         [this] { StopManualBenchmark(); },
@@ -835,65 +988,166 @@ void VoxelWaterfallApp::RequestApplyVoxelWorkloadSettings()
     voxelWorkloadSettingsPending = true;
 }
 
-bool VoxelWaterfallApp::ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const
+void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkloadProfile profile)
 {
-    if (!camera || !MainWindow)
-        return false;
+    VoxelResearchScenePreset preset = VoxelResearchScenePreset::MixedVoxelEnvironment;
+    switch (profile)
+    {
+    case VoxelResearchWorkloadProfile::StaticRenderOnly:
+        preset = VoxelResearchScenePreset::StaticVoxelEnvironment;
+        break;
+    case VoxelResearchWorkloadProfile::DynamicSimulationAndRender:
+        preset = VoxelResearchScenePreset::DynamicWaterfall;
+        break;
+    case VoxelResearchWorkloadProfile::MixedStaticAndDynamic:
+        preset = VoxelResearchScenePreset::MixedVoxelEnvironment;
+        break;
+    case VoxelResearchWorkloadProfile::OcclusionValidation:
+        preset = VoxelResearchScenePreset::OcclusionValidation;
+        break;
+    case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
+        preset = VoxelResearchScenePreset::SpatialLodDemonstration;
+        break;
+    default:
+        break;
+    }
 
-    const Matrix viewProj = camera->GetViewMatrix() * camera->GetProjectionMatrix();
-    const Vector4 clip = Vector4::Transform(Vector4(worldPosition.x, worldPosition.y, worldPosition.z, 1.0f), viewProj);
-    if (clip.w <= 1e-4f)
-        return false;
-
-    const float invW = 1.0f / clip.w;
-    const float ndcX = clip.x * invW;
-    const float ndcY = clip.y * invW;
-    if (ndcX < -1.25f || ndcX > 1.25f || ndcY < -1.25f || ndcY > 1.25f)
-        return false;
-
-    const float width = static_cast<float>(MainWindow->GetClientWidth());
-    const float height = static_cast<float>(MainWindow->GetClientHeight());
-    screenPosition.x = (ndcX * 0.5f + 0.5f) * width;
-    screenPosition.y = (1.0f - (ndcY * 0.5f + 0.5f)) * height;
-    return true;
-}
-
-void VoxelWaterfallApp::DrawVoxelWaterfallSceneLabels()
-{
-    ImDrawList* drawList = ImGui::GetForegroundDrawList();
-    Vector2 screenPosition;
-    const Vector3 labelWorldPosition = voxelWorkload.Position +
-        Vector3(0.0f, voxelWorkload.Parameters.SpawnHeight + voxelWorkload.Parameters.VoxelSize * 4.0f, 0.0f);
-    if (!ProjectWorldToScreen(labelWorldPosition, screenPosition))
+    if (!voxelResearchSceneManager.RequestPreset(preset))
         return;
 
-    std::string label = "VoxelWaterfall\n";
-    label += std::to_string(voxelWorkload.TotalVoxelCount);
-    label += " total voxels\n";
-    label += "Primary: ";
-    label += std::to_string(voxelWorkload.Partitions[static_cast<size_t>(
-        VoxelPartitionId::PrimaryPartition)].VoxelCount());
-    label += "\nSecondary: ";
-    label += std::to_string(voxelWorkload.Partitions[static_cast<size_t>(
-        VoxelPartitionId::SecondaryPartition)].VoxelCount());
+    Flush();
+    lights.clear();
+    camera.reset();
+    researchCameraController.reset();
+    VoxelResearchSceneContext sceneContext{
+        primeDevice,
+        secondDevice,
+        *assets,
+        models,
+        srvTexturesMemory,
+        gameObjects,
+        typedRenderer,
+        voxelWorkload,
+        AspectRatio()
+    };
+    voxelResearchSceneManager.RebuildScene(sceneContext);
+    SortGO();
+    RebuildGpuPartitionsForMode();
+    voxelSimulationAccumulator = 0.0;
+    voxelSimulationTime = 0.0;
+    voxelSimulationStepsThisFrame = 0;
+    voxelInterpolationAlpha = 0.0f;
+    voxelRecycledCount = 0;
+    voxelAliveCount = 0;
+    voxelExpectedCount = voxelWorkload.TotalVoxelCount;
+    simulationFrameIndex = 0;
+    spatialLodCameraInitialized = false;
+    voxelWorkloadSettingsPending = false;
+}
 
-    const float fontSize = ImGui::GetFontSize() * SceneLabelUiScale;
-    const ImVec2 baseTextSize = ImGui::CalcTextSize(label.c_str());
-    const ImVec2 textSize(baseTextSize.x * SceneLabelUiScale, baseTextSize.y * SceneLabelUiScale);
-    const ImVec2 anchor(screenPosition.x, screenPosition.y);
-    const ImVec2 textPos(screenPosition.x - textSize.x * 0.5f,
-                         screenPosition.y - textSize.y - 18.0f * SceneLabelUiScale);
-    const ImVec2 rectMin(textPos.x - 7.0f * SceneLabelUiScale, textPos.y - 5.0f * SceneLabelUiScale);
-    const ImVec2 rectMax(textPos.x + textSize.x + 7.0f * SceneLabelUiScale,
-                         textPos.y + textSize.y + 5.0f * SceneLabelUiScale);
+void VoxelWaterfallApp::ApplyResearchCameraMode(const VoxelResearchCameraMode mode)
+{
+    voxelWorkload.CameraMode = mode;
+    voxelWorkload.CameraPath = CameraModeName(mode);
+    if (researchCameraController)
+    {
+        researchCameraController->SetMode(mode);
+        researchCameraController->SetInputBlocked(mode != VoxelResearchCameraMode::Interactive ||
+                                                  benchmarkProfiler.IsActive() ||
+                                                  benchmarkController.IsAutomaticActive());
+    }
+    spatialLodCameraInitialized = false;
+}
 
-    const ImU32 color = IM_COL32(80, 220, 255, 255);
-    drawList->AddLine(anchor, ImVec2(textPos.x + textSize.x * 0.5f, rectMax.y), color,
-                      2.0f * SceneLabelUiScale);
-    drawList->AddCircleFilled(anchor, 4.0f * SceneLabelUiScale, color, 12);
-    drawList->AddRectFilled(rectMin, rectMax, IM_COL32(5, 14, 24, 220), 5.0f * SceneLabelUiScale);
-    drawList->AddRect(rectMin, rectMax, color, 5.0f * SceneLabelUiScale, 0, 1.5f * SceneLabelUiScale);
-    drawList->AddText(ImGui::GetFont(), fontSize, textPos, IM_COL32(235, 250, 255, 255), label.c_str());
+void VoxelWaterfallApp::ApplyResearchLightingPreset(const VoxelResearchLightingPreset preset)
+{
+    voxelWorkload.LightingMode = preset;
+    voxelWorkload.LightingPreset = LightingPresetName(preset);
+    voxelWorkload.DynamicShadowsEnabled = false;
+}
+
+void VoxelWaterfallApp::ApplyRenderResolutionPreset(const VoxelRenderResolutionPreset preset)
+{
+    const auto [width, height] = ResolutionForPreset(preset);
+    if (MainWindow->GetClientWidth() == static_cast<int>(width) &&
+        MainWindow->GetClientHeight() == static_cast<int>(height))
+    {
+        voxelWorkload.ResolutionPreset = preset;
+        voxelWorkload.RenderResolutionWidth = width;
+        voxelWorkload.RenderResolutionHeight = height;
+        return;
+    }
+
+    Flush();
+    voxelWorkload.ResolutionPreset = preset;
+    voxelWorkload.RenderResolutionWidth = width;
+    voxelWorkload.RenderResolutionHeight = height;
+    MainWindow->SetWidth(static_cast<int>(width));
+    MainWindow->SetHeight(static_cast<int>(height));
+    OnResize();
+}
+
+bool VoxelWaterfallApp::HandleDemoPresetHotkey(const WPARAM key)
+{
+    if (benchmarkController.IsAutomaticActive())
+        return false;
+
+    switch (key)
+    {
+    case VK_F1:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::StaticRenderOnly);
+        return true;
+    case VK_F2:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DynamicSimulationAndRender);
+        return true;
+    case VK_F3:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::MixedStaticAndDynamic);
+        return true;
+    case VK_F4:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::OcclusionValidation);
+        return true;
+    case VK_F5:
+        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::SpatialLodDemonstration);
+        return true;
+    case VK_F6:
+        voxelCompositeDebugView = VoxelCompositeDebugView::PartitionOwnershipColors;
+        voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::AdapterOwnership;
+        return true;
+    case VK_F7:
+        voxelCompositeDebugView = VoxelCompositeDebugView::SecondaryColorOnly;
+        return true;
+    case VK_F8:
+        voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+        voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
+        return true;
+    default:
+        return false;
+    }
+}
+
+void VoxelWaterfallApp::ResetBenchmarkDeterministicState()
+{
+    if (voxelWorkload.CameraMode == VoxelResearchCameraMode::Interactive)
+    {
+        voxelWorkload.CameraMode = VoxelResearchCameraMode::FixedOverview;
+        voxelWorkload.CameraPath = CameraModeName(voxelWorkload.CameraMode);
+    }
+    voxelSimulationAccumulator = 0.0;
+    voxelSimulationTime = 0.0;
+    voxelSimulationStepsThisFrame = 0;
+    voxelInterpolationAlpha = 0.0f;
+    voxelRecycledCount = 0;
+    voxelAliveCount = 0;
+    simulationFrameIndex = 0;
+    voxelWorkload.SpatialLod.FreezeCamera = false;
+    spatialLodCameraInitialized = false;
+    if (researchCameraController)
+    {
+        researchCameraController->SetMode(voxelWorkload.CameraMode);
+        researchCameraController->SetInputBlocked(true);
+        researchCameraController->SetDeterministicTime(0.0);
+        researchCameraController->ResetRoute();
+    }
 }
 
 std::string VoxelWaterfallApp::GetExecutionModeName() const
@@ -921,27 +1175,62 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
 {
     VoxelBenchmarkProfiler::FrameMetadata metadata{};
     metadata.FrameIndex = simulationFrameIndex;
+    metadata.ProfileName = ProfileName(voxelWorkload.Profile);
+    metadata.ScenePreset = voxelWorkload.ScenePreset;
     metadata.RequestedMode = GetExecutionModeName(requestedExecutionMode);
     metadata.ActualMode = GetExecutionModeName(frameGraphTelemetry.ActualMode);
-    metadata.TemporalPolicy =
-        executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation ||
-        executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation
-            ? "TemporalDecimation"
-            : "Full";
+    metadata.TemporalPolicy = TemporalPolicyName(voxelWorkload.TemporalPolicy);
     metadata.SpatialLodPolicy =
         voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::ThreeLevel
-            ? "SpatialDensityThreeLevel"
+            ? "ThreeLevel"
             : "Off";
+    metadata.PartitionStrategy = PartitionStrategyName(voxelWorkload.PartitionStrategy);
+    metadata.LoadBalanceScenario = LoadBalanceScenarioName(voxelWorkload.LoadBalanceScenario);
+    metadata.CameraPath =
+        researchCameraController ? researchCameraController->GetCameraPathName() : voxelWorkload.CameraPath;
+    metadata.LightingPreset = LightingPresetName(voxelWorkload.LightingMode);
+    metadata.RenderResolutionPreset = ResolutionPresetName(voxelWorkload.ResolutionPreset);
+    metadata.CameraFovDegrees = camera ? camera->GetFov() : 0.0f;
+    metadata.CameraNearPlane = camera ? camera->GetNearZ() : 0.0f;
+    metadata.CameraFarPlane = camera ? camera->GetFarZ() : 0.0f;
+    metadata.DynamicShadowsEnabled = voxelWorkload.DynamicShadowsEnabled;
+    const auto [configClass, configReason] = ClassifyBenchmarkConfig(voxelWorkload, requestedExecutionMode);
+    metadata.BenchmarkConfigClass = BenchmarkConfigClassName(configClass);
+    metadata.BenchmarkConfigReason = configReason;
     if (metadata.RequestedMode != metadata.ActualMode)
         metadata.FallbackReason = "requested mode unavailable; actual mode selected by runtime capability checks";
-    const auto& primary = voxelWorkload.Partitions[static_cast<size_t>(VoxelPartitionId::PrimaryPartition)];
-    const auto& secondary = voxelWorkload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
-    metadata.PrimaryPartitionVoxelCount = primary.VoxelCount();
-    metadata.SecondaryPartitionVoxelCount = secondary.VoxelCount();
+    uint32_t primaryVoxelCount = 0;
+    uint32_t secondaryVoxelCount = 0;
+    uint32_t updatedVoxelCount = 0;
+    uint32_t simulationDispatchCount = 0;
+    for (const auto& partition : voxelWorkload.Partitions)
+    {
+        if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
+            secondaryVoxelCount += partition.VoxelCount();
+        else
+            primaryVoxelCount += partition.VoxelCount();
+        updatedVoxelCount += partition.UpdatedVoxelCount;
+        if (partition.SimulationDispatchedThisFrame)
+            ++simulationDispatchCount;
+    }
+    metadata.PrimaryPartitionVoxelCount = primaryVoxelCount;
+    metadata.SecondaryPartitionVoxelCount = secondaryVoxelCount;
     metadata.TotalVoxelCount = voxelWorkload.TotalVoxelCount;
-    metadata.UpdatedVoxelCount = primary.UpdatedVoxelCount + secondary.UpdatedVoxelCount;
+    metadata.ActualStaticVoxelCount = voxelWorkload.ActualStaticVoxelCount;
+    metadata.ActualDynamicVoxelCount = voxelWorkload.ActualDynamicVoxelCount;
+    metadata.StaticVoxelBudget = voxelWorkload.StaticVoxelBudget;
+    metadata.DynamicVoxelBudget = voxelWorkload.DynamicVoxelBudget;
+    metadata.VoxelSize = voxelWorkload.Parameters.VoxelSize;
+    metadata.ChunkSizeX = voxelWorkload.ChunkSize.Width;
+    metadata.ChunkSizeY = voxelWorkload.ChunkSize.Height;
+    metadata.ChunkSizeZ = voxelWorkload.ChunkSize.Depth;
+    metadata.UpdatedVoxelCount = updatedVoxelCount;
     metadata.SimulationStepsThisFrame = voxelSimulationStepsThisFrame;
-    metadata.Seed = voxelWorkload.Parameters.Seed;
+    metadata.SimulationDispatchCount = simulationDispatchCount;
+    metadata.Seed =
+        voxelWorkload.ActualStaticVoxelCount > 0
+            ? voxelWorkload.StaticGenerationSeed
+            : voxelWorkload.Parameters.Seed;
     metadata.SecondaryShare = voxelWorkload.SecondaryShare;
     metadata.TemporalDecimationInterval = voxelWorkload.TemporalDecimationInterval;
     if (antiAliasingPrimePath)
@@ -1021,6 +1310,7 @@ BenchmarkControllerContext VoxelWaterfallApp::BuildBenchmarkControllerContext()
         [this](const float secondaryShare) { ApplyBenchmarkSecondaryShare(secondaryShare); },
         [this](const bool enabled) { ApplyBenchmarkSpatialLodEnabled(enabled); },
         [this](const uint32_t interval) { ApplyBenchmarkTemporalInterval(interval); },
+        [this] { ResetBenchmarkDeterministicState(); },
         multiGpuAvailable
     };
 }
@@ -1037,7 +1327,27 @@ void VoxelWaterfallApp::StopAutomaticBenchmark()
 
 void VoxelWaterfallApp::ApplyBenchmarkVoxelCount(const int totalCount)
 {
-    voxelWorkload.TotalVoxelCount = static_cast<uint32_t>(std::max(1, totalCount));
+    const auto activePreset = voxelResearchSceneManager.GetActivePreset();
+    if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment)
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
+    else if (activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment)
+    {
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
+        if (totalCount <= 100000)
+            voxelWorkload.DynamicVoxelBudget = 25000;
+        else if (totalCount <= 250000)
+            voxelWorkload.DynamicVoxelBudget = 100000;
+        else if (totalCount <= 500000)
+            voxelWorkload.DynamicVoxelBudget = 250000;
+        else
+            voxelWorkload.DynamicVoxelBudget = 500000;
+    }
+    else if (activePreset == VoxelResearchScenePreset::DynamicWaterfall)
+        voxelWorkload.DynamicVoxelBudget = static_cast<uint32_t>(std::max(0, totalCount));
+    else if (activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
+    else
+        voxelWorkload.TotalVoxelCount = static_cast<uint32_t>(std::max(0, totalCount));
     voxelWorkloadSettingsPending = true;
     ApplyPendingVoxelSettings();
 }
@@ -1060,7 +1370,11 @@ void VoxelWaterfallApp::ApplyBenchmarkSpatialLodEnabled(const bool enabled)
 
 void VoxelWaterfallApp::ApplyBenchmarkTemporalInterval(const uint32_t interval)
 {
-    voxelWorkload.TemporalDecimationInterval = std::clamp<uint32_t>(interval, 1, 16);
+    voxelWorkload.TemporalPolicy = interval <= 1 ? VoxelTemporalPolicy::Full : VoxelTemporalPolicy::Decimated;
+    voxelWorkload.TemporalDecimationInterval =
+        voxelWorkload.TemporalPolicy == VoxelTemporalPolicy::Decimated
+            ? std::clamp<uint32_t>(interval, 2, 16)
+            : 1;
     voxelWorkloadSettingsPending = true;
     ApplyPendingVoxelSettings();
 }
@@ -1122,7 +1436,36 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         return;
 
     Flush();
-    voxelWorkload = VoxelWaterfallWorkloadBuilder::Build(voxelWorkload);
+    const auto activePreset = voxelResearchSceneManager.GetActivePreset();
+    if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
+        activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
+        activePreset == VoxelResearchScenePreset::OcclusionValidation ||
+        activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
+    {
+        VoxelResearchEnvironmentGenerator::Settings settings{};
+        settings.Seed = voxelWorkload.StaticGenerationSeed;
+        settings.StaticVoxelBudget = voxelWorkload.StaticVoxelBudget;
+        settings.BudgetPreset = voxelWorkload.StaticBudgetPreset;
+        settings.StorageMode = voxelWorkload.StaticStorageMode;
+        settings.VoxelSize = voxelWorkload.Parameters.VoxelSize;
+        settings.SecondaryShare = voxelWorkload.SecondaryShare;
+        settings.PartitionStrategy = voxelWorkload.PartitionStrategy;
+        settings.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
+        settings.ChunkSize = voxelWorkload.ChunkSize;
+        settings.SpatialLod = voxelWorkload.SpatialLod;
+        auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);
+        voxelWorkload.Layers.clear();
+        voxelWorkload.Layers.push_back(std::move(generated.Layer));
+        voxelWorkload.StaticTelemetry = generated.Telemetry;
+    }
+    else
+    {
+        voxelWorkload.Layers.clear();
+    }
+    if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
+        activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
+        voxelWorkload.DynamicVoxelBudget = 0;
+    voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
     voxelSimulationTime = 0.0;
@@ -1143,12 +1486,20 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
         gameObjects.end(),
         [](const std::shared_ptr<GameObject>& object)
         {
-            return object && object->GetName() == "VoxelWaterfall";
+            return object && object->GetName() == VoxelSceneGpuObjectName;
         });
 
-    assert(voxelObjectIt != gameObjects.end() && "VoxelWaterfall object must exist before rebuilding GPU partitions");
     if (voxelObjectIt == gameObjects.end())
+    {
+        assert(voxelWorkload.TotalVoxelCount == 0 &&
+               "Dynamic voxel object must exist before rebuilding non-empty GPU partitions");
+        for (auto& partition : voxelWorkload.Partitions)
+        {
+            partition.AdapterOwner = AdapterOwnerForPartition(executionMode, multiGpuAvailable, partition);
+            partition.GpuPartition.reset();
+        }
         return;
+    }
 
     (*voxelObjectIt)->RemoveComponentsOfType<VoxelGpuPartition>();
     for (auto& partition : voxelWorkload.Partitions)
@@ -1156,16 +1507,18 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
 
     for (auto& partition : voxelWorkload.Partitions)
     {
+        if (partition.VoxelCount() == 0)
+            continue;
+
         partition.AdapterOwner = AdapterOwnerForPartition(executionMode, multiGpuAvailable, partition);
         const auto ownerDevice = DeviceForAdapterOwner(partition.AdapterOwner, primeDevice, secondDevice);
         assert(ownerDevice && "VoxelGpuPartition owner device must be valid");
 
         auto gpuPartition = std::make_shared<VoxelGpuPartition>(
             ownerDevice,
-            partition.GlobalVoxelIds,
-            voxelWorkload.Parameters,
+            partition.DrawStreams,
             partition.AdapterOwner);
-        gpuPartition->SetSimulationEnabled(partition.VoxelCount() > 0);
+        gpuPartition->SetSimulationEnabled(partition.HasDynamicVoxels() && partition.SimulationPolicy.Enabled);
         gpuPartition->SetRenderEnabled(partition.VoxelCount() > 0);
         (*voxelObjectIt)->AddComponent(gpuPartition);
 
@@ -1199,7 +1552,7 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
                    "VoxelGpuPartition must not be registered in the generic renderer registry");
     }
 
-    std::unordered_set<const VoxelPartitionState*> primaryPartitions;
+    std::unordered_set<const VoxelAdapterPartition*> primaryPartitions;
     for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
     {
         assert(partition != nullptr);
@@ -1220,8 +1573,13 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
         const auto expectedOwner = AdapterOwnerForPartition(executionMode, multiGpuAvailable, partition);
         assert(partition.AdapterOwner == expectedOwner &&
                "Voxel partition adapter owner does not match current execution mode");
-        assert(partition.GpuPartition && "Voxel partition must have adapter-local GPU object");
+        assert(partition.VoxelCount() == 0 || partition.GpuPartition &&
+               "Non-empty voxel partition must have adapter-local GPU object");
+        if (!partition.GpuPartition)
+            continue;
         assert(partition.GpuPartition->GetAdapterOwner() == partition.AdapterOwner);
+        assert(partition.HasDynamicVoxels() ||
+               !partition.GpuPartition->IsSimulationEnabled());
 
         const auto expectedDevice = DeviceForAdapterOwner(partition.AdapterOwner, primeDevice, secondDevice);
         const auto actualDevice = partition.GpuPartition->GetOwningDevice();
@@ -1234,15 +1592,16 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
         executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
     {
         for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
-            assert(partition->PartitionId != VoxelPartitionId::SecondaryPartition &&
+            assert(partition->PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
                    "Multi-GPU primary draw list must not contain SecondaryPartition");
         for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
-            assert(partition->PartitionId != VoxelPartitionId::PrimaryPartition &&
+            assert(partition->PartitionId != VoxelAdapterPartitionId::PrimaryPartition &&
                    "Multi-GPU secondary draw list must not contain PrimaryPartition");
     }
 
-    if (executionMode == VoxelExecutionMode::SingleGpuFull ||
+    if ((executionMode == VoxelExecutionMode::SingleGpuFull ||
         executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
+        && voxelWorkload.TotalVoxelCount > 0)
     {
         assert(renderWorkload.SecondaryOwnedPartitions.empty() &&
                "Single-GPU mode must not submit secondary graphics draw list");
@@ -1257,17 +1616,17 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResults(
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
-    std::unordered_set<DWORD> drawListGlobalIds;
-    std::unordered_set<const VoxelPartitionState*> partitionPointers;
+    std::unordered_set<VoxelGlobalId> drawListGlobalIds;
+    std::unordered_set<const VoxelAdapterPartition*> partitionPointers;
 
-    auto addDrawList = [&](const std::vector<const VoxelPartitionState*>& partitions)
+    auto addDrawList = [&](const std::vector<const VoxelAdapterPartition*>& partitions)
     {
         for (const auto* partition : partitions)
         {
             assert(partition != nullptr);
             assert(partitionPointers.insert(partition).second &&
                    "A voxel partition was assigned to more than one frame draw list");
-            for (const DWORD globalVoxelId : partition->GlobalVoxelIds)
+            for (const VoxelGlobalId globalVoxelId : partition->GlobalVoxelIds)
             {
                 assert(drawListGlobalIds.insert(globalVoxelId).second &&
                        "GlobalVoxelId appears in more than one frame draw list");
@@ -1311,16 +1670,16 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResults(
         executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
     {
         for (const auto& result : primaryResults)
-            assert(result.PartitionId != VoxelPartitionId::SecondaryPartition &&
+            assert(result.PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
                    "Multi-GPU primary command list recorded SecondaryPartition");
         for (const auto& result : secondaryResults)
-            assert(result.PartitionId != VoxelPartitionId::PrimaryPartition &&
+            assert(result.PartitionId != VoxelAdapterPartitionId::PrimaryPartition &&
                    "Multi-GPU secondary command list recorded PrimaryPartition");
 
         const bool hasSecondaryLogicalVoxels = std::any_of(
             renderWorkload.SecondaryOwnedPartitions.begin(),
             renderWorkload.SecondaryOwnedPartitions.end(),
-            [](const VoxelPartitionState* partition)
+            [](const VoxelAdapterPartition* partition)
             {
                 return partition && partition->VoxelCount() > 0;
             });
@@ -1494,8 +1853,19 @@ void VoxelWaterfallApp::CreateMaterials()
     seamless->SetNormalMap(assets->GetTexture(tex), tex);
     assets->AddMaterial(seamless);
 
+    auto matteOccluder = std::make_shared<Material>(L"matteOccluder", RenderMode::Opaque);
+    matteOccluder->DiffuseAlbedo = Vector4(0.36f, 0.35f, 0.33f, 1.0f);
+    matteOccluder->FresnelR0 = Vector3(0.01f, 0.01f, 0.01f);
+    matteOccluder->Roughness = 0.9f;
+    tex = assets->GetTextureIndex(L"seamless");
+    matteOccluder->SetDiffuseTexture(assets->GetTexture(tex), tex);
+    tex = assets->GetTextureIndex(L"defaultNormalMap");
+    matteOccluder->SetNormalMap(assets->GetTexture(tex), tex);
+    assets->AddMaterial(matteOccluder);
 
     models[L"quad"]->SetMeshMaterial(0, assets->GetMaterial(assets->GetMaterialIndex(L"seamless")));
+    if (models.find(L"box") != models.end())
+        models[L"box"]->SetMeshMaterial(0, assets->GetMaterial(assets->GetMaterialIndex(L"matteOccluder")));
 
     logQueue.Push(std::wstring(L"\nCreate Materials"));
 }
@@ -1628,11 +1998,10 @@ void VoxelWaterfallApp::LoadModels()
         models[entry.Name] = std::move(model);
     }
 
-    auto sphere = assets->GenerateSphere(cmdList);
-    models[L"sphere"] = std::move(sphere);
-
     auto quad = assets->GenerateQuad(cmdList, -15.0f, -15.0f, 30.0f, 30.0f, 0.0f);
     models[L"quad"] = std::move(quad);
+    auto box = assets->GenerateBox(cmdList, 1.0f, 1.0f, 1.0f);
+    models[L"box"] = std::move(box);
 
     queue->WaitForFenceValue(queue->ExecuteCommandList(cmdList));
     queue->Flush();
@@ -1692,6 +2061,7 @@ void VoxelWaterfallApp::GenerateMipMaps()
 
 void VoxelWaterfallApp::SortGO()
 {
+    researchCameraController.reset();
     for (auto&& item : gameObjects)
     {
         auto light = item->GetComponent<Light>();
@@ -1705,6 +2075,11 @@ void VoxelWaterfallApp::SortGO()
         {
             camera = (cam);
         }
+        auto researchController = item->GetComponent<VoxelResearchCameraController>();
+        if (researchController != nullptr)
+        {
+            researchCameraController = researchController;
+        }
     }
 }
 
@@ -1712,22 +2087,11 @@ void VoxelWaterfallApp::CreateGO()
 {
     logQueue.Push(std::wstring(L"\nStart Create GO"));
 
-    voxelWorkload.Position = Vector3(150.0f, 0.0f, 50.0f);
-    voxelWorkload.Rotation = Vector3(0.0f, 90.0f, 0.0f);
-    voxelWorkload.TotalVoxelCount = 24192;
-    voxelWorkload.SecondaryShare = 0.35f;
-    voxelWorkload.TemporalDecimationInterval = 2;
-    voxelWorkload.Parameters.VoxelSize = 0.50f;
-    voxelWorkload.Parameters.SpawnHeight = 14.0f;
-    voxelWorkload.Parameters.FloorHeight = -80.0f;
-    voxelWorkload.Parameters.WaterfallWidth = 30.0f;
-    voxelWorkload.Parameters.WaterfallDepth = 4.0f;
-    voxelWorkload.Parameters.InitialFallSpeed = 7.0f;
-    voxelWorkload.Parameters.Gravity = 34.0f;
-    voxelWorkload.Parameters.Seed = 1337;
-    voxelWorkload = VoxelWaterfallWorkloadBuilder::Build(voxelWorkload);
-
-    SceneFactoryContext sceneContext{
+    lights.clear();
+    camera.reset();
+    researchCameraController.reset();
+    voxelResearchSceneManager.RequestPreset(VoxelResearchScenePreset::MixedVoxelEnvironment);
+    VoxelResearchSceneContext sceneContext{
         primeDevice,
         secondDevice,
         *assets,
@@ -1736,32 +2100,12 @@ void VoxelWaterfallApp::CreateGO()
         gameObjects,
         typedRenderer,
         voxelWorkload,
-        executionMode,
-        multiGpuAvailable,
         AspectRatio()
     };
-    sceneFactory.CreateScene(sceneContext);
+    voxelResearchSceneManager.RebuildScene(sceneContext);
     RebuildGpuPartitionsForMode();
-    sceneTransformController.Attach(gameObjects);
-    sceneTransformController.SetTransformAppliedCallback(
-        [this](const GameObject& object, const Vector3& position)
-        {
-            SyncVoxelWaterfallPosition(object, position);
-        });
-    sceneTransformController.SetLogCallback(
-        [this](const std::wstring& message)
-        {
-            logQueue.Push(L"\n" + message);
-        });
 
     logQueue.Push(std::wstring(L"\nFinish create GO"));
-}
-
-void VoxelWaterfallApp::SyncVoxelWaterfallPosition(const GameObject& object, const Vector3& position)
-{
-    const auto& name = object.GetName();
-    if (name == "VoxelWaterfall")
-        voxelWorkload.Position = position;
 }
 
 void VoxelWaterfallApp::CalculateFrameStats()
@@ -1929,7 +2273,7 @@ void VoxelWaterfallApp::UpdateMaterials()
 void VoxelWaterfallApp::UpdateShadowTransform(const GameTimer& gt)
 {
     // Only the first "main" light casts a shadow.
-    Vector3 lightDir = mRotatedLightDirections[0];
+    Vector3 lightDir = mBaseLightDirections[0];
     Vector3 lightPos = -2.0f * mSceneBounds.Radius * lightDir;
     Vector3 targetPos = mSceneBounds.Center;
     Vector3 lightUp = Vector3::Up;
@@ -1952,7 +2296,7 @@ void VoxelWaterfallApp::UpdateShadowTransform(const GameTimer& gt)
 
     mLightNearZ = n;
     mLightFarZ = f;
-    Matrix lightProj = XMMatrixOrthographicOffCenterLH(l, r, b, t, n, f);
+    Matrix lightProj = DirectX::XMMatrixOrthographicOffCenterLH(l, r, b, t, n, f);
 
     // Transform NDC space [-1,+1]^2 to texture space [0,1]^2
     Matrix T(
@@ -2023,15 +2367,16 @@ void VoxelWaterfallApp::UpdateMainPassCB(const GameTimer& gt)
     mainPassCB.ViewProjTex = viewProjTex.Transpose();
     mainPassCB.ShadowTransform = shadowTransform.Transpose();
     mainPassCB.EyePosW = camera->gameObject->GetTransform()->GetWorldPosition();
+    mainPassCB.debugMap = voxelWorkload.DynamicShadowsEnabled ? 1.0f : 0.0f;
     mainPassCB.RenderTargetSize = Vector2(static_cast<float>(MainWindow->GetClientWidth()),
                                           static_cast<float>(MainWindow->GetClientHeight()));
     mainPassCB.InvRenderTargetSize = Vector2(1.0f / mainPassCB.RenderTargetSize.x,
                                              1.0f / mainPassCB.RenderTargetSize.y);
-    mainPassCB.NearZ = 1.0f;
-    mainPassCB.FarZ = 1000.0f;
+    mainPassCB.NearZ = camera->GetNearZ();
+    mainPassCB.FarZ = camera->GetFarZ();
     mainPassCB.TotalTime = gt.TotalTime();
     mainPassCB.DeltaTime = gt.DeltaTime();
-    mainPassCB.AmbientLight = Vector4{0.25f, 0.25f, 0.35f, 1.0f};
+    mainPassCB.AmbientLight = Vector4{0.20f, 0.22f, 0.24f, 1.0f};
 
     for (int i = 0; i < MaxLights; ++i)
     {
@@ -2045,12 +2390,31 @@ void VoxelWaterfallApp::UpdateMainPassCB(const GameTimer& gt)
         }
     }
 
-    mainPassCB.Lights[0].Direction = mRotatedLightDirections[0];
-    mainPassCB.Lights[0].Strength = Vector3{0.9f, 0.8f, 0.7f};
-    mainPassCB.Lights[1].Direction = mRotatedLightDirections[1];
-    mainPassCB.Lights[1].Strength = Vector3{0.4f, 0.4f, 0.4f};
-    mainPassCB.Lights[2].Direction = mRotatedLightDirections[2];
-    mainPassCB.Lights[2].Strength = Vector3{0.2f, 0.2f, 0.2f};
+    mainPassCB.Lights[0].Direction = mBaseLightDirections[0];
+    mainPassCB.Lights[1].Direction = mBaseLightDirections[1];
+    mainPassCB.Lights[2].Direction = mBaseLightDirections[2];
+    switch (voxelWorkload.LightingMode)
+    {
+    case VoxelResearchLightingPreset::OcclusionValidationLighting:
+        mainPassCB.AmbientLight = Vector4{0.10f, 0.10f, 0.12f, 1.0f};
+        mainPassCB.Lights[0].Strength = Vector3{1.05f, 1.0f, 0.9f};
+        mainPassCB.Lights[1].Strength = Vector3{0.12f, 0.16f, 0.22f};
+        mainPassCB.Lights[2].Strength = Vector3{0.0f, 0.0f, 0.0f};
+        break;
+    case VoxelResearchLightingPreset::DemoStaticSky:
+        mainPassCB.AmbientLight = Vector4{0.24f, 0.27f, 0.30f, 1.0f};
+        mainPassCB.Lights[0].Strength = Vector3{0.82f, 0.82f, 0.78f};
+        mainPassCB.Lights[1].Strength = Vector3{0.18f, 0.20f, 0.24f};
+        mainPassCB.Lights[2].Strength = Vector3{0.08f, 0.08f, 0.08f};
+        break;
+    case VoxelResearchLightingPreset::BenchmarkNeutral:
+    default:
+        mainPassCB.AmbientLight = Vector4{0.20f, 0.22f, 0.24f, 1.0f};
+        mainPassCB.Lights[0].Strength = Vector3{0.78f, 0.78f, 0.74f};
+        mainPassCB.Lights[1].Strength = Vector3{0.12f, 0.14f, 0.16f};
+        mainPassCB.Lights[2].Strength = Vector3{0.0f, 0.0f, 0.0f};
+        break;
+    }
 
     auto currentPassCB = currentFrameResource->PrimePassConstantUploadBuffer;
     currentPassCB->CopyData(0, mainPassCB);
@@ -2108,6 +2472,8 @@ bool VoxelWaterfallApp::InitMainWindow()
 void VoxelWaterfallApp::OnResize()
 {
     D3DApp::OnResize();
+    voxelWorkload.RenderResolutionWidth = static_cast<uint32_t>(MainWindow->GetClientWidth());
+    voxelWorkload.RenderResolutionHeight = static_cast<uint32_t>(MainWindow->GetClientHeight());
 
     fullViewport.Height = static_cast<float>(MainWindow->GetClientHeight());
     fullViewport.Width = static_cast<float>(MainWindow->GetClientWidth());
@@ -2168,6 +2534,9 @@ LRESULT VoxelWaterfallApp::MsgProc(const HWND hwnd, const UINT msg, const WPARAM
 {
     if (benchmarkController.IsAutomaticActive())
         return D3DApp::MsgProc(hwnd, msg, wParam, lParam);
+
+    if (msg == WM_KEYDOWN && HandleDemoPresetHotkey(wParam))
+        return 0;
 
     if (imguiInitialized && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
         return true;

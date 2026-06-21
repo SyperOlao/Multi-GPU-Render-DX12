@@ -15,12 +15,23 @@
 using namespace DirectX;
 using namespace PEPEngine::Graphics;
 
+namespace
+{
+    constexpr float BenchmarkBackgroundColor[4] = {0.03f, 0.035f, 0.04f, 1.0f};
+
+    bool HasRenderers(const VoxelRenderPassContext& context, const RenderMode mode)
+    {
+        return !context.TypedRenderers[static_cast<int>(mode)].empty();
+    }
+}
+
 void VoxelRenderPasses::RecordPrimaryBase(const std::shared_ptr<GCommandList>& cmdList,
                                           const VoxelRenderPassContext& context) const
 {
     RecordNormalMap(cmdList, context);
     RecordAmbientMap(cmdList, context);
-    RecordShadowMap(cmdList, context);
+    if (context.DynamicShadowsEnabled)
+        RecordShadowMap(cmdList, context);
     RecordForwardPath(cmdList, context);
 }
 
@@ -34,6 +45,9 @@ void VoxelRenderPasses::RecordFinalPresent(const std::shared_ptr<GCommandList>& 
 void VoxelRenderPasses::RecordShadowMap(const std::shared_ptr<GCommandList>& cmdList,
                                         const VoxelRenderPassContext& context)
 {
+    if (!HasRenderers(context, RenderMode::Opaque) && !HasRenderers(context, RenderMode::OpaqueAlphaDrop))
+        return;
+
     cmdList->SetRootSignature(*context.PrimeDeviceSignature.get());
     cmdList->SetRootShaderResourceView(StandardShaderSlot::MaterialData,
                                        *context.CurrentFrameResource.MaterialBuffer, 1);
@@ -118,7 +132,7 @@ void VoxelRenderPasses::RecordForwardPath(const std::shared_ptr<GCommandList>& c
     cmdList->TransitionBarrier(context.AntiAliasingPath.GetDepthMap(), D3D12_RESOURCE_STATE_DEPTH_WRITE);
     cmdList->FlushResourceBarriers();
 
-    cmdList->ClearRenderTarget(context.AntiAliasingPath.GetRTV(), 0, Colors::Black);
+    cmdList->ClearRenderTarget(context.AntiAliasingPath.GetRTV(), 0, BenchmarkBackgroundColor);
     cmdList->ClearDepthStencil(context.AntiAliasingPath.GetDSV(), 0,
                                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0);
 

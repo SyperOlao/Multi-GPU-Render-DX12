@@ -119,10 +119,24 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
     const float2 spreadDirection = SafeNormalize2(particle.CurrentContinuousPosition.xz +
         float2(HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed) - 0.5f,
                HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed ^ 0x68bc21ebu) - 0.5f));
+    const float basinContact = saturate((EmitterBuffer.FloorHeight + voxelSize * 2.5f -
+        particle.CurrentContinuousPosition.y) / max(voxelSize * 2.5f, 0.001f));
+    const float2 basinBounds = float2(
+        max(EmitterBuffer.WaterfallWidth * 0.75f, voxelSize * 4.0f),
+        max(EmitterBuffer.WaterfallDepth * 2.0f, voxelSize * 6.0f));
 
     particle.Velocity += EmitterBuffer.Force * dt;
     particle.Velocity.xz += (float2(flowX, flowZ) + spreadDirection * floorSpread * 4.0f) * dt;
+    particle.Velocity.xz += spreadDirection * basinContact * 6.0f * dt;
+    particle.Velocity.y = lerp(particle.Velocity.y, -voxelSize * 2.0f, basinContact * 0.18f);
     particle.CurrentContinuousPosition += particle.Velocity * dt;
+    if (basinContact > 0.0f)
+    {
+        particle.CurrentContinuousPosition.xz = clamp(
+            particle.CurrentContinuousPosition.xz,
+            -basinBounds,
+            basinBounds);
+    }
     particle.AgeSeconds += dt;
 
     if (particle.CurrentContinuousPosition.y <= EmitterBuffer.FloorHeight - EmitterBuffer.RecycleMargin)

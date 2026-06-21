@@ -83,15 +83,15 @@
     <ClCompile Include="Source\Rendering\MultiGpuVoxelRenderTargets.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\VoxelCompositePass.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
     <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
-    <ClCompile Include="Source\Scene\SceneFactory.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
-    <ClCompile Include="Source\Scene\SceneTransformController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
-    <ClCompile Include="Source\Scene\SceneTransformPersistence.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\VoxelResearchCameraController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\VoxelResearchSceneManager.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
     <ClCompile Include="Source\Validation\VoxelVisualValidationRunner.cpp"><Filter>Source Files\Validation</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelResearchEnvironmentGenerator.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
-    <ClCompile Include="Source\Voxels\VoxelWaterfallWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSceneWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
     <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
@@ -115,16 +115,16 @@
     <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelCompositePass.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
-    <ClInclude Include="Source\Scene\SceneFactory.h"><Filter>Header Files\Scene</Filter></ClInclude>
-    <ClInclude Include="Source\Scene\SceneTransformController.h"><Filter>Header Files\Scene</Filter></ClInclude>
-    <ClInclude Include="Source\Scene\SceneTransformPersistence.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
     <ClInclude Include="Source\Validation\VoxelVisualValidationRunner.h"><Filter>Header Files\Validation</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelResearchEnvironmentGenerator.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
-    <ClInclude Include="Source\Voxels\VoxelWaterfallWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSceneWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"><Filter>Header Files\Voxels</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -141,7 +141,6 @@
     <None Include="Shaders\SkyBoxShader.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Ssao.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\SsaoBlur.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\TreeSprite.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VoxelComposite.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\BuildLodRenderList.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VoxelValidationCompare.hlsl"><Filter>Shaders</Filter></None>

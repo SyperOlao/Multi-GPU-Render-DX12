@@ -1,7 +1,7 @@
 #pragma once
 #include "AssetsLoader.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
-#include "Source/Voxels/VoxelWaterfallWorkload.h"
+#include "Source/Voxels/VoxelSceneWorkload.h"
 #include "d3dApp.h"
 #include "Renderer.h"
 #include "RenderModeFactory.h"
@@ -18,8 +18,8 @@
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 #include "Source/Rendering/VoxelCompositePass.h"
 #include "Source/Rendering/VoxelRenderPasses.h"
-#include "Source/Scene/SceneFactory.h"
-#include "Source/Scene/SceneTransformController.h"
+#include "Source/Scene/VoxelResearchCameraController.h"
+#include "Source/Scene/VoxelResearchSceneManager.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
 #include "Source/Validation/VoxelVisualValidationRunner.h"
 #include "Source/Voxels/VoxelSimulationScheduler.h"
@@ -50,8 +50,12 @@ protected:
     void StopManualBenchmark();
     void RunVisualValidation();
     void RequestApplyVoxelWorkloadSettings();
-    bool ProjectWorldToScreen(const Vector3& worldPosition, Vector2& screenPosition) const;
-    void DrawVoxelWaterfallSceneLabels();
+    void ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile profile);
+    void ApplyResearchCameraMode(VoxelResearchCameraMode mode);
+    void ApplyResearchLightingPreset(VoxelResearchLightingPreset preset);
+    void ApplyRenderResolutionPreset(VoxelRenderResolutionPreset preset);
+    bool HandleDemoPresetHotkey(WPARAM key);
+    void ResetBenchmarkDeterministicState();
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
     void RebuildGpuPartitionsForMode();
@@ -85,7 +89,6 @@ protected:
     void GenerateMipMaps();
     void SortGO();
     void CreateGO();
-    void SyncVoxelWaterfallPosition(const GameObject& object, const Vector3& position);
     void CalculateFrameStats() override;
     void LogWriting();
     void UpdateMaterials();
@@ -100,6 +103,7 @@ protected:
 
     std::shared_ptr<GDevice> primeDevice;
     std::shared_ptr<GDevice> secondDevice;
+    std::shared_ptr<VoxelResearchCameraController> researchCameraController;
 
     LockThreadQueue<std::wstring> logQueue{};
     D3D12_VIEWPORT fullViewport{};
@@ -131,7 +135,7 @@ protected:
     custom_vector<custom_vector<std::shared_ptr<Renderer>>> typedRenderer = MemoryAllocator::CreateVector<custom_vector<
         std::shared_ptr<Renderer>>>();
 
-    VoxelWaterfallWorkload voxelWorkload{};
+    VoxelSceneWorkload voxelWorkload{};
     bool voxelWorkloadSettingsPending = false;
     VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
@@ -160,8 +164,7 @@ protected:
     VoxelCompositePass voxelCompositePass;
     VoxelRenderPasses voxelRenderPasses;
     VoxelWaterfallDebugPanel debugPanel;
-    SceneFactory sceneFactory;
-    SceneTransformController sceneTransformController;
+    VoxelResearchSceneManager voxelResearchSceneManager;
     Win32InputRouter inputRouter;
 
     VoxelBenchmarkProfiler benchmarkProfiler;
@@ -198,13 +201,11 @@ protected:
     Matrix mLightProj = Matrix::Identity;
     Matrix mShadowTransform = Matrix::Identity;
 
-    float mLightRotationAngle = 0.0f;
     Vector3 mBaseLightDirections[3] = {
         Vector3(0.57735f, -0.57735f, 0.57735f),
         Vector3(-0.57735f, -0.57735f, 0.57735f),
         Vector3(0.0f, -0.707f, -0.707f)
     };
-    Vector3 mRotatedLightDirections[3];
 
     DirectX::BoundingSphere mSceneBounds;
 };

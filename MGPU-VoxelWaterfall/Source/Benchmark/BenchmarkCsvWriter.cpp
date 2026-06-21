@@ -53,6 +53,10 @@ namespace
         std::string RequestedMode;
         std::string ActualMode;
         std::string Preset;
+        std::string ProfileName;
+        std::string PartitionStrategy;
+        std::string LoadBalanceScenario;
+        std::string BenchmarkConfigClass;
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
         uint32_t TotalVoxelCount = 0;
@@ -64,12 +68,14 @@ namespace
 
         bool operator<(const AggregateKey& other) const
         {
-            return std::tie(RequestedMode, ActualMode, Preset, TemporalPolicy, SpatialLodPolicy,
+            return std::tie(RequestedMode, ActualMode, Preset, ProfileName, PartitionStrategy,
+                            LoadBalanceScenario, BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy,
                             TotalVoxelCount, SecondarySharePermille, RenderWidth, RenderHeight,
                             PrimaryAdapterName, SecondaryAdapterName) <
-                std::tie(other.RequestedMode, other.ActualMode, other.Preset, other.TemporalPolicy,
-                         other.SpatialLodPolicy, other.TotalVoxelCount, other.SecondarySharePermille,
-                         other.RenderWidth, other.RenderHeight, other.PrimaryAdapterName,
+                std::tie(other.RequestedMode, other.ActualMode, other.Preset, other.ProfileName,
+                         other.PartitionStrategy, other.LoadBalanceScenario, other.BenchmarkConfigClass,
+                         other.TemporalPolicy, other.SpatialLodPolicy, other.TotalVoxelCount,
+                         other.SecondarySharePermille, other.RenderWidth, other.RenderHeight, other.PrimaryAdapterName,
                          other.SecondaryAdapterName);
         }
     };
@@ -80,6 +86,10 @@ namespace
             summary.RequestedMode,
             summary.ActualMode,
             summary.Preset,
+            summary.ProfileName,
+            summary.PartitionStrategy,
+            summary.LoadBalanceScenario,
+            summary.BenchmarkConfigClass,
             summary.TemporalPolicy,
             summary.SpatialLodPolicy,
             summary.TotalVoxelCount,
@@ -310,7 +320,9 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
 
     summary.imbue(std::locale::classic());
     summary << "requested_mode,actual_mode,primary_adapter,secondary_adapter,total_voxels,"
-        << "secondary_share,temporal_policy,spatial_lod_policy,render_width,render_height,"
+        << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
+        << "temporal_policy,spatial_lod_policy,"
+        << "actual_static_voxels,actual_dynamic_voxels,render_width,render_height,"
         << "repetition_count,measured_frame_count,preset,run_valid,validity_reason,speedup_statistic,"
         << "average_cpu_frame_ms,median_cpu_frame_ms,stddev_cpu_frame_ms,cpu_frame_ci95_half_width_ms,"
         << "critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,primary_lod_compaction_ms,"
@@ -331,8 +343,14 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << EscapeCsv(row.SecondaryAdapterName) << ','
             << row.TotalVoxelCount << ','
             << row.SecondaryShare << ','
+            << EscapeCsv(row.ProfileName) << ','
+            << EscapeCsv(row.PartitionStrategy) << ','
+            << EscapeCsv(row.LoadBalanceScenario) << ','
+            << EscapeCsv(row.BenchmarkConfigClass) << ','
             << EscapeCsv(row.TemporalPolicy) << ','
             << EscapeCsv(row.SpatialLodPolicy) << ','
+            << row.ActualStaticVoxelCount << ','
+            << row.ActualDynamicVoxelCount << ','
             << row.RenderWidth << ','
             << row.RenderHeight << ','
             << row.RepetitionCount << ','

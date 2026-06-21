@@ -6,7 +6,7 @@
 
 struct VoxelSimulationSchedulerContext
 {
-    VoxelWaterfallWorkload& Workload;
+    VoxelSceneWorkload& Workload;
     VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
     bool MultiGpuAvailable = false;
     uint64_t& SimulationFrameIndex;
@@ -55,17 +55,17 @@ private:
     static constexpr double FixedSimulationDeltaTime = 1.0 / 60.0;
     static constexpr double MaxAccumulatedSimulationTime = 0.25;
 
-    static uint32_t GetEffectiveUpdateInterval(VoxelExecutionMode mode, const VoxelPartitionState& partition);
-    static bool ShouldDispatchPartition(const VoxelPartitionState& partition,
+    static uint32_t GetEffectiveUpdateInterval(VoxelExecutionMode mode, const VoxelAdapterPartition& partition);
+    static bool ShouldDispatchPartition(const VoxelAdapterPartition& partition,
                                         uint64_t fixedStepIndex,
                                         uint32_t effectiveInterval);
     static float CalculateInterpolationPhase(const VoxelSimulationSchedulerContext& context,
-                                             const VoxelPartitionState& partition,
+                                             const VoxelAdapterPartition& partition,
                                              uint32_t effectiveInterval);
     static void PreparePartitionDispatch(const VoxelSimulationSchedulerContext& context,
-                                         VoxelPartitionState& partition,
+                                         VoxelAdapterPartition& partition,
                                          uint32_t effectiveInterval,
                                          uint64_t fixedStepIndex);
-    static void MarkPartitionUpdated(VoxelPartitionState& partition,
+    static void MarkPartitionUpdated(VoxelAdapterPartition& partition,
                                      uint64_t fixedStepIndex);
 };

@@ -19,7 +19,7 @@ enum class VoxelExecutionMode
     MultiGpuTemporalDecimation
 };
 
-enum class VoxelPartitionId : uint8_t
+enum class VoxelAdapterPartitionId : uint8_t
 {
     PrimaryPartition = 0,
     SecondaryPartition,
@@ -57,7 +57,99 @@ enum class VoxelSpatialLodDebugMode : uint32_t
     AdapterOwnership
 };
 
-static constexpr size_t VoxelPartitionCount = static_cast<size_t>(VoxelPartitionId::Count);
+enum class VoxelSceneLayerType : uint8_t
+{
+    Static,
+    Dynamic
+};
+
+enum class StaticVoxelStorageMode : uint32_t
+{
+    SurfaceOnly,
+    DenseSolidStress
+};
+
+enum class StaticVoxelBudgetPreset : uint32_t
+{
+    Small,
+    Medium,
+    Large,
+    VeryLarge
+};
+
+enum class DynamicVoxelBudgetPreset : uint32_t
+{
+    Small,
+    Medium,
+    Large,
+    VeryLarge
+};
+
+enum class VoxelResearchWorkloadProfile : uint32_t
+{
+    StaticRenderOnly,
+    DynamicSimulationAndRender,
+    MixedStaticAndDynamic,
+    OcclusionValidation,
+    SpatialLodDemonstration
+};
+
+enum class VoxelPartitionStrategy : uint32_t
+{
+    HashedChunks,
+    SpatialPlane
+};
+
+enum class VoxelLoadBalanceScenario : uint32_t
+{
+    Balanced,
+    PrimaryHeavy,
+    SecondaryHeavy
+};
+
+enum class VoxelTemporalPolicy : uint32_t
+{
+    Full,
+    Decimated
+};
+
+enum class VoxelBenchmarkConfigClass : uint32_t
+{
+    ValidMatchingBenchmark,
+    Diagnostic,
+    InvalidMixedQuality
+};
+
+enum class VoxelResearchCameraMode : uint32_t
+{
+    Interactive,
+    FixedOverview,
+    FixedOcclusion,
+    WaterfallCloseup,
+    LodSweepRoute,
+    BenchmarkRoute
+};
+
+enum class VoxelResearchLightingPreset : uint32_t
+{
+    BenchmarkNeutral,
+    DemoStaticSky,
+    OcclusionValidationLighting
+};
+
+enum class VoxelRenderResolutionPreset : uint32_t
+{
+    R1280x720,
+    R1920x1080,
+    R2560x1440,
+    R3840x2160
+};
+
+using VoxelLayerId = uint32_t;
+using VoxelGlobalId = uint64_t;
+using VoxelChunkId = uint64_t;
+
+static constexpr size_t VoxelAdapterPartitionCount = static_cast<size_t>(VoxelAdapterPartitionId::Count);
 
 struct VoxelSimulationParameters
 {
@@ -78,7 +170,11 @@ struct alignas(16) VoxelParticleData
     DirectX::SimpleMath::Vector3 Velocity = DirectX::SimpleMath::Vector3::Zero;
     float FlowPhase = 0.0f;
     DWORD GlobalVoxelId = 0;
+    DWORD PackedGridCoordinate = 0;
+    DWORD MaterialId = 0;
+    DWORD StreamKind = 0;
     DirectX::SimpleMath::Vector3 CurrentContinuousPosition = DirectX::SimpleMath::Vector3::Zero;
+    float Padding0 = 0.0f;
 };
 
 struct alignas(16) VoxelEmitterData
@@ -109,12 +205,12 @@ struct alignas(16) VoxelEmitterData
 
     DWORD SpatialLodDebugMode = 0;
     DWORD AdapterOwner = 0;
-    DirectX::SimpleMath::Vector2 Padding = DirectX::SimpleMath::Vector2::Zero;
+    DWORD StreamKind = 0;
+    DWORD Padding = 0;
 };
 
-static_assert(sizeof(VoxelParticleData) == sizeof(ParticleData));
-static_assert(sizeof(VoxelParticleData) == 48);
-static_assert(offsetof(VoxelParticleData, CurrentContinuousPosition) == 36);
+static_assert(sizeof(VoxelParticleData) == 64);
+static_assert(offsetof(VoxelParticleData, CurrentContinuousPosition) == 48);
 static_assert(sizeof(VoxelEmitterData) == 112);
 static_assert(offsetof(VoxelEmitterData, SimulationTime) == 80);
 
@@ -138,7 +234,7 @@ struct alignas(16) VoxelLodBuildData
 
     DWORD SpatialLodMode = 0;
     DWORD AdapterOwner = 0;
-    DWORD Padding0 = 0;
+    DWORD StreamKind = 0;
     DWORD Padding1 = 0;
 };
 
@@ -175,12 +271,81 @@ struct VoxelSpatialLodStats
     }
 };
 
-struct VoxelPartitionState
+struct VoxelGridCoordinate
+{
+    int32_t X = 0;
+    int32_t Y = 0;
+    int32_t Z = 0;
+};
+
+struct VoxelStaticEnvironmentTelemetry
+{
+    uint32_t OccupiedCells = 0;
+    uint32_t SurfaceVoxels = 0;
+    uint32_t HiddenInteriorVoxels = 0;
+    uint32_t ChunkCount = 0;
+    uint32_t PrimaryStaticVoxels = 0;
+    uint32_t SecondaryStaticVoxels = 0;
+    uint32_t ActualRenderedStaticVoxels = 0;
+    uint32_t GenerationSeed = 0;
+    StaticVoxelStorageMode StorageMode = StaticVoxelStorageMode::SurfaceOnly;
+};
+
+struct VoxelChunkSize
+{
+    uint32_t Width = 8;
+    uint32_t Height = 8;
+    uint32_t Depth = 4;
+};
+
+struct VoxelLayerRenderSettings
+{
+    DirectX::SimpleMath::Vector4 Color = DirectX::SimpleMath::Vector4(0.02f, 0.48f, 0.95f, 1.0f);
+    float VoxelSize = 0.75f;
+};
+
+struct VoxelLayerSimulationPolicy
+{
+    bool Enabled = false;
+    uint32_t UpdateInterval = 1;
+};
+
+struct VoxelLayerSpatialLodPolicy
+{
+    VoxelSpatialLodSettings Settings{};
+    VoxelChunkSize ChunkSize{};
+};
+
+struct VoxelPartitionDrawStream
+{
+    VoxelLayerId LayerId = 0;
+    VoxelSceneLayerType LayerType = VoxelSceneLayerType::Dynamic;
+    std::vector<VoxelGlobalId> GlobalVoxelIds;
+    std::vector<DWORD> SimulationVoxelIds;
+    std::vector<VoxelChunkId> ChunkIds;
+    std::vector<VoxelGridCoordinate> GridCoordinates;
+    std::vector<uint32_t> MaterialIds;
+    VoxelGridCoordinate GridOrigin{};
+    VoxelSimulationParameters SimulationParameters{};
+    VoxelLayerRenderSettings RenderSettings{};
+    VoxelLayerSimulationPolicy SimulationPolicy{};
+    VoxelLayerSpatialLodPolicy SpatialLodPolicy{};
+
+    uint32_t VoxelCount() const
+    {
+        return static_cast<uint32_t>(GlobalVoxelIds.size());
+    }
+};
+
+struct VoxelAdapterPartition
 {
     const char* DisplayName = "";
     const char* ObjectName = "";
-    VoxelPartitionId PartitionId = VoxelPartitionId::PrimaryPartition;
+    VoxelAdapterPartitionId PartitionId = VoxelAdapterPartitionId::PrimaryPartition;
     VoxelAdapterOwner AdapterOwner = VoxelAdapterOwner::Primary;
+    VoxelLayerId LayerId = 0;
+    VoxelSceneLayerType LayerType = VoxelSceneLayerType::Dynamic;
+    VoxelLayerSimulationPolicy SimulationPolicy{true, 1};
     uint32_t UpdateInterval = 1;
     uint32_t EffectiveUpdateInterval = 1;
     uint32_t StepsSinceLastUpdate = 0;
@@ -190,18 +355,35 @@ struct VoxelPartitionState
     bool UpdatedThisFrame = false;
     bool SimulationDispatchedThisFrame = false;
     UINT UpdatedVoxelCount = 0;
-    std::vector<DWORD> GlobalVoxelIds;
+    std::vector<VoxelGlobalId> GlobalVoxelIds;
+    std::vector<DWORD> SimulationVoxelIds;
+    std::vector<VoxelChunkId> ChunkIds;
+    std::vector<VoxelGridCoordinate> GridCoordinates;
+    std::vector<uint32_t> MaterialIds;
+    std::vector<VoxelPartitionDrawStream> DrawStreams;
+    VoxelSimulationParameters Parameters{};
+    VoxelSpatialLodSettings SpatialLod{};
     std::shared_ptr<VoxelGpuPartition> GpuPartition;
 
     uint32_t VoxelCount() const
     {
         return static_cast<uint32_t>(GlobalVoxelIds.size());
     }
+
+    bool HasDynamicVoxels() const
+    {
+        for (const auto& stream : DrawStreams)
+        {
+            if (stream.LayerType == VoxelSceneLayerType::Dynamic && stream.VoxelCount() > 0)
+                return true;
+        }
+        return false;
+    }
 };
 
 struct VoxelPartitionRenderResult
 {
-    VoxelPartitionId PartitionId = VoxelPartitionId::PrimaryPartition;
+    VoxelAdapterPartitionId PartitionId = VoxelAdapterPartitionId::PrimaryPartition;
     bool DrawIssued = false;
     uint32_t DrawCallCount = 0;
     uint32_t SubmittedVoxelCount = 0;
@@ -215,18 +397,71 @@ struct VoxelPartitionRenderResult
 
 struct VoxelRenderWorkload
 {
-    std::vector<const VoxelPartitionState*> PrimaryOwnedPartitions;
-    std::vector<const VoxelPartitionState*> SecondaryOwnedPartitions;
+    std::vector<const VoxelAdapterPartition*> PrimaryOwnedPartitions;
+    std::vector<const VoxelAdapterPartition*> SecondaryOwnedPartitions;
 };
 
-struct VoxelWaterfallWorkload
+struct VoxelSceneLayer
 {
+    VoxelLayerId LayerId = 0;
+    VoxelSceneLayerType LayerType = VoxelSceneLayerType::Dynamic;
+    std::string DisplayName;
+    std::vector<VoxelGlobalId> GlobalVoxelIds;
+    std::vector<DWORD> SimulationVoxelIds;
+    std::vector<VoxelChunkId> ChunkIds;
+    std::vector<VoxelGridCoordinate> GridCoordinates;
+    std::vector<uint32_t> MaterialIds;
+    DirectX::SimpleMath::Vector3 Position = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Vector3 Rotation = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Matrix WorldTransform = DirectX::SimpleMath::Matrix::Identity;
+    DirectX::SimpleMath::Vector3 BoundsMin = DirectX::SimpleMath::Vector3::Zero;
+    DirectX::SimpleMath::Vector3 BoundsMax = DirectX::SimpleMath::Vector3::Zero;
+    VoxelLayerRenderSettings RenderSettings{};
+    std::array<VoxelPartitionDrawStream, VoxelAdapterPartitionCount> AdapterPartitions{};
+    VoxelLayerSimulationPolicy SimulationPolicy{};
+    VoxelLayerSpatialLodPolicy SpatialLodPolicy{};
+    VoxelSimulationParameters SimulationParameters{};
+
+    uint32_t LogicalVoxelCount() const
+    {
+        return static_cast<uint32_t>(GlobalVoxelIds.size());
+    }
+};
+
+struct VoxelSceneWorkload
+{
+    VoxelResearchWorkloadProfile Profile = VoxelResearchWorkloadProfile::MixedStaticAndDynamic;
+    std::string ScenePreset = "MixedVoxelEnvironment";
     DirectX::SimpleMath::Vector3 Position = DirectX::SimpleMath::Vector3::Zero;
     DirectX::SimpleMath::Vector3 Rotation = DirectX::SimpleMath::Vector3::Zero;
     VoxelSimulationParameters Parameters{};
-    uint32_t TotalVoxelCount = 1;
+    uint32_t TotalVoxelCount = 0;
+    std::vector<VoxelSceneLayer> Layers;
+    uint32_t StaticVoxelBudget = 100000;
+    StaticVoxelBudgetPreset StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
+    StaticVoxelStorageMode StaticStorageMode = StaticVoxelStorageMode::SurfaceOnly;
+    uint32_t StaticGenerationSeed = 1337;
+    VoxelStaticEnvironmentTelemetry StaticTelemetry{};
+    uint32_t DynamicVoxelBudget = 25000;
+    DynamicVoxelBudgetPreset DynamicBudgetPreset = DynamicVoxelBudgetPreset::Small;
+    uint32_t ActualStaticVoxelCount = 0;
+    uint32_t ActualDynamicVoxelCount = 0;
+    VoxelPartitionStrategy PartitionStrategy = VoxelPartitionStrategy::HashedChunks;
+    VoxelLoadBalanceScenario LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
     float SecondaryShare = 0.35f;
+    VoxelTemporalPolicy TemporalPolicy = VoxelTemporalPolicy::Full;
     uint32_t TemporalDecimationInterval = 2;
     VoxelSpatialLodSettings SpatialLod{};
-    std::array<VoxelPartitionState, VoxelPartitionCount> Partitions{};
+    VoxelChunkSize ChunkSize{};
+    std::string CameraPath = "FixedOverview";
+    std::string LightingPreset = "FixedNeutralDirectional";
+    VoxelResearchCameraMode CameraMode = VoxelResearchCameraMode::FixedOverview;
+    VoxelResearchLightingPreset LightingMode = VoxelResearchLightingPreset::BenchmarkNeutral;
+    VoxelRenderResolutionPreset ResolutionPreset = VoxelRenderResolutionPreset::R1920x1080;
+    uint32_t RenderResolutionWidth = 1920;
+    uint32_t RenderResolutionHeight = 1080;
+    bool DynamicShadowsEnabled = false;
+    VoxelBenchmarkConfigClass BenchmarkConfigClass = VoxelBenchmarkConfigClass::ValidMatchingBenchmark;
+    std::string BenchmarkConfigReason;
+    std::vector<VoxelAdapterPartition> Partitions;
 };

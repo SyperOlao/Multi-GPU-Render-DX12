@@ -5,7 +5,11 @@ struct ParticleData
     float3 Velocity;
     float FlowPhase;
     uint GlobalVoxelId;
+    uint PackedGridCoordinate;
+    uint MaterialId;
+    uint StreamKind;
     float3 CurrentContinuousPosition;
+    float Padding0;
 };
 
 struct EmitterData
@@ -36,7 +40,8 @@ struct EmitterData
 
     uint SpatialLodDebugMode;
     uint AdapterOwner;
-    float2 Padding;
+    uint StreamKind;
+    uint Padding;
 };
 
 struct VoxelLodRenderItem

@@ -15,7 +15,6 @@ namespace PEPEngine::Graphics
     class GDescriptor;
 }
 
-class SceneTransformController;
 struct VoxelFrameGraphTelemetry;
 
 struct VoxelWaterfallDebugPanelContext
@@ -24,7 +23,7 @@ struct VoxelWaterfallDebugPanelContext
     std::shared_ptr<PEPEngine::Graphics::GCommandList> CommandList;
     PEPEngine::Graphics::GDescriptor* ImGuiSrvMemory = nullptr;
 
-    VoxelWaterfallWorkload& Workload;
+    VoxelSceneWorkload& Workload;
     VoxelExecutionMode RequestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
     bool MultiGpuAvailable = false;
@@ -49,9 +48,11 @@ struct VoxelWaterfallDebugPanelContext
     size_t AutomaticBenchmarkIndex = 0;
     size_t AutomaticBenchmarkCount = 0;
     std::filesystem::path AutomaticBenchmarkSummaryPath;
-    SceneTransformController* SceneEditor = nullptr;
 
-    std::function<void()> DrawSceneLabels;
+    std::function<void(VoxelResearchWorkloadProfile)> ApplyWorkloadProfile;
+    std::function<void(VoxelResearchCameraMode)> ApplyCameraMode;
+    std::function<void(VoxelResearchLightingPreset)> ApplyLightingPreset;
+    std::function<void(VoxelRenderResolutionPreset)> ApplyRenderResolutionPreset;
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;
     std::function<void()> StartBenchmark;
     std::function<void()> StopBenchmark;

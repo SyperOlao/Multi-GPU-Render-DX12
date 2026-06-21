@@ -4,7 +4,7 @@
 
 ## Architecture
 
-- `VoxelWaterfallWorkload` owns the logical dataset: transform, seed, total voxel count, simulation parameters, deterministic chunk ownership, temporal policy, and spatial LOD policy.
+- `VoxelSceneWorkload` owns the logical dataset: transform, seed, total voxel count, simulation parameters, deterministic chunk ownership, temporal policy, and spatial LOD policy.
 - `PrimaryPartition` and `SecondaryPartition` contain disjoint `GlobalVoxelId` sets. Empty partitions have count 0 and do not create placeholder voxels.
 - `VoxelGpuPartition` is adapter-local. Once created, its buffers, descriptors, root signatures, PSOs, indirect draw arguments, and constant buffers belong to one `GDevice`.
 - Mode changes rebuild adapter-local partitions after a controlled flush instead of migrating resources between devices.

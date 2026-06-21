@@ -21,6 +21,7 @@ struct BenchmarkControllerContext
     std::function<void(float)> ApplySecondaryShare;
     std::function<void(bool)> ApplySpatialLodEnabled;
     std::function<void(uint32_t)> ApplyTemporalInterval;
+    std::function<void()> ResetDeterministicBenchmarkState;
     bool MultiGpuAvailable = false;
 };
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <numeric>
 #include <sstream>
 #include <utility>
 
@@ -15,12 +16,27 @@
 
 namespace
 {
-    std::vector<DWORD> BuildSequentialVoxelIds(const DWORD count)
+    std::vector<VoxelPartitionDrawStream> BuildSequentialDrawStreams(
+        const DWORD count,
+        const VoxelSimulationParameters& parameters)
     {
-        std::vector<DWORD> ids(count);
-        for (DWORD i = 0; i < ids.size(); ++i)
-            ids[i] = i;
-        return ids;
+        VoxelPartitionDrawStream stream{};
+        stream.LayerId = 1;
+        stream.LayerType = VoxelSceneLayerType::Dynamic;
+        stream.SimulationParameters = parameters;
+        stream.SimulationPolicy = {true, 1};
+        stream.GlobalVoxelIds.reserve(count);
+        stream.SimulationVoxelIds.reserve(count);
+        stream.GridCoordinates.reserve(count);
+        stream.MaterialIds.reserve(count);
+        for (DWORD i = 0; i < count; ++i)
+        {
+            stream.GlobalVoxelIds.push_back((static_cast<VoxelGlobalId>(stream.LayerId) << 32u) | i);
+            stream.SimulationVoxelIds.push_back(i);
+            stream.GridCoordinates.push_back({static_cast<int32_t>(i), 0, 0});
+            stream.MaterialIds.push_back(0u);
+        }
+        return {std::move(stream)};
     }
 
     bool SameAdapterLuid(const LUID& left, const LUID& right)
@@ -35,6 +51,16 @@ namespace
     }
 }
 
+namespace
+{
+    DWORD PackGridCoordinate(const VoxelGridCoordinate& coordinate)
+    {
+        return (static_cast<DWORD>(coordinate.X) & 0x3ffu) |
+            ((static_cast<DWORD>(coordinate.Y) & 0x3ffu) << 10u) |
+            ((static_cast<DWORD>(coordinate.Z) & 0x3ffu) << 20u);
+    }
+}
+
 double VoxelGpuPartition::CalculateGroupCount(const DWORD particleCount) const
 {
     if (particleCount == 0)
@@ -46,15 +72,98 @@ double VoxelGpuPartition::CalculateGroupCount(const DWORD particleCount) const
 
 VoxelParticleData VoxelGpuPartition::GenerateVoxelParticle(const DWORD index) const
 {
-    assert(!globalVoxelIds.empty());
-    assert(index < globalVoxelIds.size());
-    const DWORD clampedIndex = std::min<DWORD>(index, static_cast<DWORD>(globalVoxelIds.size() - 1));
-    return VoxelParticleSpawner::Generate(globalVoxelIds[clampedIndex], parameters);
+    assert(!simulationVoxelIds.empty());
+    assert(index < simulationVoxelIds.size());
+    const DWORD clampedIndex = std::min<DWORD>(index, static_cast<DWORD>(simulationVoxelIds.size() - 1));
+    return VoxelParticleSpawner::Generate(simulationVoxelIds[clampedIndex], parameters);
+}
+
+VoxelParticleData VoxelGpuPartition::GenerateStaticVoxelParticle(const DWORD index) const
+{
+    assert(index < gridCoordinates.size());
+    const auto clampedIndex = std::min<DWORD>(index, static_cast<DWORD>(gridCoordinates.size() - 1));
+    const auto& grid = gridCoordinates[clampedIndex];
+    VoxelGridCoordinate origin{};
+    for (const auto& stream : drawStreams)
+    {
+        if (stream.LayerType == VoxelSceneLayerType::Static)
+        {
+            origin = stream.GridOrigin;
+            break;
+        }
+    }
+    const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
+    const Vector3 position(
+        static_cast<float>(grid.X + origin.X) * voxelSize,
+        static_cast<float>(grid.Y + origin.Y) * voxelSize,
+        static_cast<float>(grid.Z + origin.Z) * voxelSize);
+
+    VoxelParticleData particle{};
+    particle.PreviousContinuousPosition = position;
+    particle.CurrentContinuousPosition = position;
+    particle.GlobalVoxelId = clampedIndex < simulationVoxelIds.size() ? simulationVoxelIds[clampedIndex] : clampedIndex;
+    particle.PackedGridCoordinate = PackGridCoordinate(grid);
+    particle.MaterialId = clampedIndex < materialIds.size() ? materialIds[clampedIndex] : 0u;
+    particle.StreamKind = 1u;
+    return particle;
 }
 
 bool VoxelGpuPartition::HasVoxels() const
 {
-    return emitterData.ParticlesTotalCount > 0 && !globalVoxelIds.empty();
+    return emitterData.ParticlesTotalCount > 0 && !simulationVoxelIds.empty();
+}
+
+bool VoxelGpuPartition::HasStaticStreams() const
+{
+    return std::any_of(
+        drawStreams.begin(),
+        drawStreams.end(),
+        [](const VoxelPartitionDrawStream& stream)
+        {
+            return stream.LayerType == VoxelSceneLayerType::Static && stream.VoxelCount() > 0;
+        });
+}
+
+bool VoxelGpuPartition::HasDynamicStreams() const
+{
+    return std::any_of(
+        drawStreams.begin(),
+        drawStreams.end(),
+        [](const VoxelPartitionDrawStream& stream)
+        {
+            return stream.LayerType == VoxelSceneLayerType::Dynamic && stream.VoxelCount() > 0;
+        });
+}
+
+void VoxelGpuPartition::InitializeStaticParticleSet()
+{
+    if (!HasStaticStreams() || HasDynamicStreams() || !HasVoxels())
+        return;
+
+    std::vector<VoxelParticleData> particles(emitterData.ParticlesTotalCount);
+    std::vector<UINT> aliveIndices(emitterData.ParticlesTotalCount);
+    for (DWORD i = 0; i < emitterData.ParticlesTotalCount; ++i)
+    {
+        particles[i] = GenerateStaticVoxelParticle(i);
+        aliveIndices[i] = i;
+    }
+
+    auto queue = device->GetCommandQueue();
+    auto initList = queue->GetCommandList();
+    gpuResources.ParticlesPool->LoadData(particles.data(), initList);
+    gpuResources.ParticlesAlive->LoadData(aliveIndices.data(), initList);
+    gpuResources.ParticlesAlive->SetCounterValue(initList, emitterData.ParticlesTotalCount);
+    gpuResources.ParticlesDead->SetCounterValue(initList, 0u);
+    initList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->TransitionBarrier(gpuResources.ParticlesDead->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
+    initList->FlushResourceBarriers();
+    queue->WaitForFenceValue(queue->ExecuteCommandList(initList));
+
+    emitterData.ParticlesAliveCount = emitterData.ParticlesTotalCount;
+    lastAliveVoxelCount = emitterData.ParticlesAliveCount;
+    recordedAliveVoxelCount = emitterData.ParticlesAliveCount;
+    isWorked = true;
 }
 
 void VoxelGpuPartition::ValidateDescriptorOwnership(
@@ -311,29 +420,18 @@ void VoxelGpuPartition::CreateBuffers()
     gpuResources.InitializeLodState(device, emitterData.ParticlesTotalCount);
     gpuResources.CreateParticleViews();
     gpuResources.ResizeInjectionScratch();
-}
-
-VoxelGpuPartition::VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, const DWORD particleCount,
-                                     const VoxelSimulationParameters& initialParameters,
-                                     const VoxelAdapterOwner owner)
-    : parameters(initialParameters), adapterOwner(owner), globalVoxelIds(BuildSequentialVoxelIds(particleCount))
-{
-    device = owningDevice;
-    gpuResources.SetOwnerDevice(device);
-    Initialize();
-    ApplySettings(globalVoxelIds, parameters);
+    InitializeStaticParticleSet();
 }
 
 VoxelGpuPartition::VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice,
-                                     std::vector<DWORD> voxelIds,
-                                     const VoxelSimulationParameters& initialParameters,
+                                     std::vector<VoxelPartitionDrawStream> streams,
                                      const VoxelAdapterOwner owner)
-    : parameters(initialParameters), adapterOwner(owner), globalVoxelIds(std::move(voxelIds))
+    : adapterOwner(owner), drawStreams(std::move(streams))
 {
     device = owningDevice;
     gpuResources.SetOwnerDevice(device);
     Initialize();
-    ApplySettings(globalVoxelIds, parameters);
+    ApplySettings(std::move(drawStreams));
 }
 
 void VoxelGpuPartition::Initialize()
@@ -344,13 +442,13 @@ void VoxelGpuPartition::Initialize()
 
 void VoxelGpuPartition::ApplySettings(const UINT count, const VoxelSimulationParameters& newParameters)
 {
-    ApplySettings(BuildSequentialVoxelIds(static_cast<DWORD>(count)), newParameters);
+    ApplySettings(BuildSequentialDrawStreams(static_cast<DWORD>(count), newParameters));
 }
 
-void VoxelGpuPartition::ApplySettings(const std::vector<DWORD>& voxelIds,
-                                      const VoxelSimulationParameters& newParameters)
+void VoxelGpuPartition::ApplySettings(std::vector<VoxelPartitionDrawStream> streams)
 {
-    parameters = newParameters;
+    drawStreams = std::move(streams);
+    parameters = drawStreams.empty() ? VoxelSimulationParameters{} : drawStreams.front().SimulationParameters;
     parameters.VoxelSize = std::max(parameters.VoxelSize, 0.05f);
     parameters.SpawnHeight = std::max(parameters.SpawnHeight, parameters.FloorHeight + parameters.VoxelSize);
     parameters.WaterfallWidth = std::max(parameters.WaterfallWidth, parameters.VoxelSize);
@@ -372,8 +470,24 @@ void VoxelGpuPartition::ApplySettings(const std::vector<DWORD>& voxelIds,
     emitterData.GridSnapEnabled = 0.0f;
     emitterData.SpatialLodDebugMode = static_cast<DWORD>(spatialLodSettings.DebugMode);
     emitterData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
-    globalVoxelIds = voxelIds;
-    emitterData.ParticlesTotalCount = static_cast<DWORD>(globalVoxelIds.size());
+    emitterData.StreamKind = HasStaticStreams() && !HasDynamicStreams() ? 1u : 0u;
+
+    globalVoxelIds.clear();
+    simulationVoxelIds.clear();
+    gridCoordinates.clear();
+    materialIds.clear();
+    for (const auto& stream : drawStreams)
+    {
+        globalVoxelIds.insert(globalVoxelIds.end(), stream.GlobalVoxelIds.begin(), stream.GlobalVoxelIds.end());
+        simulationVoxelIds.insert(
+            simulationVoxelIds.end(),
+            stream.SimulationVoxelIds.begin(),
+            stream.SimulationVoxelIds.end());
+        gridCoordinates.insert(gridCoordinates.end(), stream.GridCoordinates.begin(), stream.GridCoordinates.end());
+        materialIds.insert(materialIds.end(), stream.MaterialIds.begin(), stream.MaterialIds.end());
+    }
+
+    emitterData.ParticlesTotalCount = static_cast<DWORD>(simulationVoxelIds.size());
     emitterData.SimulatedGroupCount = static_cast<DWORD>(CalculateGroupCount(emitterData.ParticlesTotalCount));
     CreateBuffers();
 }
@@ -390,7 +504,7 @@ const VoxelSimulationParameters& VoxelGpuPartition::GetParameters() const
 
 UINT VoxelGpuPartition::GetParticleCount() const
 {
-    return static_cast<UINT>(globalVoxelIds.size());
+    return static_cast<UINT>(simulationVoxelIds.size());
 }
 
 VoxelEmitterData& VoxelGpuPartition::GetEmitterData()
@@ -558,9 +672,14 @@ VoxelAdapterOwner VoxelGpuPartition::GetAdapterOwner() const
     return adapterOwner;
 }
 
-const std::vector<DWORD>& VoxelGpuPartition::GetGlobalVoxelIds() const
+const std::vector<VoxelGlobalId>& VoxelGpuPartition::GetGlobalVoxelIds() const
 {
     return globalVoxelIds;
+}
+
+const std::vector<VoxelPartitionDrawStream>& VoxelGpuPartition::GetDrawStreams() const
+{
+    return drawStreams;
 }
 
 void VoxelGpuPartition::Update()
@@ -644,6 +763,7 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     lodData.AliveCount = emitterData.ParticlesAliveCount;
     lodData.SpatialLodMode = static_cast<DWORD>(spatialLodSettings.Mode);
     lodData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
+    lodData.StreamKind = emitterData.StreamKind;
 
     cmdList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

@@ -20,7 +20,7 @@ struct LodBuildData
 
     uint SpatialLodMode;
     uint AdapterOwner;
-    uint Padding0;
+    uint StreamKind;
     uint Padding1;
 };
 
@@ -64,6 +64,11 @@ void ComputeSpawnGridCell(uint globalVoxelId, out uint3 cell, out uint3 gridSize
     const uint yPhase = HashVoxel(globalVoxelId + LodData.Seed * 31u) % heightCells;
     cell.y = ((globalVoxelId / laneCount) + yPhase) % heightCells;
     gridSize = uint3(widthCells, heightCells, depthCells);
+}
+
+uint3 DecodePackedGridCoordinate(uint packed)
+{
+    return uint3(packed & 0x3ffu, (packed >> 10u) & 0x3ffu, (packed >> 20u) & 0x3ffu);
 }
 
 uint SelectLodLevel(float distanceToCamera, uint previousLevel)
@@ -118,7 +123,18 @@ void CS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     uint3 cell;
     uint3 gridSize;
-    ComputeSpawnGridCell(particle.GlobalVoxelId, cell, gridSize);
+    if (LodData.StreamKind == 1u || particle.StreamKind == 1u)
+    {
+        cell = DecodePackedGridCoordinate(particle.PackedGridCoordinate);
+        gridSize = uint3(
+            max(1u, (uint)floor(LodData.WaterfallWidth / max(LodData.VoxelSize, 0.05f))),
+            max(1u, (uint)floor((LodData.SpawnHeight - LodData.FloorHeight) / max(LodData.VoxelSize, 0.05f))),
+            max(1u, (uint)floor(LodData.WaterfallDepth / max(LodData.VoxelSize, 0.05f))));
+    }
+    else
+    {
+        ComputeSpawnGridCell(particle.GlobalVoxelId, cell, gridSize);
+    }
 
     const uint3 chunk = uint3(
         cell.x / CHUNK_WIDTH_CELLS,

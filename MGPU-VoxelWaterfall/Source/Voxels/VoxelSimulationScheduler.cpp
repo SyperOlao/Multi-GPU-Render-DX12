@@ -8,19 +8,22 @@
 
 namespace
 {
-    VoxelBenchmarkProfiler::RangeId RangeForPartition(const VoxelPartitionState& partition)
+    VoxelBenchmarkProfiler::RangeId RangeForPartition(const VoxelAdapterPartition& partition)
     {
-        return partition.PartitionId == VoxelPartitionId::PrimaryPartition
+        return partition.PartitionId == VoxelAdapterPartitionId::PrimaryPartition
                    ? VoxelBenchmarkProfiler::RangeId::PrimaryCompute
                    : VoxelBenchmarkProfiler::RangeId::SecondaryCompute;
     }
 
-    bool HasDispatchableEmitter(const VoxelPartitionState& partition)
+    bool HasDispatchableEmitter(const VoxelAdapterPartition& partition)
     {
-        return partition.GpuPartition && !partition.GlobalVoxelIds.empty();
+        return partition.SimulationPolicy.Enabled &&
+            partition.HasDynamicVoxels() &&
+            partition.GpuPartition &&
+            !partition.GlobalVoxelIds.empty();
     }
 
-    VoxelBenchmarkProfiler::QueueId QueueForPartition(const VoxelPartitionState& partition)
+    VoxelBenchmarkProfiler::QueueId QueueForPartition(const VoxelAdapterPartition& partition)
     {
         return partition.AdapterOwner == VoxelAdapterOwner::Secondary
                    ? VoxelBenchmarkProfiler::QueueId::SecondaryCompute
@@ -36,16 +39,16 @@ namespace
 
 uint32_t VoxelSimulationScheduler::GetEffectiveUpdateInterval(
     const VoxelExecutionMode mode,
-    const VoxelPartitionState& partition)
+    const VoxelAdapterPartition& partition)
 {
-    if (partition.PartitionId == VoxelPartitionId::SecondaryPartition && IsTemporalMode(mode))
+    if (partition.PartitionId == VoxelAdapterPartitionId::SecondaryPartition && IsTemporalMode(mode))
         return std::max<uint32_t>(1, partition.UpdateInterval);
 
     return 1;
 }
 
 bool VoxelSimulationScheduler::ShouldDispatchPartition(
-    const VoxelPartitionState& partition,
+    const VoxelAdapterPartition& partition,
     const uint64_t fixedStepIndex,
     const uint32_t effectiveInterval)
 {
@@ -60,7 +63,7 @@ bool VoxelSimulationScheduler::ShouldDispatchPartition(
 
 float VoxelSimulationScheduler::CalculateInterpolationPhase(
     const VoxelSimulationSchedulerContext& context,
-    const VoxelPartitionState& partition,
+    const VoxelAdapterPartition& partition,
     const uint32_t effectiveInterval)
 {
     if (!partition.GpuPartition || !partition.GpuPartition->HasStartedSimulation())
@@ -78,7 +81,7 @@ float VoxelSimulationScheduler::CalculateInterpolationPhase(
 
 void VoxelSimulationScheduler::PreparePartitionDispatch(
     const VoxelSimulationSchedulerContext&,
-    VoxelPartitionState& partition,
+    VoxelAdapterPartition& partition,
     const uint32_t effectiveInterval,
     const uint64_t fixedStepIndex)
 {
@@ -96,7 +99,7 @@ void VoxelSimulationScheduler::PreparePartitionDispatch(
 }
 
 void VoxelSimulationScheduler::MarkPartitionUpdated(
-    VoxelPartitionState& partition,
+    VoxelAdapterPartition& partition,
     const uint64_t fixedStepIndex)
 {
     partition.UpdatedThisFrame = true;
@@ -226,14 +229,22 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
         context.ExpectedVoxelCount += statistics.ExpectedVoxelCount;
     }
 
-    const auto& secondaryPartition =
-        context.Workload.Partitions[static_cast<size_t>(VoxelPartitionId::SecondaryPartition)];
-    result.SecondaryConfiguredUpdateInterval = std::max<uint32_t>(1, secondaryPartition.UpdateInterval);
-    result.SecondaryEffectiveUpdateInterval = secondaryPartition.EffectiveUpdateInterval;
+    const VoxelAdapterPartition* secondaryPartition = nullptr;
+    for (const auto& partition : context.Workload.Partitions)
+    {
+        if (partition.PartitionId == VoxelAdapterPartitionId::SecondaryPartition && partition.HasDynamicVoxels())
+        {
+            secondaryPartition = &partition;
+            break;
+        }
+    }
+    result.SecondaryConfiguredUpdateInterval =
+        secondaryPartition ? std::max<uint32_t>(1, secondaryPartition->UpdateInterval) : 1;
+    result.SecondaryEffectiveUpdateInterval = secondaryPartition ? secondaryPartition->EffectiveUpdateInterval : 1;
     result.FixedSimulationStepIndex = context.SimulationFrameIndex;
-    result.SecondaryStepsSinceLastUpdate = secondaryPartition.StepsSinceLastUpdate;
-    result.SecondaryInterpolationPhase = secondaryPartition.InterpolationPhase;
-    result.SecondaryCoarseDeltaTime = secondaryPartition.CoarseDeltaTime;
+    result.SecondaryStepsSinceLastUpdate = secondaryPartition ? secondaryPartition->StepsSinceLastUpdate : 0;
+    result.SecondaryInterpolationPhase = secondaryPartition ? secondaryPartition->InterpolationPhase : 0.0f;
+    result.SecondaryCoarseDeltaTime = secondaryPartition ? secondaryPartition->CoarseDeltaTime : 1.0f / 60.0f;
 
     primaryCmdList->EndQuery(context.TimestampHeapIndex + 1);
     primaryCmdList->ResolveQuery(context.TimestampHeapIndex, 2, context.TimestampHeapIndex * sizeof(UINT64));

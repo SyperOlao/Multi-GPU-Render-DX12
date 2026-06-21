@@ -58,6 +58,7 @@ float Camera::GetFov() const
 void Camera::SetFarZ(float newFarZ)
 {
     farZ = newFarZ;
+    NumFramesDirty = globalCountFrameResources;
 }
 
 float Camera::GetFarZ() const
@@ -68,6 +69,7 @@ float Camera::GetFarZ() const
 void Camera::SetNearZ(float newNearZ)
 {
     nearZ = newNearZ;
+    NumFramesDirty = globalCountFrameResources;
 }
 
 float Camera::GetNearZ() const

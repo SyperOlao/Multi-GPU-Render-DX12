@@ -18,6 +18,9 @@ void BenchmarkController::StartManual(const BenchmarkControllerContext& context)
     if (benchmarkVSyncWasEnabled)
         context.SetVSync(false);
 
+    if (context.ResetDeterministicBenchmarkState)
+        context.ResetDeterministicBenchmarkState();
+
     if (context.Profiler.Start(benchmarkDirectory, context.BuildMetadata()))
         context.Log(L"\nVoxel benchmark started: " + context.Profiler.GetCsvPath().wstring());
     else
@@ -84,9 +87,9 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
             summary.Preset = config.Preset;
             summary.TotalVoxelCount = config.TotalCount;
             summary.SecondaryShare = config.SecondaryShare;
-            summary.SpatialLodPolicy = config.SpatialLodEnabled ? "SpatialDensityThreeLevel" : "Off";
+            summary.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
             summary.TemporalPolicy =
-                config.TemporalInterval <= 1 ? "Full" : "TemporalDecimation";
+                config.TemporalInterval <= 1 ? "Full" : "Decimated";
             summary.Repetition = config.Repetition;
         }
         automaticBenchmarkSummaries.push_back(summary);
@@ -142,8 +145,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.Preset = config.Preset;
         skipped.TotalVoxelCount = config.TotalCount;
         skipped.SecondaryShare = config.SecondaryShare;
-        skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "SpatialDensityThreeLevel" : "Off";
-        skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "TemporalDecimation";
+        skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
+        skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
         skipped.Repetition = config.Repetition;
         skipped.Valid = false;
         skipped.SkipReason = "secondary hardware adapter unavailable";
@@ -161,6 +164,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         context.ApplySpatialLodEnabled(config.SpatialLodEnabled);
     if (context.ApplyTemporalInterval)
         context.ApplyTemporalInterval(config.TemporalInterval);
+    if (context.ResetDeterministicBenchmarkState)
+        context.ResetDeterministicBenchmarkState();
     context.Flush();
 
     const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +

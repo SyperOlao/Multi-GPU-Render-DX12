@@ -110,9 +110,15 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     currentRepetition = repetition;
     completedSummaryReady = false;
     csv.imbue(std::locale::classic());
-    csv << "frame_index,requested_mode,actual_mode,fallback_reason,temporal_policy,spatial_lod_policy,total_voxels,secondary_share,"
-        << "primary_partition_voxels,secondary_partition_voxels,updated_voxels,simulation_steps,"
-        << "seed,render_width,render_height,primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
+    csv << "frame_index,profile,scene_preset,requested_mode,actual_mode,fallback_reason,"
+        << "benchmark_config_class,benchmark_config_reason,temporal_policy,spatial_lod_policy,"
+        << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
+        << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
+        << "primary_partition_voxels,secondary_partition_voxels,visible_primary_count,visible_secondary_count,"
+        << "updated_voxels,simulation_steps,simulation_dispatches,seed,render_width,render_height,"
+        << "render_resolution_preset,camera_path,camera_fov_degrees,camera_near_plane,camera_far_plane,"
+        << "lighting_preset,dynamic_shadows_enabled,"
+        << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
         << "primary_luid,primary_dedicated_memory,secondary_vendor_id,secondary_device_id,secondary_luid,"
         << "secondary_dedicated_memory,operating_system,build_configuration,git_commit,d3d12_debug_layer,"
         << "cpu_wait_ms,"
@@ -492,20 +498,44 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     };
 
     csv << frame.Metadata.FrameIndex << ','
+        << EscapeCsv(frame.Metadata.ProfileName) << ','
+        << EscapeCsv(frame.Metadata.ScenePreset) << ','
         << EscapeCsv(frame.Metadata.RequestedMode) << ','
         << EscapeCsv(frame.Metadata.ActualMode) << ','
         << EscapeCsv(frame.Metadata.FallbackReason) << ','
+        << EscapeCsv(frame.Metadata.BenchmarkConfigClass) << ','
+        << EscapeCsv(frame.Metadata.BenchmarkConfigReason) << ','
         << EscapeCsv(frame.Metadata.TemporalPolicy) << ','
         << EscapeCsv(frame.Metadata.SpatialLodPolicy) << ','
+        << EscapeCsv(frame.Metadata.PartitionStrategy) << ','
+        << EscapeCsv(frame.Metadata.LoadBalanceScenario) << ','
         << frame.Metadata.TotalVoxelCount << ','
+        << frame.Metadata.ActualStaticVoxelCount << ','
+        << frame.Metadata.ActualDynamicVoxelCount << ','
+        << frame.Metadata.StaticVoxelBudget << ','
+        << frame.Metadata.DynamicVoxelBudget << ','
+        << frame.Metadata.VoxelSize << ','
+        << frame.Metadata.ChunkSizeX << ','
+        << frame.Metadata.ChunkSizeY << ','
+        << frame.Metadata.ChunkSizeZ << ','
         << frame.Metadata.SecondaryShare << ','
         << frame.Metadata.PrimaryPartitionVoxelCount << ','
         << frame.Metadata.SecondaryPartitionVoxelCount << ','
+        << frame.Metadata.PrimaryRenderedVoxelCount << ','
+        << frame.Metadata.SecondaryRenderedVoxelCount << ','
         << frame.Metadata.UpdatedVoxelCount << ','
         << frame.Metadata.SimulationStepsThisFrame << ','
+        << frame.Metadata.SimulationDispatchCount << ','
         << frame.Metadata.Seed << ','
         << frame.Metadata.RenderWidth << ','
         << frame.Metadata.RenderHeight << ','
+        << EscapeCsv(frame.Metadata.RenderResolutionPreset) << ','
+        << EscapeCsv(frame.Metadata.CameraPath) << ','
+        << frame.Metadata.CameraFovDegrees << ','
+        << frame.Metadata.CameraNearPlane << ','
+        << frame.Metadata.CameraFarPlane << ','
+        << EscapeCsv(frame.Metadata.LightingPreset) << ','
+        << BoolText(frame.Metadata.DynamicShadowsEnabled) << ','
         << EscapeCsv(frame.Metadata.PrimaryAdapterName) << ','
         << EscapeCsv(frame.Metadata.SecondaryAdapterName) << ','
         << frame.Metadata.PrimaryVendorId << ','
@@ -602,6 +632,17 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
         metadata.RequestedMode == "MultiGpuTemporalDecimation";
     if (!timestampsValid)
         return "GPU timestamp query failed";
+    if (metadata.BenchmarkConfigClass == "Invalid mixed-quality configuration")
+        return metadata.BenchmarkConfigReason.empty()
+                   ? "invalid mixed-quality configuration"
+                   : metadata.BenchmarkConfigReason;
+    if (metadata.ProfileName == "StaticRenderOnly" && metadata.SimulationDispatchCount != 0)
+        return "StaticRenderOnly recorded simulation dispatch";
+    if (metadata.ProfileName == "DynamicSimulationAndRender" && metadata.ActualStaticVoxelCount != 0)
+        return "DynamicSimulationAndRender contains static voxels";
+    if (metadata.ProfileName == "MixedStaticAndDynamic" &&
+        (metadata.ActualStaticVoxelCount == 0 || metadata.ActualDynamicVoxelCount == 0))
+        return "MixedStaticAndDynamic does not contain both static and dynamic voxels";
     if (requestedMultiGpu && metadata.ActualMode != metadata.RequestedMode)
         return "requested multi-GPU mode fell back to a different actual mode";
     if (requestedMultiGpu &&
@@ -686,12 +727,21 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary = {};
     completedSummary.RequestedMode = lastWritten ? lastWritten->Metadata.RequestedMode : "";
     completedSummary.ActualMode = lastWritten ? lastWritten->Metadata.ActualMode : "";
-    completedSummary.Preset = currentPresetName;
+    completedSummary.Preset =
+        !currentPresetName.empty()
+            ? currentPresetName
+            : (lastWritten ? lastWritten->Metadata.ScenePreset : "");
+    completedSummary.ProfileName = lastWritten ? lastWritten->Metadata.ProfileName : "";
+    completedSummary.PartitionStrategy = lastWritten ? lastWritten->Metadata.PartitionStrategy : "";
+    completedSummary.LoadBalanceScenario = lastWritten ? lastWritten->Metadata.LoadBalanceScenario : "";
+    completedSummary.BenchmarkConfigClass = lastWritten ? lastWritten->Metadata.BenchmarkConfigClass : "";
     completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
     completedSummary.SpatialLodPolicy = lastWritten ? lastWritten->Metadata.SpatialLodPolicy : "";
     completedSummary.PrimaryAdapterName = lastWritten ? lastWritten->Metadata.PrimaryAdapterName : L"";
     completedSummary.SecondaryAdapterName = lastWritten ? lastWritten->Metadata.SecondaryAdapterName : L"";
     completedSummary.TotalVoxelCount = lastWritten ? lastWritten->Metadata.TotalVoxelCount : 0;
+    completedSummary.ActualStaticVoxelCount = lastWritten ? lastWritten->Metadata.ActualStaticVoxelCount : 0;
+    completedSummary.ActualDynamicVoxelCount = lastWritten ? lastWritten->Metadata.ActualDynamicVoxelCount : 0;
     completedSummary.SecondaryShare = lastWritten ? lastWritten->Metadata.SecondaryShare : 0.0f;
     completedSummary.RenderWidth = lastWritten ? lastWritten->Metadata.RenderWidth : 0;
     completedSummary.RenderHeight = lastWritten ? lastWritten->Metadata.RenderHeight : 0;

@@ -37,12 +37,13 @@ struct VoxelRenderPassContext
     SSAA& AntiAliasingPath;
     RenderModeFactory& PipelineResources;
     PEPEngine::Allocator::custom_vector<PEPEngine::Allocator::custom_vector<std::shared_ptr<Renderer>>>& TypedRenderers;
-    const std::vector<const VoxelPartitionState*>* PrimaryVoxelPartitions = nullptr;
+    const std::vector<const VoxelAdapterPartition*>* PrimaryVoxelPartitions = nullptr;
     std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
     VoxelBenchmarkProfiler* BenchmarkProfiler = nullptr;
     PEPEngine::Graphics::GTexture& BackBuffer;
     PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
     UINT ResolveSourceSrvOffset = 0;
+    bool DynamicShadowsEnabled = false;
 };
 
 class VoxelRenderPasses

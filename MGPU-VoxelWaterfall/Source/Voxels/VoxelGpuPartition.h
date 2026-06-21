@@ -50,14 +50,22 @@ class VoxelGpuPartition : public Emitter
     bool simulationStatsResetPending = true;
     bool simulationEnabled = true;
     bool renderEnabled = true;
-    std::vector<DWORD> globalVoxelIds;
+    std::vector<VoxelPartitionDrawStream> drawStreams;
+    std::vector<VoxelGlobalId> globalVoxelIds;
+    std::vector<DWORD> simulationVoxelIds;
+    std::vector<VoxelGridCoordinate> gridCoordinates;
+    std::vector<uint32_t> materialIds;
 
     double CalculateGroupCount(DWORD particleCount) const;
     VoxelParticleData GenerateVoxelParticle(DWORD index) const;
+    VoxelParticleData GenerateStaticVoxelParticle(DWORD index) const;
     void CreatePipelineState();
     void CreateDescriptors();
     void CreateBuffers();
     bool HasVoxels() const;
+    bool HasStaticStreams() const;
+    bool HasDynamicStreams() const;
+    void InitializeStaticParticleSet();
     void ValidateCommandListOwnership(const std::shared_ptr<GCommandList>& cmdList, const char* operation) const;
     void ValidateGpuResourceOwnership(const char* operation) const;
     void ValidateDescriptorOwnership(const PEPEngine::Graphics::GDescriptor& descriptor,
@@ -80,11 +88,7 @@ protected:
     void Draw(const std::shared_ptr<GCommandList>& cmdList) override;
 
 public:
-    VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, DWORD particleCount,
-                      const VoxelSimulationParameters& initialParameters = {},
-                      VoxelAdapterOwner owner = VoxelAdapterOwner::Primary);
-    VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, std::vector<DWORD> voxelIds,
-                      const VoxelSimulationParameters& initialParameters = {},
+    VoxelGpuPartition(const std::shared_ptr<GDevice>& owningDevice, std::vector<VoxelPartitionDrawStream> streams,
                       VoxelAdapterOwner owner = VoxelAdapterOwner::Primary);
 
     void Dispatch(const std::shared_ptr<GCommandList>& cmdList) override;
@@ -102,7 +106,7 @@ public:
     void BeginSimulationFrame();
     void ChangeParticleCount(UINT count);
     void ApplySettings(UINT count, const VoxelSimulationParameters& newParameters);
-    void ApplySettings(const std::vector<DWORD>& voxelIds, const VoxelSimulationParameters& newParameters);
+    void ApplySettings(std::vector<VoxelPartitionDrawStream> streams);
     const VoxelSimulationParameters& GetParameters() const;
     UINT GetParticleCount() const;
     VoxelEmitterData& GetEmitterData();
@@ -135,7 +139,8 @@ public:
     VoxelSpatialLodStats GetLastLodStats() const;
     std::shared_ptr<GDevice> GetOwningDevice() const;
     VoxelAdapterOwner GetAdapterOwner() const;
-    const std::vector<DWORD>& GetGlobalVoxelIds() const;
+    const std::vector<VoxelGlobalId>& GetGlobalVoxelIds() const;
+    const std::vector<VoxelPartitionDrawStream>& GetDrawStreams() const;
 
     uint32_t UpdateInterval = 1;
     uint64_t LastSimulationFrame = 0;

@@ -96,7 +96,7 @@ struct SecondaryVoxelGraphicsPassContext
     UINT64 SecondaryComputeFenceValue = 0;
     uint32_t TimestampHeapIndex = 0;
     FrameResource& CurrentFrameResource;
-    std::vector<const VoxelPartitionState*> SecondaryPartitions;
+    std::vector<const VoxelAdapterPartition*> SecondaryPartitions;
     MultiGpuVoxelFrameRenderTargets& RenderTargets;
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};

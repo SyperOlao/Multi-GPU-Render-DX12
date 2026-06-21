@@ -8,6 +8,7 @@ struct VertexOut
 {
     float3 PositionW : POSITION;
     float LodLevel : TEXCOORD0;
+    uint MaterialId : TEXCOORD1;
 };
 
 VertexOut VS(uint vertexID : SV_VertexID)
@@ -26,6 +27,7 @@ VertexOut VS(uint vertexID : SV_VertexID)
     VertexOut output = (VertexOut)0;
     output.PositionW = mul(float4(center, 1.0f), objectBuffer.World).xyz;
     output.LodLevel = (float)min(renderItem.LodLevel, 2u);
+    output.MaterialId = particle.MaterialId;
     return output;
 }
 
@@ -35,15 +37,18 @@ struct GeoOut
     float3 PositionW : POSITION;
     float3 NormalW : NORMAL;
     float LodLevel : TEXCOORD0;
+    uint MaterialId : TEXCOORD1;
 };
 
-void EmitCubeVertex(float3 center, float3 offset, float3 normal, float lodLevel, inout TriangleStream<GeoOut> stream)
+void EmitCubeVertex(float3 center, float3 offset, float3 normal, float lodLevel, uint materialId,
+                    inout TriangleStream<GeoOut> stream)
 {
     GeoOut output = (GeoOut)0;
     output.PositionH = mul(float4(center + offset, 1.0f), worldBuffer.ViewProj);
     output.PositionW = center + offset;
     output.NormalW = normal;
     output.LodLevel = lodLevel;
+    output.MaterialId = materialId;
     stream.Append(output);
 }
 
@@ -51,44 +56,45 @@ void EmitCubeVertex(float3 center, float3 offset, float3 normal, float lodLevel,
 void GS(point VertexOut input[1], inout TriangleStream<GeoOut> stream)
 {
     const float lodLevel = min(input[0].LodLevel, 2.0f);
+    const uint materialId = input[0].MaterialId;
     const float scale = lodLevel < 0.5f ? 1.0f : (lodLevel < 1.5f ? 2.0f : 4.0f);
     const float h = max(EmitterBuffer.VoxelSize, 0.05f) * 0.38f * scale;
     const float3 center = input[0].PositionW;
 
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, 0, 1), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h,  h,  h), float3(0, 0, 1), lodLevel, stream);
-    EmitCubeVertex(center, float3( h, -h,  h), float3(0, 0, 1), lodLevel, stream);
-    EmitCubeVertex(center, float3( h,  h,  h), float3(0, 0, 1), lodLevel, stream);
+    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h,  h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h, -h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h,  h,  h), float3(0, 0, 1), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3( h, -h, -h), float3(0, 0, -1), lodLevel, stream);
-    EmitCubeVertex(center, float3( h,  h, -h), float3(0, 0, -1), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, 0, -1), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h,  h, -h), float3(0, 0, -1), lodLevel, stream);
+    EmitCubeVertex(center, float3( h, -h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h,  h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h,  h, -h), float3(0, 0, -1), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(-1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h,  h, -h), float3(-1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(-1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h,  h,  h), float3(-1, 0, 0), lodLevel, stream);
+    EmitCubeVertex(center, float3(-h, -h, -h), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h,  h, -h), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h, -h,  h), float3(-1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h,  h,  h), float3(-1, 0, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(h, -h,  h), float3(1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(h,  h,  h), float3(1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(h, -h, -h), float3(1, 0, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(h,  h, -h), float3(1, 0, 0), lodLevel, stream);
+    EmitCubeVertex(center, float3(h, -h,  h), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h,  h,  h), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h, -h, -h), float3(1, 0, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(h,  h, -h), float3(1, 0, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, h,  h), float3(0, 1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h, h, -h), float3(0, 1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3( h, h,  h), float3(0, 1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3( h, h, -h), float3(0, 1, 0), lodLevel, stream);
+    EmitCubeVertex(center, float3(-h, h,  h), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h, h, -h), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h, h,  h), float3(0, 1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h, h, -h), float3(0, 1, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 
-    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, -1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, -1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3( h, -h, -h), float3(0, -1, 0), lodLevel, stream);
-    EmitCubeVertex(center, float3( h, -h,  h), float3(0, -1, 0), lodLevel, stream);
+    EmitCubeVertex(center, float3(-h, -h, -h), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3(-h, -h,  h), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h, -h, -h), float3(0, -1, 0), lodLevel, materialId, stream);
+    EmitCubeVertex(center, float3( h, -h,  h), float3(0, -1, 0), lodLevel, materialId, stream);
     stream.RestartStrip();
 }
 
@@ -100,9 +106,23 @@ float3 ComputeVoxelColor(GeoOut input)
     const float topFace = saturate(normal.y * 0.5f + 0.5f);
     const float heightFade = saturate((input.PositionW.y - EmitterBuffer.FloorHeight) /
                                       max(EmitterBuffer.SpawnHeight - EmitterBuffer.FloorHeight, 1.0f));
-    const float3 deepWater = EmitterBuffer.Color.rgb;
-    const float3 foamTint = float3(0.55f, 0.85f, 1.0f);
-    const float3 baseColor = lerp(deepWater, foamTint, 0.12f + 0.18f * topFace + 0.10f * heightFade);
+    float3 baseColor = EmitterBuffer.Color.rgb;
+    if (EmitterBuffer.StreamKind == 1u)
+    {
+        if (input.MaterialId == 1u)
+            baseColor = float3(0.42f, 0.47f, 0.40f);
+        else if (input.MaterialId == 2u)
+            baseColor = float3(0.34f, 0.36f, 0.34f);
+        else if (input.MaterialId == 3u)
+            baseColor = float3(0.20f, 0.34f, 0.38f);
+        else if (input.MaterialId == 4u)
+            baseColor = float3(0.50f, 0.48f, 0.40f);
+    }
+    else
+    {
+        const float3 foamTint = float3(0.55f, 0.85f, 1.0f);
+        baseColor = lerp(baseColor, foamTint, 0.12f + 0.18f * topFace + 0.10f * heightFade);
+    }
     const float lighting = 0.48f + 0.42f * diffuse + 0.10f * topFace;
     float3 outputColor = baseColor * lighting;
 
@@ -117,9 +137,18 @@ float3 ComputeVoxelColor(GeoOut input)
     }
     else if (EmitterBuffer.SpatialLodDebugMode == 2u)
     {
-        outputColor = EmitterBuffer.AdapterOwner == 1u
-                          ? float3(1.0f, 0.25f, 0.25f)
-                          : float3(0.25f, 0.55f, 1.0f);
+        if (EmitterBuffer.StreamKind == 1u)
+        {
+            outputColor = EmitterBuffer.AdapterOwner == 1u
+                              ? float3(1.0f, 0.58f, 0.12f)
+                              : float3(0.20f, 0.72f, 0.35f);
+        }
+        else
+        {
+            outputColor = EmitterBuffer.AdapterOwner == 1u
+                              ? float3(1.0f, 0.20f, 0.25f)
+                              : float3(0.20f, 0.52f, 1.0f);
+        }
     }
 
     return outputColor;

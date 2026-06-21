@@ -51,6 +51,19 @@ std::shared_ptr<GModel>& AssetsLoader::GenerateSphere(const std::shared_ptr<GCom
     return modelMap[L"sphere"];
 }
 
+std::shared_ptr<GModel>& AssetsLoader::GenerateBox(
+    const std::shared_ptr<GCommandList>& cmdList,
+    const float width,
+    const float height,
+    const float depth)
+{
+    const GeometryGenerator::MeshData box = geoGen.CreateBox(width, height, depth, 0);
+
+    std::shared_ptr<GModel> model = CreateModelFromGenerated(cmdList, box, L"box");
+    modelMap.emplace(L"box", model);
+    return modelMap[L"box"];
+}
+
 std::shared_ptr<GModel>& AssetsLoader::GenerateQuad(const std::shared_ptr<GCommandList>& cmdList, const float x, const float y, const float w,
                                                     const float h, const float depth)
 {
