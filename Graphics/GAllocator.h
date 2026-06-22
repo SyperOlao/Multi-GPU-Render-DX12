@@ -12,6 +12,7 @@ namespace PEPEngine::Graphics
 
     class GDescriptorHeap;
     class GDevice;
+    struct GDescriptorAllocatorStats;
 
     class GAllocator
     {
@@ -24,6 +25,7 @@ namespace PEPEngine::Graphics
         GDescriptor Allocate(uint32_t descriptorCount = 1);
 
         void ReleaseStaleDescriptors(uint64_t frameNumber);
+        GDescriptorAllocatorStats GetStats() const;
 
     private:
         using GraphicMemoryPage = custom_vector<std::shared_ptr<GDescriptorHeap>>;
@@ -38,7 +40,7 @@ namespace PEPEngine::Graphics
 
         custom_set<size_t> availablePages = MemoryAllocator::CreateSet<size_t>();
 
-        std::mutex allocationMutex;
+        mutable std::mutex allocationMutex;
 
         std::shared_ptr<GDevice> device;
     };

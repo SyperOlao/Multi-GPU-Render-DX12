@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <locale>
 #include <sstream>
 #include <stdexcept>
@@ -129,7 +130,86 @@ namespace
         }
         json << "]" << suffix << "\n";
     }
+
+    const VoxelVisualValidationComparisonInput* FindComparison(
+        const std::vector<VoxelVisualValidationComparisonInput>& comparisons,
+        const std::string& caseId)
+    {
+        const auto it = std::find_if(comparisons.begin(), comparisons.end(),
+                                     [&](const auto& input) { return input.CaseId == caseId; });
+        return it == comparisons.end() ? nullptr : &*it;
+    }
+
+    std::string PathString(const std::filesystem::path& path)
+    {
+        return path.empty() ? "" : path.string();
+    }
+
+    void AccumulateComparison(const VoxelVisualValidationComparisonInput& comparison,
+                              const VoxelVisualValidationTolerances& tolerances,
+                              VoxelVisualValidationCaseResult& result)
+    {
+        double rgbAbs = 0.0;
+        double rgbSq = 0.0;
+        double alphaAbs = 0.0;
+        double depthAbs = 0.0;
+        double depthSq = 0.0;
+        double depthRel = 0.0;
+        double maxRgb = 0.0;
+        double maxDepth = 0.0;
+
+        for (const auto& tile : comparison.TileStats)
+        {
+            result.ComparedPixelCount += tile.PixelCount;
+            result.ForegroundUnionCount += tile.ForegroundUnionCount;
+            result.ForegroundIntersectionCount += tile.ForegroundIntersectionCount;
+            result.ColorMismatchCount += tile.ColorMismatchCount;
+            result.DepthMismatchCount += tile.DepthMismatchCount;
+            result.CombinedMismatchCount += tile.CombinedMismatchCount;
+            result.CoverageMismatchCount += tile.CoverageMismatchCount;
+            rgbAbs += tile.RgbAbsoluteErrorSum;
+            rgbSq += tile.RgbSquaredErrorSum;
+            alphaAbs += tile.AlphaAbsoluteErrorSum;
+            depthAbs += tile.DepthAbsoluteErrorSum;
+            depthSq += tile.DepthSquaredErrorSum;
+            depthRel += tile.DepthRelativeErrorSum;
+            maxRgb = std::max<double>(maxRgb, tile.RgbMaxAbsoluteError);
+            maxDepth = std::max<double>(maxDepth, tile.DepthMaxAbsoluteError);
+        }
+
+        const double pixelCount = std::max<double>(1.0, static_cast<double>(result.ComparedPixelCount));
+        const double foregroundIntersection =
+            std::max<double>(1.0, static_cast<double>(result.ForegroundIntersectionCount));
+        result.ColorMAE = rgbAbs / pixelCount;
+        result.ColorRMSE = std::sqrt(rgbSq / pixelCount);
+        result.ColorPSNR = result.ColorRMSE <= std::numeric_limits<double>::epsilon()
+                               ? std::numeric_limits<double>::infinity()
+                               : 20.0 * std::log10(1.0 / result.ColorRMSE);
+        result.MaxColorError = maxRgb;
+        result.AlphaMAE = alphaAbs / pixelCount;
+        result.DepthMAE = depthAbs / foregroundIntersection;
+        result.DepthRMSE = std::sqrt(depthSq / foregroundIntersection);
+        result.DepthRelativeMAE = depthRel / foregroundIntersection;
+        result.MaxDepthError = maxDepth;
+        result.ColorMismatchPercent = 100.0 * static_cast<double>(result.ColorMismatchCount) / pixelCount;
+        result.DepthMismatchPercent = 100.0 * static_cast<double>(result.DepthMismatchCount) / foregroundIntersection;
+        result.CombinedMismatchPercent = 100.0 * static_cast<double>(result.CombinedMismatchCount) / pixelCount;
+        result.CoverageMismatchPercent = 100.0 * static_cast<double>(result.CoverageMismatchCount) / pixelCount;
+
+        result.Passed =
+            result.ColorMismatchPercent <= tolerances.MaxColorMismatchPercent &&
+            result.DepthMismatchPercent <= tolerances.MaxDepthMismatchPercent &&
+            result.CombinedMismatchPercent <= tolerances.MaxCombinedMismatchPercent &&
+            result.CoverageMismatchPercent <= tolerances.MaxCombinedMismatchPercent;
+        result.Blocked = false;
+        result.Status = result.Passed ? "PASS" : "FAIL";
+        if (!result.Passed)
+            result.Reason = "numeric color/depth metrics exceeded validation tolerances";
+    }
 }
+
+static_assert(sizeof(VoxelValidationTileStats) == 64,
+              "VoxelValidationTileStats must match Shaders/VoxelValidationCompare.hlsl");
 
 std::vector<VoxelVisualValidationCase> VoxelVisualValidationConfig::DefaultCases()
 {
@@ -229,11 +309,10 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
     VoxelVisualValidationMetrics metrics{};
     metrics.HasResult = true;
     metrics.Passed = false;
-    metrics.Blocked = true;
+    metrics.Blocked = false;
     metrics.ValidationRunId = snapshot.ValidationRunId;
     metrics.SnapshotHash = snapshot.SnapshotHash;
-    metrics.FailReason =
-        "BLOCKED: GPU frame capture and compare dispatch resources are not connected to VoxelVisualValidationRunner yet.";
+    metrics.FailReason.clear();
     metrics.CsvPath = outputDirectory / "voxel_visual_validation.csv";
     metrics.JsonPath = outputDirectory / "voxel_visual_validation.json";
 
@@ -258,12 +337,66 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
         result.TotalVoxelCount = snapshot.TotalVoxelCount;
         result.ActualStaticCount = snapshot.ActualStaticCount;
         result.ActualDynamicCount = snapshot.ActualDynamicCount;
-        result.Status = "BLOCKED";
-        result.Blocked = true;
-        result.Passed = false;
-        result.Reason =
-            "GPU color/depth resources were not supplied; deterministic snapshot/export completed but numeric compare did not run.";
+        if (const auto* comparison = FindComparison(resolvedConfig.CompletedComparisons, validationCase.CaseId))
+        {
+            result.ActualSingleMode = comparison->ActualSingleMode;
+            result.ActualMultiMode = comparison->ActualMultiMode;
+            result.ConfigHash = comparison->ConfigHash;
+            result.CameraHash = comparison->CameraHash;
+            result.AdapterPairIdentity = comparison->AdapterPairIdentity;
+            result.SingleColorReferencePath = comparison->SingleColorReferencePath;
+            result.SingleDepthReferencePath = comparison->SingleDepthReferencePath;
+            result.MultiColorReferencePath = comparison->MultiColorReferencePath;
+            result.MultiDepthReferencePath = comparison->MultiDepthReferencePath;
+            result.DiffReferencePath = comparison->DiffReferencePath;
+
+            if (!comparison->CaptureAvailable)
+                result.Reason = "deterministic Single/Multi color/depth capture was not supplied";
+            else if (!comparison->CompareShaderDispatched)
+                result.Reason = "VoxelValidationCompare.hlsl dispatch evidence was not supplied";
+            else if (!comparison->ReadbackComplete)
+                result.Reason = "validation tile statistics readback is not complete";
+            else if (comparison->TileStats.empty())
+                result.Reason = "validation tile statistics are empty";
+            else
+                AccumulateComparison(*comparison, resolvedConfig.Tolerances, result);
+        }
+        else
+        {
+            result.Reason =
+                "GPU color/depth comparison input was not supplied for this validation case";
+        }
+
+        if (result.Status.empty() || result.Status == "BLOCKED")
+        {
+            result.Status = "BLOCKED";
+            result.Blocked = true;
+            result.Passed = false;
+        }
         metrics.CaseResults.push_back(std::move(result));
+    }
+
+    metrics.Blocked = std::any_of(metrics.CaseResults.begin(), metrics.CaseResults.end(),
+                                  [](const auto& result) { return result.Blocked; });
+    metrics.Passed = !metrics.Blocked &&
+        std::all_of(metrics.CaseResults.begin(), metrics.CaseResults.end(),
+                    [](const auto& result) { return result.Passed; });
+    if (!metrics.Passed)
+    {
+        const auto failed = std::find_if(metrics.CaseResults.begin(), metrics.CaseResults.end(),
+                                         [](const auto& result) { return !result.Passed; });
+        metrics.FailReason = failed != metrics.CaseResults.end() ? failed->Reason : "visual validation failed";
+    }
+    if (!metrics.CaseResults.empty())
+    {
+        const auto& first = metrics.CaseResults.front();
+        metrics.ColorMAE = first.ColorMAE;
+        metrics.ColorRMSE = first.ColorRMSE;
+        metrics.ColorPSNR = first.ColorPSNR;
+        metrics.MaxColorError = first.MaxColorError;
+        metrics.ColorMismatchPercent = first.ColorMismatchPercent;
+        metrics.DepthRMSE = first.DepthRMSE;
+        metrics.DepthMismatchPercent = first.DepthMismatchPercent;
     }
 
     ExportCsv(resolvedConfig, metrics, metrics.CsvPath);
@@ -292,7 +425,9 @@ void VoxelVisualValidationRunner::ExportCsv(
         << "max_color_error,alpha_mae,depth_mae,depth_rmse,depth_relative_mae,max_depth_error,"
         << "color_mismatch_count,color_mismatch_percent,depth_mismatch_count,depth_mismatch_percent,"
         << "combined_mismatch_count,combined_mismatch_percent,coverage_mismatch_count,"
-        << "coverage_mismatch_percent,build_hash,shader_hash,view_matrix,projection_matrix,reason\n";
+        << "coverage_mismatch_percent,config_hash,camera_hash,adapter_pair,single_color_reference,"
+        << "single_depth_reference,multi_color_reference,multi_depth_reference,diff_reference,"
+        << "build_hash,shader_hash,view_matrix,projection_matrix,reason\n";
 
     for (const auto& result : metrics.CaseResults)
     {
@@ -349,6 +484,14 @@ void VoxelVisualValidationRunner::ExportCsv(
             << result.CombinedMismatchPercent << ','
             << result.CoverageMismatchCount << ','
             << result.CoverageMismatchPercent << ','
+            << EscapeCsv(result.ConfigHash) << ','
+            << EscapeCsv(result.CameraHash) << ','
+            << EscapeCsv(result.AdapterPairIdentity) << ','
+            << EscapeCsv(PathString(result.SingleColorReferencePath)) << ','
+            << EscapeCsv(PathString(result.SingleDepthReferencePath)) << ','
+            << EscapeCsv(PathString(result.MultiColorReferencePath)) << ','
+            << EscapeCsv(PathString(result.MultiDepthReferencePath)) << ','
+            << EscapeCsv(PathString(result.DiffReferencePath)) << ','
             << EscapeCsv(snapshot.BuildHash) << ','
             << EscapeCsv(snapshot.ShaderHash) << ','
             << EscapeCsv(MatrixCsv(snapshot.View)) << ','
@@ -424,6 +567,15 @@ void VoxelVisualValidationRunner::ExportJson(
         json << "      \"actual_multi_mode\": \"" << ModeName(result.ActualMultiMode) << "\",\n";
         json << "      \"spatial_lod\": \"" << LodName(result.SpatialLodMode) << "\",\n";
         json << "      \"temporal_interval\": " << result.TemporalInterval << ",\n";
+        json << "      \"config_hash\": \"" << EscapeJson(result.ConfigHash) << "\",\n";
+        json << "      \"camera_hash\": \"" << EscapeJson(result.CameraHash) << "\",\n";
+        json << "      \"adapter_pair\": \"" << EscapeJson(result.AdapterPairIdentity) << "\",\n";
+        json << "      \"references\": {"
+             << "\"single_color\":\"" << EscapeJson(PathString(result.SingleColorReferencePath)) << "\","
+             << "\"single_depth\":\"" << EscapeJson(PathString(result.SingleDepthReferencePath)) << "\","
+             << "\"multi_color\":\"" << EscapeJson(PathString(result.MultiColorReferencePath)) << "\","
+             << "\"multi_depth\":\"" << EscapeJson(PathString(result.MultiDepthReferencePath)) << "\","
+             << "\"diff\":\"" << EscapeJson(PathString(result.DiffReferencePath)) << "\"},\n";
         json << "      \"compared_pixel_count\": " << result.ComparedPixelCount << ",\n";
         json << "      \"foreground_union_count\": " << result.ForegroundUnionCount << ",\n";
         json << "      \"foreground_intersection_count\": " << result.ForegroundIntersectionCount << ",\n";

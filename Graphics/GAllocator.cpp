@@ -1,4 +1,5 @@
 #include "GAllocator.h"
+#include "GDevice.h"
 #include "GDescriptorHeap.h"
 
 namespace PEPEngine::Graphics
@@ -76,5 +77,24 @@ namespace PEPEngine::Graphics
                 availablePages.insert(i);
             }
         }
+    }
+
+    GDescriptorAllocatorStats GAllocator::GetStats() const
+    {
+        std::lock_guard<std::mutex> lock(allocationMutex);
+        GDescriptorAllocatorStats stats{};
+        for (const auto& page : pages)
+        {
+            if (!page)
+                continue;
+            const auto pageStats = page->GetStats();
+            stats.HeapPages += pageStats.HeapPages;
+            stats.DescriptorCapacity += pageStats.DescriptorCapacity;
+            stats.FreeDescriptors += pageStats.FreeDescriptors;
+            stats.StaleRanges += pageStats.StaleRanges;
+            stats.StaleDescriptors += pageStats.StaleDescriptors;
+            stats.ActiveDescriptors += pageStats.ActiveDescriptors;
+        }
+        return stats;
     }
 }

@@ -4,10 +4,30 @@
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Voxels/VoxelTypes.h"
 
+enum class VoxelSimulationSchedulerMode : uint32_t
+{
+    Interactive,
+    Benchmark
+};
+
+struct VoxelSimulationStepPlan
+{
+    VoxelSimulationSchedulerMode Mode = VoxelSimulationSchedulerMode::Interactive;
+    uint32_t RequestedFixedSteps = 0;
+    uint32_t ExecutedFixedSteps = 0;
+    uint32_t DroppedStepCount = 0;
+    double DroppedSimulationTime = 0.0;
+    double OutputAccumulator = 0.0;
+    float InterpolationAlpha = 0.0f;
+};
+
 struct VoxelSimulationSchedulerContext
 {
     VoxelSceneWorkload& Workload;
     VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelSimulationSchedulerMode SchedulerMode = VoxelSimulationSchedulerMode::Interactive;
+    uint32_t InteractiveMaxCatchUpSteps = 3;
+    uint32_t BenchmarkFixedSteps = 1;
     bool MultiGpuAvailable = false;
     uint64_t& SimulationFrameIndex;
     uint32_t TimestampHeapIndex = 0;
@@ -42,6 +62,13 @@ struct VoxelSimulationSchedulerResult
     uint32_t SecondaryStepsSinceLastUpdate = 0;
     float SecondaryInterpolationPhase = 0.0f;
     float SecondaryCoarseDeltaTime = 1.0f / 60.0f;
+    VoxelSimulationSchedulerMode SchedulerMode = VoxelSimulationSchedulerMode::Interactive;
+    uint32_t RequestedFixedSteps = 0;
+    uint32_t ExecutedFixedSteps = 0;
+    uint32_t DroppedStepCount = 0;
+    double DroppedSimulationTime = 0.0;
+    uint32_t SimulationDispatchCount = 0;
+    uint32_t LogicalUpdatedVoxelCount = 0;
     UINT64 PrimaryComputeFenceValue = 0;
     UINT64 SecondaryComputeFenceValue = 0;
 };
@@ -50,6 +77,15 @@ class VoxelSimulationScheduler
 {
 public:
     VoxelSimulationSchedulerResult DispatchFrame(const VoxelSimulationSchedulerContext& context) const;
+    static VoxelSimulationStepPlan BuildStepPlan(VoxelSimulationSchedulerMode mode,
+                                                 double frameDeltaTime,
+                                                 double currentAccumulator,
+                                                 uint32_t interactiveMaxCatchUpSteps,
+                                                 uint32_t benchmarkFixedSteps);
+    static const char* SchedulerModeName(VoxelSimulationSchedulerMode mode);
+    static bool ShouldRunTemporalUpdate(uint64_t fixedStepIndex,
+                                        uint32_t effectiveInterval,
+                                        bool hasStartedSimulation);
 
 private:
     static constexpr double FixedSimulationDeltaTime = 1.0 / 60.0;

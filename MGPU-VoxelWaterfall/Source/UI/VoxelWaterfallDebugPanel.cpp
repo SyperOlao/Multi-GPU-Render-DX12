@@ -470,6 +470,10 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricF64("mismatched pixels", telemetry ? telemetry->VisualValidationMismatchedPixelPercent : 0.0, "%.3f%%");
         DrawMetric("validation", hasValidation ? (telemetry->VisualValidationPassed ? "pass" : "fail") : "not run");
         DrawMetric("benchmark config", BenchmarkClassName(context.Workload, context.RequestedExecutionMode));
+        DrawMetricU64("provenance file hashes", context.ProvenanceFileHashCount);
+        DrawMetricU64("git process spawns", context.GitProcessSpawnCount);
+        DrawMetricU64("slow validation runs", context.SlowFrameValidationCount);
+        DrawMetricU64("metadata builds", context.BenchmarkMetadataBuildCount);
         if (telemetry && !telemetry->VisualValidationFailReason.empty())
             ImGui::TextWrapped("Reason: %s", telemetry->VisualValidationFailReason.c_str());
     }

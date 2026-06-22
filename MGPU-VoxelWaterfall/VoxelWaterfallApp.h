@@ -44,6 +44,11 @@ public:
     int RunAutomaticBenchmarkSuiteOnce(BenchmarkSuite suite,
                                        uint32_t seedOverride = 0,
                                        const std::filesystem::path& outputDirectory = {});
+    int RunMemorySoakTestOnce(uint32_t durationSeconds = 600,
+                              const std::filesystem::path& outputDirectory = {});
+    int RunMemoryRebuildStressTestOnce(uint32_t rebuildCycles = 100,
+                                       uint32_t stableSeconds = 60,
+                                       const std::filesystem::path& outputDirectory = {});
 
 protected:
     void Update(const GameTimer& gt) override;
@@ -67,14 +72,19 @@ protected:
     void RebuildGpuPartitionsForMode();
     VoxelRenderWorkload BuildVoxelRenderWorkload() const;
     void ValidateVoxelRenderWorkload(const VoxelRenderWorkload& renderWorkload) const;
-    void ValidateVoxelFrameDrawResults(const VoxelRenderWorkload& renderWorkload,
-                                       const std::vector<VoxelPartitionRenderResult>& primaryResults,
-                                       const std::vector<VoxelPartitionRenderResult>& secondaryResults,
-                                       bool secondaryGraphicsSubmitted) const;
+    void ValidateVoxelFrameDrawResultsCheap(const VoxelRenderWorkload& renderWorkload,
+                                            const std::vector<VoxelPartitionRenderResult>& primaryResults,
+                                            const std::vector<VoxelPartitionRenderResult>& secondaryResults,
+                                            bool secondaryGraphicsSubmitted) const;
+    void ValidateVoxelWorkloadGlobalIdsSlow() const;
     std::string GetExecutionModeName() const;
     std::string GetExecutionModeName(VoxelExecutionMode mode) const;
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
+    void RefreshBenchmarkFrameTelemetry(VoxelBenchmarkProfiler::FrameMetadata& metadata) const;
     BenchmarkControllerContext BuildBenchmarkControllerContext();
+    void InitializeBenchmarkProvenanceCache();
+    void PumpOneMemoryAuditFrame();
+    void ServiceDeferredResourceLifetime();
     void StartAutomaticBenchmark();
     void StartAutomaticBenchmark(BenchmarkSuite suite, uint32_t seedOverride = 0);
     void StopAutomaticBenchmark();
@@ -180,6 +190,30 @@ protected:
 
     VoxelBenchmarkProfiler benchmarkProfiler;
     BenchmarkController benchmarkController;
+    struct BenchmarkProvenanceCache
+    {
+        bool Initialized = false;
+        std::string BuildHash = "Unknown: benchmark provenance cache not initialized";
+        std::string ShaderHash = "Unknown: benchmark provenance cache not initialized";
+        std::string GitCommit = "Unknown: benchmark provenance cache not initialized";
+        std::string GitDirtyState = "Unknown: benchmark provenance cache not initialized";
+        std::string OperatingSystem = "Windows";
+        std::string BuildConfiguration;
+        bool D3D12DebugLayerEnabled = false;
+        std::wstring PrimaryAdapterName = L"unavailable";
+        std::wstring SecondaryAdapterName = L"unavailable";
+        uint32_t PrimaryVendorId = 0;
+        uint32_t PrimaryDeviceId = 0;
+        uint64_t PrimaryDedicatedVideoMemory = 0;
+        std::string PrimaryAdapterLuid;
+        uint32_t SecondaryVendorId = 0;
+        uint32_t SecondaryDeviceId = 0;
+        uint64_t SecondaryDedicatedVideoMemory = 0;
+        std::string SecondaryAdapterLuid;
+    };
+    BenchmarkProvenanceCache benchmarkProvenanceCache;
+    mutable uint64_t benchmarkMetadataBuildCount = 0;
+    mutable uint64_t slowFrameValidationCount = 0;
     TwoAdapterVerificationRunner twoAdapterVerificationRunner;
     TwoAdapterVerificationResult twoAdapterVerificationResult{};
     bool twoAdapterVerificationHasResult = false;
@@ -189,6 +223,10 @@ protected:
     std::string visualValidationShaderHash;
     std::string visualValidationAdapterPairIdentity;
     std::chrono::steady_clock::time_point cpuFrameStart{};
+    uint64_t frameSerial = 0;
+    uint64_t mainLoopIterationCount = 0;
+    uint64_t successfulPresentCount = 0;
+    uint32_t interactiveMaxCatchUpSteps = 3;
     double currentPrimaryWaitMs = 0.0;
     bool currentFrameResourceReady = true;
     VoxelCompositeDebugView voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;

@@ -28,6 +28,10 @@ struct AutomaticBenchmarkConfig
     uint32_t MeasuredFrameCount = 500;
     uint32_t RandomizationSeed = 0;
     uint32_t OrderIndex = 0;
+    uint32_t BlockOrderIndex = 0;
+    uint32_t PairMemberOrder = 0;
+    std::string SessionId;
+    std::string BlockId;
     std::string PairId;
     std::string ConfigId;
 };

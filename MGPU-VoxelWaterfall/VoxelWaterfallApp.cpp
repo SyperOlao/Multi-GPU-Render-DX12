@@ -13,14 +13,18 @@
 #include <fstream>
 #include <iomanip>
 #include <locale>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_set>
 #include <utility>
+#include <psapi.h>
 
 #include "GameObject.h"
 #include "GDeviceFactory.h"
 #include "GModel.h"
+#include "GResource.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -28,11 +32,14 @@
 #include "ModelRenderer.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
 #include "Source/Voxels/VoxelResearchEnvironmentGenerator.h"
+#include "Source/Voxels/VoxelSimulationSchedulerReferenceTests.h"
 #include "Source/Voxels/VoxelSpatialLodReferenceTests.h"
 #include "Source/Voxels/VoxelWaterfallDynamicReferenceTests.h"
 #include "Source/Scene/VoxelResearchCameraController.h"
 #include "Transform.h"
 #include "Window.h"
+
+#pragma comment(lib, "Psapi.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -40,6 +47,8 @@ namespace
 {
     constexpr float DebugUiScale = 2.25f;
     constexpr const char* VoxelSceneGpuObjectName = "VoxelSceneGpuPartitions";
+    uint64_t gProvenanceFileHashCount = 0;
+    uint64_t gGitProcessSpawnCount = 0;
 
     struct StaticLayerSnapshot
     {
@@ -102,6 +111,7 @@ namespace
 
     std::string HashFileOrUnknown(const std::filesystem::path& path)
     {
+        ++gProvenanceFileHashCount;
         std::ifstream file(path, std::ios::binary);
         if (!file.is_open())
             return "unknown";
@@ -131,6 +141,8 @@ namespace
 
     std::string RunCommandTrimmed(const char* command)
     {
+        if (std::strstr(command, "git ") != nullptr)
+            ++gGitProcessSpawnCount;
         FILE* pipe = _popen(command, "r");
         if (!pipe)
             return "Unknown: command could not be started";
@@ -144,6 +156,25 @@ namespace
         if (exitCode != 0 || output.empty())
             return "Unknown: command failed or produced no output";
         return output;
+    }
+
+    std::pair<std::string, std::string> ParseGitStatusPorcelainV2(const std::string& output)
+    {
+        std::istringstream stream(output);
+        std::string line;
+        std::string commit = "Unknown: git status did not report branch.oid";
+        bool dirty = false;
+        while (std::getline(stream, line))
+        {
+            if (line.rfind("# branch.oid ", 0) == 0)
+            {
+                commit = line.substr(std::strlen("# branch.oid "));
+                continue;
+            }
+            if (!line.empty() && line[0] != '#')
+                dirty = true;
+        }
+        return {commit, dirty ? "dirty" : "clean"};
     }
 
     TwoAdapterQueueCalibration CollectQueueCalibration(
@@ -241,6 +272,14 @@ namespace
     bool SameVector(const DirectX::SimpleMath::Vector3& lhs, const DirectX::SimpleMath::Vector3& rhs)
     {
         return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+    }
+
+    bool SlowVoxelValidationEnabled()
+    {
+        wchar_t value[8] = {};
+        const DWORD length = GetEnvironmentVariableW(L"VOXEL_ENABLE_SLOW_VALIDATION", value,
+                                                     static_cast<DWORD>(std::size(value)));
+        return length > 0 && length < std::size(value) && value[0] == L'1';
     }
 
     void AssertStaticLayerShapePreserved(
@@ -513,6 +552,177 @@ namespace
         return ResolveVoxelWaterfallAssetPath(relativePath).string();
     }
 
+    std::string EscapeJsonString(const std::string& value)
+    {
+        std::ostringstream out;
+        for (const char c : value)
+        {
+            switch (c)
+            {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default: out << c; break;
+            }
+        }
+        return out.str();
+    }
+
+    std::string WideToUtf8Local(const std::wstring& value)
+    {
+        if (value.empty())
+            return {};
+        const int required = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                                 static_cast<int>(value.size()),
+                                                 nullptr, 0, nullptr, nullptr);
+        if (required <= 0)
+            return {};
+        std::string result(static_cast<size_t>(required), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                            result.data(), required, nullptr, nullptr);
+        return result;
+    }
+
+    struct MemoryAuditSnapshot
+    {
+        uint64_t FrameSerial = 0;
+        double ElapsedSeconds = 0.0;
+        uint64_t PrivateUsageBytes = 0;
+        uint64_t WorkingSetBytes = 0;
+        uint64_t PagefileUsageBytes = 0;
+        uint64_t PrimaryLocalUsageBytes = 0;
+        uint64_t PrimaryNonLocalUsageBytes = 0;
+        uint64_t SecondaryLocalUsageBytes = 0;
+        uint64_t SecondaryNonLocalUsageBytes = 0;
+        uint64_t CommandListsCreated = 0;
+        uint64_t CommandListsAvailable = 0;
+        uint64_t CommandListsInFlight = 0;
+        uint64_t DescriptorCapacity = 0;
+        uint64_t DescriptorActive = 0;
+        uint64_t DescriptorFree = 0;
+        uint64_t DescriptorStaleRanges = 0;
+        uint64_t LiveResources = 0;
+        uint64_t CreatedResources = 0;
+        uint64_t DestroyedResources = 0;
+    };
+
+    void AccumulateDeviceMemoryStats(
+        const std::shared_ptr<GDevice>& device,
+        uint64_t& localUsage,
+        uint64_t& nonLocalUsage,
+        MemoryAuditSnapshot& snapshot)
+    {
+        if (!device)
+            return;
+
+        const auto stats = device->GetLifetimeStats();
+        localUsage += stats.VideoMemory.LocalCurrentUsage;
+        nonLocalUsage += stats.VideoMemory.NonLocalCurrentUsage;
+        for (const auto& queue : stats.Queues)
+        {
+            snapshot.CommandListsCreated += queue.CreatedCommandLists;
+            snapshot.CommandListsAvailable += queue.AvailableCommandLists;
+            snapshot.CommandListsInFlight += queue.InFlightCommandLists;
+        }
+        for (const auto& allocator : stats.DescriptorAllocators)
+        {
+            snapshot.DescriptorCapacity += allocator.DescriptorCapacity;
+            snapshot.DescriptorActive += allocator.ActiveDescriptors;
+            snapshot.DescriptorFree += allocator.FreeDescriptors;
+            snapshot.DescriptorStaleRanges += allocator.StaleRanges;
+        }
+    }
+
+    MemoryAuditSnapshot CaptureMemoryAuditSnapshot(
+        const uint64_t frameSerial,
+        const double elapsedSeconds,
+        const std::shared_ptr<GDevice>& primaryDevice,
+        const std::shared_ptr<GDevice>& secondaryDevice)
+    {
+        MemoryAuditSnapshot snapshot{};
+        snapshot.FrameSerial = frameSerial;
+        snapshot.ElapsedSeconds = elapsedSeconds;
+
+        PROCESS_MEMORY_COUNTERS_EX processMemory{};
+        processMemory.cb = sizeof(processMemory);
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&processMemory),
+                                 sizeof(processMemory)))
+        {
+            snapshot.PrivateUsageBytes = static_cast<uint64_t>(processMemory.PrivateUsage);
+            snapshot.WorkingSetBytes = static_cast<uint64_t>(processMemory.WorkingSetSize);
+            snapshot.PagefileUsageBytes = static_cast<uint64_t>(processMemory.PagefileUsage);
+        }
+
+        AccumulateDeviceMemoryStats(primaryDevice,
+                                    snapshot.PrimaryLocalUsageBytes,
+                                    snapshot.PrimaryNonLocalUsageBytes,
+                                    snapshot);
+        if (secondaryDevice && secondaryDevice != primaryDevice)
+        {
+            AccumulateDeviceMemoryStats(secondaryDevice,
+                                        snapshot.SecondaryLocalUsageBytes,
+                                        snapshot.SecondaryNonLocalUsageBytes,
+                                        snapshot);
+        }
+
+        const auto resourceStats = GResource::GetLifetimeStats();
+        snapshot.LiveResources = resourceStats.LiveResources;
+        snapshot.CreatedResources = resourceStats.CreatedResources;
+        snapshot.DestroyedResources = resourceStats.DestroyedResources;
+        return snapshot;
+    }
+
+    void WriteMemoryTimelineHeader(std::ofstream& file)
+    {
+        file << "frame_serial,elapsed_seconds,private_usage_bytes,working_set_bytes,committed_pagefile_bytes,"
+             << "primary_local_vram_bytes,primary_shared_gpu_bytes,secondary_local_vram_bytes,secondary_shared_gpu_bytes,"
+             << "command_lists_created,command_lists_available,command_lists_in_flight,"
+             << "descriptor_capacity,descriptor_active,descriptor_free,descriptor_stale_ranges,"
+             << "live_d3d12_resources,created_d3d12_resources,destroyed_d3d12_resources\n";
+    }
+
+    void WriteMemoryTimelineRow(std::ofstream& file, const MemoryAuditSnapshot& snapshot)
+    {
+        file << snapshot.FrameSerial << ','
+             << std::fixed << std::setprecision(3) << snapshot.ElapsedSeconds << ','
+             << snapshot.PrivateUsageBytes << ','
+             << snapshot.WorkingSetBytes << ','
+             << snapshot.PagefileUsageBytes << ','
+             << snapshot.PrimaryLocalUsageBytes << ','
+             << snapshot.PrimaryNonLocalUsageBytes << ','
+             << snapshot.SecondaryLocalUsageBytes << ','
+             << snapshot.SecondaryNonLocalUsageBytes << ','
+             << snapshot.CommandListsCreated << ','
+             << snapshot.CommandListsAvailable << ','
+             << snapshot.CommandListsInFlight << ','
+             << snapshot.DescriptorCapacity << ','
+             << snapshot.DescriptorActive << ','
+             << snapshot.DescriptorFree << ','
+             << snapshot.DescriptorStaleRanges << ','
+             << snapshot.LiveResources << ','
+             << snapshot.CreatedResources << ','
+             << snapshot.DestroyedResources << '\n';
+    }
+
+    bool HasPositivePrivateUsageTrend(
+        const std::vector<MemoryAuditSnapshot>& snapshots,
+        const size_t warmupCount)
+    {
+        if (snapshots.size() <= warmupCount + 4)
+            return false;
+
+        const auto& first = snapshots[warmupCount];
+        const auto& last = snapshots.back();
+        const double seconds = std::max(1.0, last.ElapsedSeconds - first.ElapsedSeconds);
+        const int64_t delta = static_cast<int64_t>(last.PrivateUsageBytes) -
+            static_cast<int64_t>(first.PrivateUsageBytes);
+        const double bytesPerMinute = static_cast<double>(delta) * 60.0 / seconds;
+        return bytesPerMinute > 1024.0 * 1024.0;
+    }
+
 }
 
 VoxelWaterfallApp::VoxelWaterfallApp(const HINSTANCE hInstance) : D3DApp(hInstance)
@@ -578,10 +788,18 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
     if (!currentFrameResourceReady) return;
 
     ApplyPendingVoxelSettings();
-    auto benchmarkContext = BuildBenchmarkControllerContext();
-    benchmarkController.UpdateAutomatic(benchmarkContext);
+    if (benchmarkController.IsAutomaticActive())
+    {
+        auto benchmarkContext = BuildBenchmarkControllerContext();
+        benchmarkController.UpdateAutomatic(benchmarkContext);
+    }
     const bool benchmarkWasActive = benchmarkProfiler.IsActive();
-    benchmarkProfiler.BeginFrame(BuildBenchmarkMetadata());
+    std::optional<VoxelBenchmarkProfiler::FrameMetadata> benchmarkFrameMetadata;
+    if (benchmarkWasActive)
+    {
+        benchmarkFrameMetadata = BuildBenchmarkMetadata();
+        benchmarkProfiler.BeginFrame(*benchmarkFrameMetadata);
+    }
 
     const UINT timestampHeapIndex = 2 * currentFrameResourceIndex;
 
@@ -618,6 +836,9 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
     VoxelSimulationSchedulerContext schedulerContext{
         voxelWorkload,
         executionMode,
+        benchmarkWasActive ? VoxelSimulationSchedulerMode::Benchmark : VoxelSimulationSchedulerMode::Interactive,
+        interactiveMaxCatchUpSteps,
+        1u,
         multiGpuAvailable,
         simulationFrameIndex,
         timestampHeapIndex,
@@ -663,11 +884,16 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         simulationResult.SecondaryInterpolationPhase;
     frameGraphTelemetry.SecondaryCoarseDeltaTime =
         simulationResult.SecondaryCoarseDeltaTime;
+    frameGraphTelemetry.SchedulerMode = simulationResult.SchedulerMode;
+    frameGraphTelemetry.RequestedFixedSteps = simulationResult.RequestedFixedSteps;
+    frameGraphTelemetry.ExecutedFixedSteps = simulationResult.ExecutedFixedSteps;
+    frameGraphTelemetry.DroppedSimulationSteps = simulationResult.DroppedStepCount;
+    frameGraphTelemetry.DroppedSimulationTime = simulationResult.DroppedSimulationTime;
+    frameGraphTelemetry.SimulationDispatchCount = simulationResult.SimulationDispatchCount;
+    frameGraphTelemetry.LogicalUpdatedVoxelCount = simulationResult.LogicalUpdatedVoxelCount;
     frameGraphTelemetry.PrimaryComputeFenceValue = simulationResult.PrimaryComputeFenceValue;
     frameGraphTelemetry.SecondaryComputeFenceValue = simulationResult.SecondaryComputeFenceValue;
     frameGraphTelemetry.ParticleTransferBytes = 0;
-
-    benchmarkProfiler.UpdateCurrentFrameMetadata(BuildBenchmarkMetadata());
 
     if (!voxelWorkload.SpatialLod.FreezeCamera || !spatialLodCameraInitialized)
     {
@@ -738,6 +964,12 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         frameGraphTelemetry.PrimarySpatialLodStats.Lod1Rendered += result.LodStats.Lod1Rendered;
         frameGraphTelemetry.PrimarySpatialLodStats.Lod2Rendered += result.LodStats.Lod2Rendered;
         frameGraphTelemetry.PrimarySpatialLodStats.Aggregated += result.LodStats.Aggregated;
+        frameGraphTelemetry.PrimarySpatialLodStats.ProbeOverflow += result.LodStats.ProbeOverflow;
+        frameGraphTelemetry.PrimarySpatialLodStats.TotalProbeCount += result.LodStats.TotalProbeCount;
+        frameGraphTelemetry.PrimarySpatialLodStats.EmittedGroups += result.LodStats.EmittedGroups;
+        frameGraphTelemetry.PrimarySpatialLodStats.HashCapacity += result.LodStats.HashCapacity;
+        frameGraphTelemetry.PrimarySpatialLodStats.MaxProbeCount =
+            std::max(frameGraphTelemetry.PrimarySpatialLodStats.MaxProbeCount, result.LodStats.MaxProbeCount);
         if (result.UsedIndirectDraw)
             frameGraphTelemetry.PrimaryIndirectDrawCalls += result.DrawCallCount;
     }
@@ -895,7 +1127,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         }
     };
     renderPipeline.SubmitFinalCompositeAndPresentPass(finalPassContext);
-    ValidateVoxelFrameDrawResults(
+    ValidateVoxelFrameDrawResultsCheap(
         voxelRenderWorkload,
         primaryVoxelRenderResults,
         secondaryVoxelRenderResults,
@@ -919,10 +1151,19 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
     frameGraphTelemetry.VisualValidationFailReason = visualValidationMetrics.FailReason;
 
     currentFrameResourceIndex = MainWindow->Present();
-    benchmarkProfiler.UpdateCurrentFrameMetadata(BuildBenchmarkMetadata());
-    benchmarkProfiler.EndFrameCpu();
-    benchmarkProfiler.ProcessCompletedFrames();
-    benchmarkController.RestoreVSyncAfterManualCompletion(benchmarkContext, benchmarkWasActive);
+    ++successfulPresentCount;
+    if (benchmarkProfiler.IsActive() && benchmarkFrameMetadata)
+    {
+        RefreshBenchmarkFrameTelemetry(*benchmarkFrameMetadata);
+        benchmarkProfiler.UpdateCurrentFrameMetadata(*benchmarkFrameMetadata);
+        benchmarkProfiler.EndFrameCpu();
+        benchmarkProfiler.ProcessCompletedFrames();
+    }
+    if (benchmarkWasActive)
+    {
+        auto benchmarkContext = BuildBenchmarkControllerContext();
+        benchmarkController.RestoreVSyncAfterManualCompletion(benchmarkContext, benchmarkWasActive);
+    }
 }
 
 bool VoxelWaterfallApp::Initialize()
@@ -947,6 +1188,7 @@ bool VoxelWaterfallApp::Initialize()
                                  secondaryGraphicsQueue,
                                  secondaryCopyQueue,
                                  primaryCopyQueue);
+    InitializeBenchmarkProvenanceCache();
     InitMainWindow();
     Flush();
 
@@ -1131,6 +1373,10 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         benchmarkController.GetAutomaticIndex(),
         benchmarkController.GetAutomaticCount(),
         benchmarkController.GetAutomaticSummaryPath(),
+        gProvenanceFileHashCount,
+        gGitProcessSpawnCount,
+        slowFrameValidationCount,
+        benchmarkMetadataBuildCount,
         [this](const VoxelResearchWorkloadProfile profile) { ApplyResearchWorkloadProfile(profile); },
         [this](const VoxelResearchCameraMode mode) { ApplyResearchCameraMode(mode); },
         [this](const VoxelResearchLightingPreset preset) { ApplyResearchLightingPreset(preset); },
@@ -1195,8 +1441,8 @@ void VoxelWaterfallApp::RunVisualValidation()
     snapshot.LightingPreset = "BenchmarkNeutral";
     snapshot.DynamicShadowsEnabled = false;
     snapshot.Background = "BenchmarkNeutral";
-    snapshot.BuildHash = HashFileOrUnknown(GetExecutableDirectory() / L"MGPU-VoxelWaterfall.exe");
-    snapshot.ShaderHash = HashFileOrUnknown(ResolveVoxelWaterfallAssetPath(L"Shaders\\VoxelValidationCompare.hlsl"));
+    snapshot.BuildHash = benchmarkProvenanceCache.BuildHash;
+    snapshot.ShaderHash = benchmarkProvenanceCache.ShaderHash;
     visualValidationBuildHash = snapshot.BuildHash;
     visualValidationShaderHash = snapshot.ShaderHash;
     visualValidationAdapterPairIdentity = twoAdapterVerificationHasResult
@@ -1244,7 +1490,7 @@ int VoxelWaterfallApp::RunValidationSuiteOnce()
 int VoxelWaterfallApp::RunTwoAdapterVerificationOnce()
 {
     const auto outputDirectory = GetExecutableDirectory() / L"TwoAdapterVerification";
-    const auto buildHash = HashFileOrUnknown(GetExecutableDirectory() / L"MGPU-VoxelWaterfall.exe");
+    const auto buildHash = benchmarkProvenanceCache.BuildHash;
     const auto allDevices = GDeviceFactory::GetAllDevices(false);
     const auto selectedDevices = DeviceSelectionPolicy::Select(allDevices);
 
@@ -1637,14 +1883,154 @@ std::string VoxelWaterfallApp::GetExecutionModeName(const VoxelExecutionMode mod
     return "SingleGpuFull";
 }
 
-VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata() const
+void VoxelWaterfallApp::InitializeBenchmarkProvenanceCache()
 {
-    VoxelBenchmarkProfiler::FrameMetadata metadata{};
+    benchmarkProvenanceCache.BuildHash =
+        HashFileOrUnknown(GetExecutableDirectory() / L"MGPU-VoxelWaterfall.exe");
+    benchmarkProvenanceCache.ShaderHash =
+        HashFileOrUnknown(ResolveVoxelWaterfallAssetPath(L"Shaders\\VoxelValidationCompare.hlsl"));
+    const auto gitStatus = RunCommandTrimmed("git status --porcelain=v2 --branch");
+    if (gitStatus.rfind("Unknown:", 0) == 0)
+    {
+        benchmarkProvenanceCache.GitCommit = gitStatus;
+        benchmarkProvenanceCache.GitDirtyState = gitStatus;
+    }
+    else
+    {
+        const auto [commit, dirtyState] = ParseGitStatusPorcelainV2(gitStatus);
+        benchmarkProvenanceCache.GitCommit = commit;
+        benchmarkProvenanceCache.GitDirtyState = dirtyState;
+    }
+    benchmarkProvenanceCache.OperatingSystem = "Windows";
+#ifdef _DEBUG
+    benchmarkProvenanceCache.BuildConfiguration = "Debug";
+#else
+    benchmarkProvenanceCache.BuildConfiguration = "Release";
+#endif
+#if defined(DEBUG) || defined(_DEBUG)
+    benchmarkProvenanceCache.D3D12DebugLayerEnabled = true;
+#else
+    benchmarkProvenanceCache.D3D12DebugLayerEnabled = false;
+#endif
+    benchmarkProvenanceCache.PrimaryAdapterName = primeDevice ? primeDevice->GetName() : L"unavailable";
+    benchmarkProvenanceCache.SecondaryAdapterName = multiGpuAvailable && secondDevice
+                                                       ? secondDevice->GetName()
+                                                       : L"unavailable";
+    FillAdapterMetadata(primeDevice,
+                        benchmarkProvenanceCache.PrimaryVendorId,
+                        benchmarkProvenanceCache.PrimaryDeviceId,
+                        benchmarkProvenanceCache.PrimaryDedicatedVideoMemory,
+                        benchmarkProvenanceCache.PrimaryAdapterLuid);
+    FillAdapterMetadata(multiGpuAvailable ? secondDevice : nullptr,
+                        benchmarkProvenanceCache.SecondaryVendorId,
+                        benchmarkProvenanceCache.SecondaryDeviceId,
+                        benchmarkProvenanceCache.SecondaryDedicatedVideoMemory,
+                        benchmarkProvenanceCache.SecondaryAdapterLuid);
+    benchmarkProvenanceCache.Initialized = true;
+}
+
+void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
+    VoxelBenchmarkProfiler::FrameMetadata& metadata) const
+{
     metadata.FrameIndex = simulationFrameIndex;
-    metadata.ProfileName = ProfileName(voxelWorkload.Profile);
-    metadata.ScenePreset = voxelWorkload.ScenePreset;
     metadata.RequestedMode = GetExecutionModeName(requestedExecutionMode);
     metadata.ActualMode = GetExecutionModeName(frameGraphTelemetry.ActualMode);
+    metadata.FallbackReason.clear();
+    if (metadata.RequestedMode != metadata.ActualMode)
+        metadata.FallbackReason = "requested mode unavailable; actual mode selected by runtime capability checks";
+
+    uint32_t primaryVoxelCount = 0;
+    uint32_t secondaryVoxelCount = 0;
+    uint32_t updatedVoxelCount = 0;
+    for (const auto& partition : voxelWorkload.Partitions)
+    {
+        if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
+            secondaryVoxelCount += partition.VoxelCount();
+        else
+            primaryVoxelCount += partition.VoxelCount();
+        updatedVoxelCount += partition.UpdatedVoxelCount;
+    }
+    metadata.PrimaryPartitionVoxelCount = primaryVoxelCount;
+    metadata.SecondaryPartitionVoxelCount = secondaryVoxelCount;
+    metadata.UpdatedVoxelCount = updatedVoxelCount;
+    metadata.SimulationStepsThisFrame = voxelSimulationStepsThisFrame;
+    metadata.SimulationDispatchCount = frameGraphTelemetry.SimulationDispatchCount;
+    metadata.SchedulerMode = VoxelSimulationScheduler::SchedulerModeName(frameGraphTelemetry.SchedulerMode);
+    metadata.RequestedFixedSteps = frameGraphTelemetry.RequestedFixedSteps;
+    metadata.ExecutedFixedSteps = frameGraphTelemetry.ExecutedFixedSteps;
+    metadata.DroppedSteps = frameGraphTelemetry.DroppedSimulationSteps;
+    metadata.DroppedSimulationTime = frameGraphTelemetry.DroppedSimulationTime;
+    metadata.LogicalUpdatedVoxelCount = frameGraphTelemetry.LogicalUpdatedVoxelCount;
+    metadata.CpuWaitMs = currentPrimaryWaitMs;
+    metadata.TotalCrossAdapterBytes = frameGraphTelemetry.TotalCrossAdapterBytes;
+    metadata.ColorTransferBytes = frameGraphTelemetry.ColorBytesTransferred;
+    metadata.DepthTransferBytes = frameGraphTelemetry.DepthBytesTransferred;
+    metadata.ParticleTransferBytes = frameGraphTelemetry.ParticleTransferBytes;
+    metadata.RenderOutputTransferBytes = frameGraphTelemetry.RenderOutputTransferBytes;
+    metadata.SecondaryDrawCalls = frameGraphTelemetry.SecondaryDrawCalls;
+    metadata.PrimaryRenderedVoxelCount = frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered();
+    metadata.SecondaryRenderedVoxelCount = frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered();
+    metadata.PrimarySubmittedVoxelCount = metadata.PrimaryRenderedVoxelCount;
+    metadata.SecondarySubmittedVoxelCount = metadata.SecondaryRenderedVoxelCount;
+    metadata.PrimaryLod0Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod0Rendered;
+    metadata.PrimaryLod1Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod1Rendered;
+    metadata.PrimaryLod2Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod2Rendered;
+    metadata.SecondaryLod0Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod0Rendered;
+    metadata.SecondaryLod1Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod1Rendered;
+    metadata.SecondaryLod2Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod2Rendered;
+    const auto totalHashCapacity =
+        frameGraphTelemetry.PrimarySpatialLodStats.HashCapacity +
+        frameGraphTelemetry.SecondarySpatialLodStats.HashCapacity;
+    const auto totalEmittedGroups =
+        frameGraphTelemetry.PrimarySpatialLodStats.EmittedGroups +
+        frameGraphTelemetry.SecondarySpatialLodStats.EmittedGroups;
+    metadata.NoLodFastPath = voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::Off;
+    metadata.LodHashCapacity = totalHashCapacity;
+    metadata.LodHashLoadFactor =
+        totalHashCapacity > 0
+            ? static_cast<float>(totalEmittedGroups) / static_cast<float>(totalHashCapacity)
+            : 0.0f;
+    metadata.LodDuplicateCount =
+        frameGraphTelemetry.PrimarySpatialLodStats.Aggregated +
+        frameGraphTelemetry.SecondarySpatialLodStats.Aggregated;
+    metadata.LodProbeOverflowCount =
+        frameGraphTelemetry.PrimarySpatialLodStats.ProbeOverflow +
+        frameGraphTelemetry.SecondarySpatialLodStats.ProbeOverflow;
+    metadata.LodMaxProbeCount =
+        std::max(frameGraphTelemetry.PrimarySpatialLodStats.MaxProbeCount,
+                 frameGraphTelemetry.SecondarySpatialLodStats.MaxProbeCount);
+    const auto totalProbeCount =
+        frameGraphTelemetry.PrimarySpatialLodStats.TotalProbeCount +
+        frameGraphTelemetry.SecondarySpatialLodStats.TotalProbeCount;
+    metadata.LodAverageProbeCount =
+        totalEmittedGroups > 0
+            ? static_cast<float>(totalProbeCount) / static_cast<float>(totalEmittedGroups)
+            : 0.0f;
+    metadata.VisualValidationHasResult = frameGraphTelemetry.VisualValidationHasResult;
+    metadata.VisualValidationPassed = frameGraphTelemetry.VisualValidationPassed;
+    metadata.VisualValidationRunId = frameGraphTelemetry.VisualValidationRunId;
+    metadata.VisualValidationSnapshotHash = frameGraphTelemetry.VisualValidationSnapshotHash;
+    metadata.VisualValidationColorMAE = frameGraphTelemetry.VisualValidationColorMAE;
+    metadata.VisualValidationColorRMSE = frameGraphTelemetry.VisualValidationColorRMSE;
+    metadata.VisualValidationPSNR = frameGraphTelemetry.VisualValidationPSNR;
+    metadata.VisualValidationMaxError = frameGraphTelemetry.VisualValidationMaxError;
+    metadata.VisualValidationMismatchedPixelPercent =
+        frameGraphTelemetry.VisualValidationMismatchedPixelPercent;
+    metadata.VisualValidationDepthRMSE = frameGraphTelemetry.VisualValidationDepthRMSE;
+    metadata.VisualValidationDepthMismatchPercent =
+        frameGraphTelemetry.VisualValidationDepthMismatchPercent;
+    metadata.VisualValidationPipelinePrimitiveCount =
+        frameGraphTelemetry.VisualValidationPipelinePrimitiveCount;
+    metadata.VisualValidationFailReason = frameGraphTelemetry.VisualValidationFailReason;
+    metadata.CpuFrameStart = cpuFrameStart;
+}
+
+VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata() const
+{
+    ++benchmarkMetadataBuildCount;
+    VoxelBenchmarkProfiler::FrameMetadata metadata{};
+    metadata.ProfileName = ProfileName(voxelWorkload.Profile);
+    metadata.ScenePreset = voxelWorkload.ScenePreset;
     metadata.TemporalPolicy = TemporalPolicyName(voxelWorkload.TemporalPolicy);
     metadata.SpatialLodPolicy =
         voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::ThreeLevel
@@ -1663,24 +2049,6 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
     const auto [configClass, configReason] = ClassifyBenchmarkConfig(voxelWorkload, requestedExecutionMode);
     metadata.BenchmarkConfigClass = BenchmarkConfigClassName(configClass);
     metadata.BenchmarkConfigReason = configReason;
-    if (metadata.RequestedMode != metadata.ActualMode)
-        metadata.FallbackReason = "requested mode unavailable; actual mode selected by runtime capability checks";
-    uint32_t primaryVoxelCount = 0;
-    uint32_t secondaryVoxelCount = 0;
-    uint32_t updatedVoxelCount = 0;
-    uint32_t simulationDispatchCount = 0;
-    for (const auto& partition : voxelWorkload.Partitions)
-    {
-        if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
-            secondaryVoxelCount += partition.VoxelCount();
-        else
-            primaryVoxelCount += partition.VoxelCount();
-        updatedVoxelCount += partition.UpdatedVoxelCount;
-        if (partition.SimulationDispatchedThisFrame)
-            ++simulationDispatchCount;
-    }
-    metadata.PrimaryPartitionVoxelCount = primaryVoxelCount;
-    metadata.SecondaryPartitionVoxelCount = secondaryVoxelCount;
     metadata.TotalVoxelCount = voxelWorkload.TotalVoxelCount;
     metadata.ActualStaticVoxelCount = voxelWorkload.ActualStaticVoxelCount;
     metadata.ActualDynamicVoxelCount = voxelWorkload.ActualDynamicVoxelCount;
@@ -1690,9 +2058,6 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
     metadata.ChunkSizeX = voxelWorkload.ChunkSize.Width;
     metadata.ChunkSizeY = voxelWorkload.ChunkSize.Height;
     metadata.ChunkSizeZ = voxelWorkload.ChunkSize.Depth;
-    metadata.UpdatedVoxelCount = updatedVoxelCount;
-    metadata.SimulationStepsThisFrame = voxelSimulationStepsThisFrame;
-    metadata.SimulationDispatchCount = simulationDispatchCount;
     metadata.Seed =
         voxelWorkload.ActualStaticVoxelCount > 0
             ? voxelWorkload.StaticGenerationSeed
@@ -1705,74 +2070,27 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
         metadata.RenderWidth = static_cast<uint32_t>(desc.Width);
         metadata.RenderHeight = desc.Height;
     }
-    metadata.PrimaryAdapterName = primeDevice ? primeDevice->GetName() : L"unavailable";
-    metadata.SecondaryAdapterName = multiGpuAvailable && secondDevice
-                                        ? secondDevice->GetName()
-                                        : L"unavailable";
-    FillAdapterMetadata(primeDevice,
-                        metadata.PrimaryVendorId,
-                        metadata.PrimaryDeviceId,
-                        metadata.PrimaryDedicatedVideoMemory,
-                        metadata.PrimaryAdapterLuid);
-    FillAdapterMetadata(multiGpuAvailable ? secondDevice : nullptr,
-                        metadata.SecondaryVendorId,
-                        metadata.SecondaryDeviceId,
-                        metadata.SecondaryDedicatedVideoMemory,
-                        metadata.SecondaryAdapterLuid);
-    metadata.OperatingSystem = "Windows";
-#ifdef _DEBUG
-    metadata.BuildConfiguration = "Debug";
-#else
-    metadata.BuildConfiguration = "Release";
-#endif
-    metadata.GitCommit = RunCommandTrimmed("git rev-parse HEAD");
-#if defined(DEBUG) || defined(_DEBUG)
-    metadata.D3D12DebugLayerEnabled = true;
-#else
-    metadata.D3D12DebugLayerEnabled = false;
-#endif
-    metadata.CpuWaitMs = currentPrimaryWaitMs;
-    metadata.TotalCrossAdapterBytes = frameGraphTelemetry.TotalCrossAdapterBytes;
-    metadata.ColorTransferBytes = frameGraphTelemetry.ColorBytesTransferred;
-    metadata.DepthTransferBytes = frameGraphTelemetry.DepthBytesTransferred;
-    metadata.ParticleTransferBytes = frameGraphTelemetry.ParticleTransferBytes;
-    metadata.RenderOutputTransferBytes = frameGraphTelemetry.RenderOutputTransferBytes;
-    metadata.SecondaryDrawCalls = frameGraphTelemetry.SecondaryDrawCalls;
-    metadata.PrimaryRenderedVoxelCount = frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered();
-    metadata.SecondaryRenderedVoxelCount = frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered();
-    metadata.PrimarySubmittedVoxelCount = metadata.PrimaryRenderedVoxelCount;
-    metadata.SecondarySubmittedVoxelCount = metadata.SecondaryRenderedVoxelCount;
-    metadata.PrimaryLod0Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod0Rendered;
-    metadata.PrimaryLod1Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod1Rendered;
-    metadata.PrimaryLod2Count = frameGraphTelemetry.PrimarySpatialLodStats.Lod2Rendered;
-    metadata.SecondaryLod0Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod0Rendered;
-    metadata.SecondaryLod1Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod1Rendered;
-    metadata.SecondaryLod2Count = frameGraphTelemetry.SecondarySpatialLodStats.Lod2Rendered;
-    metadata.VisualValidationHasResult = frameGraphTelemetry.VisualValidationHasResult;
-    metadata.VisualValidationPassed = frameGraphTelemetry.VisualValidationPassed;
-    metadata.VisualValidationRunId = frameGraphTelemetry.VisualValidationRunId;
-    metadata.VisualValidationSnapshotHash = frameGraphTelemetry.VisualValidationSnapshotHash;
-    metadata.VisualValidationColorMAE = frameGraphTelemetry.VisualValidationColorMAE;
-    metadata.VisualValidationColorRMSE = frameGraphTelemetry.VisualValidationColorRMSE;
-    metadata.VisualValidationPSNR = frameGraphTelemetry.VisualValidationPSNR;
-    metadata.VisualValidationMaxError = frameGraphTelemetry.VisualValidationMaxError;
-    metadata.VisualValidationMismatchedPixelPercent =
-        frameGraphTelemetry.VisualValidationMismatchedPixelPercent;
-    metadata.VisualValidationDepthRMSE = frameGraphTelemetry.VisualValidationDepthRMSE;
-    metadata.VisualValidationDepthMismatchPercent =
-        frameGraphTelemetry.VisualValidationDepthMismatchPercent;
-    metadata.VisualValidationPipelinePrimitiveCount =
-        frameGraphTelemetry.VisualValidationPipelinePrimitiveCount;
-    metadata.VisualValidationFailReason = frameGraphTelemetry.VisualValidationFailReason;
-    metadata.CpuFrameStart = cpuFrameStart;
+    metadata.PrimaryAdapterName = benchmarkProvenanceCache.PrimaryAdapterName;
+    metadata.SecondaryAdapterName = benchmarkProvenanceCache.SecondaryAdapterName;
+    metadata.PrimaryVendorId = benchmarkProvenanceCache.PrimaryVendorId;
+    metadata.PrimaryDeviceId = benchmarkProvenanceCache.PrimaryDeviceId;
+    metadata.PrimaryDedicatedVideoMemory = benchmarkProvenanceCache.PrimaryDedicatedVideoMemory;
+    metadata.PrimaryAdapterLuid = benchmarkProvenanceCache.PrimaryAdapterLuid;
+    metadata.SecondaryVendorId = benchmarkProvenanceCache.SecondaryVendorId;
+    metadata.SecondaryDeviceId = benchmarkProvenanceCache.SecondaryDeviceId;
+    metadata.SecondaryDedicatedVideoMemory = benchmarkProvenanceCache.SecondaryDedicatedVideoMemory;
+    metadata.SecondaryAdapterLuid = benchmarkProvenanceCache.SecondaryAdapterLuid;
+    metadata.OperatingSystem = benchmarkProvenanceCache.OperatingSystem;
+    metadata.BuildConfiguration = benchmarkProvenanceCache.BuildConfiguration;
+    metadata.GitCommit = benchmarkProvenanceCache.GitCommit;
+    metadata.GitDirtyState = benchmarkProvenanceCache.GitDirtyState;
+    metadata.D3D12DebugLayerEnabled = benchmarkProvenanceCache.D3D12DebugLayerEnabled;
+    RefreshBenchmarkFrameTelemetry(metadata);
     return metadata;
 }
 
 BenchmarkControllerContext VoxelWaterfallApp::BuildBenchmarkControllerContext()
 {
-    const auto currentBuildHash = HashFileOrUnknown(GetExecutableDirectory() / L"MGPU-VoxelWaterfall.exe");
-    const auto currentShaderHash =
-        HashFileOrUnknown(ResolveVoxelWaterfallAssetPath(L"Shaders\\VoxelValidationCompare.hlsl"));
     const bool visualPassed = visualValidationMetrics.HasResult && visualValidationMetrics.Passed;
     std::string twoAdapterReason = "two-adapter runtime verification has not been run";
     if (twoAdapterVerificationHasResult)
@@ -1801,8 +2119,8 @@ BenchmarkControllerContext VoxelWaterfallApp::BuildBenchmarkControllerContext()
         visualPassed,
         visualValidationMetrics.ValidationRunId,
         visualValidationMetrics.FailReason,
-        currentBuildHash,
-        currentShaderHash,
+        benchmarkProvenanceCache.BuildHash,
+        benchmarkProvenanceCache.ShaderHash,
         visualValidationBuildHash,
         visualValidationShaderHash,
         visualValidationAdapterPairIdentity,
@@ -2143,6 +2461,8 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
     const auto modeNameUtf8 = GetExecutionModeName(executionMode);
     logQueue.Push(L"\nVoxel GPU partitions rebuilt for " +
         std::wstring(modeNameUtf8.begin(), modeNameUtf8.end()));
+    if (SlowVoxelValidationEnabled())
+        ValidateVoxelWorkloadGlobalIdsSlow();
 }
 
 VoxelRenderWorkload VoxelWaterfallApp::BuildVoxelRenderWorkload() const
@@ -2167,20 +2487,27 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
                    "VoxelGpuPartition must not be registered in the generic renderer registry");
     }
 
-    std::unordered_set<const VoxelAdapterPartition*> primaryPartitions;
-    for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
+    for (size_t i = 0; i < renderWorkload.PrimaryOwnedPartitions.size(); ++i)
     {
+        const auto* partition = renderWorkload.PrimaryOwnedPartitions[i];
         assert(partition != nullptr);
-        assert(primaryPartitions.insert(partition).second && "Duplicate primary voxel partition draw entry");
         assert(partition->AdapterOwner == VoxelAdapterOwner::Primary);
+        for (size_t j = i + 1; j < renderWorkload.PrimaryOwnedPartitions.size(); ++j)
+        {
+            assert(partition != renderWorkload.PrimaryOwnedPartitions[j] &&
+                   "Duplicate primary voxel partition draw entry");
+        }
     }
 
     for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
     {
         assert(partition != nullptr);
-        assert(primaryPartitions.find(partition) == primaryPartitions.end() &&
-               "Voxel partition is present in both primary and secondary draw lists");
         assert(partition->AdapterOwner == VoxelAdapterOwner::Secondary);
+        for (const auto* primaryPartition : renderWorkload.PrimaryOwnedPartitions)
+        {
+            assert(partition != primaryPartition &&
+                   "Voxel partition is present in both primary and secondary draw lists");
+        }
     }
 
     for (const auto& partition : voxelWorkload.Partitions)
@@ -2225,61 +2552,66 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
     }
 }
 
-void VoxelWaterfallApp::ValidateVoxelFrameDrawResults(
+void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     const VoxelRenderWorkload& renderWorkload,
     const std::vector<VoxelPartitionRenderResult>& primaryResults,
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
-    std::unordered_set<VoxelGlobalId> drawListGlobalIds;
-    std::unordered_set<const VoxelAdapterPartition*> partitionPointers;
-
-    auto addDrawList = [&](const std::vector<const VoxelAdapterPartition*>& partitions)
+    uint32_t logicalDrawListVoxelCount = 0;
+    for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
     {
-        for (const auto* partition : partitions)
-        {
-            assert(partition != nullptr);
-            assert(partitionPointers.insert(partition).second &&
-                   "A voxel partition was assigned to more than one frame draw list");
-            for (const VoxelGlobalId globalVoxelId : partition->GlobalVoxelIds)
-            {
-                assert(drawListGlobalIds.insert(globalVoxelId).second &&
-                       "GlobalVoxelId appears in more than one frame draw list");
-            }
-        }
-    };
-
-    addDrawList(renderWorkload.PrimaryOwnedPartitions);
-    addDrawList(renderWorkload.SecondaryOwnedPartitions);
-    assert(drawListGlobalIds.size() == voxelWorkload.TotalVoxelCount &&
-           "Frame voxel draw lists do not cover the logical workload exactly once");
+        assert(partition != nullptr);
+        logicalDrawListVoxelCount += partition->VoxelCount();
+    }
+    for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
+    {
+        assert(partition != nullptr);
+        logicalDrawListVoxelCount += partition->VoxelCount();
+    }
+    assert(logicalDrawListVoxelCount == voxelWorkload.TotalVoxelCount &&
+           "Frame voxel draw lists do not cover the logical workload count");
 
     uint32_t submittedVoxelCount = 0;
     uint32_t secondaryDrawCallCount = 0;
-    std::unordered_set<uint32_t> primaryRecordedPartitions;
-    std::unordered_set<uint32_t> secondaryRecordedPartitions;
 
-    for (const auto& result : primaryResults)
+    size_t primaryResultIndex = 0;
+    for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
     {
+        if (!partition || partition->VoxelCount() == 0)
+            continue;
+        assert(primaryResultIndex < primaryResults.size() &&
+               "Primary voxel command list did not record an expected partition");
+        const auto& result = primaryResults[primaryResultIndex++];
+        assert(result.PartitionId == partition->PartitionId &&
+               "Primary voxel render result does not match the expected partition id");
+        assert(result.LogicalVoxelCount == partition->VoxelCount() &&
+               "Primary voxel render result does not match the expected logical voxel count");
         submittedVoxelCount += result.SubmittedVoxelCount;
-        primaryRecordedPartitions.insert(static_cast<uint32_t>(result.PartitionId));
     }
+    assert(primaryResultIndex == primaryResults.size() &&
+           "Primary voxel command list recorded unexpected extra partition results");
 
-    for (const auto& result : secondaryResults)
+    size_t secondaryResultIndex = 0;
+    for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
     {
+        if (!partition || partition->VoxelCount() == 0)
+            continue;
+        assert(secondaryResultIndex < secondaryResults.size() &&
+               "Secondary voxel command list did not record an expected partition");
+        const auto& result = secondaryResults[secondaryResultIndex++];
+        assert(result.PartitionId == partition->PartitionId &&
+               "Secondary voxel render result does not match the expected partition id");
+        assert(result.LogicalVoxelCount == partition->VoxelCount() &&
+               "Secondary voxel render result does not match the expected logical voxel count");
         submittedVoxelCount += result.SubmittedVoxelCount;
         secondaryDrawCallCount += result.DrawCallCount;
-        secondaryRecordedPartitions.insert(static_cast<uint32_t>(result.PartitionId));
     }
+    assert(secondaryResultIndex == secondaryResults.size() &&
+           "Secondary voxel command list recorded unexpected extra partition results");
 
     assert(submittedVoxelCount <= voxelWorkload.TotalVoxelCount &&
            "Submitted voxel draw count exceeds logical workload count");
-
-    for (const auto partitionId : primaryRecordedPartitions)
-    {
-        assert(secondaryRecordedPartitions.find(partitionId) == secondaryRecordedPartitions.end() &&
-               "A voxel partition was recorded in both primary and secondary command lists");
-    }
 
     if (executionMode == VoxelExecutionMode::MultiGpuFull ||
         executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
@@ -2698,6 +3030,23 @@ void VoxelWaterfallApp::SortGO()
     }
 }
 
+void VoxelWaterfallApp::ValidateVoxelWorkloadGlobalIdsSlow() const
+{
+    ++slowFrameValidationCount;
+    std::unordered_set<VoxelGlobalId> globalIds;
+    globalIds.reserve(voxelWorkload.TotalVoxelCount);
+    for (const auto& partition : voxelWorkload.Partitions)
+    {
+        for (const VoxelGlobalId globalVoxelId : partition.GlobalVoxelIds)
+        {
+            assert(globalIds.insert(globalVoxelId).second &&
+                   "GlobalVoxelId appears in more than one logical partition");
+        }
+    }
+    assert(globalIds.size() == voxelWorkload.TotalVoxelCount &&
+           "Logical voxel partitions do not cover the workload exactly once");
+}
+
 void VoxelWaterfallApp::CreateGO()
 {
     logQueue.Push(std::wstring(L"\nStart Create GO"));
@@ -2731,6 +3080,7 @@ void VoxelWaterfallApp::CreateGO()
 void VoxelWaterfallApp::RunSceneOwnershipSettingsSelfTest()
 {
     RunVoxelSpatialLodReferenceTests();
+    RunVoxelSimulationSchedulerReferenceTests();
     RunVoxelWaterfallDynamicReferenceTests();
 
     if (voxelResearchSceneManager.GetActivePreset() != VoxelResearchScenePreset::MixedVoxelEnvironment)
@@ -2776,19 +3126,23 @@ void VoxelWaterfallApp::CalculateFrameStats()
     static float maxFps = std::numeric_limits<float>::min();
     static float maxMspf = std::numeric_limits<float>::min();
     static UINT writeStatisticCount = 0;
-    frameCount++;
+    ++mainLoopIterationCount;
 
     if ((timer.TotalTime() - timeElapsed) >= 1.0f)
     {
-        const float fps = static_cast<float>(frameCount); // fps = frameCnt / 1
-        const float mspf = 1000.0f / fps;
+        const uint64_t loopIterationsThisSecond = mainLoopIterationCount;
+        const float fps = static_cast<float>(successfulPresentCount);
+        const float mspf = fps > 0.0f ? 1000.0f / fps : 0.0f;
 
         minFps = std::min(fps, minFps);
-        minMspf = std::min(mspf, minMspf);
+        if (mspf > 0.0f)
+            minMspf = std::min(mspf, minMspf);
         maxFps = std::max(fps, maxFps);
         maxMspf = std::max(mspf, maxMspf);
 
-        frameCount = 0;
+        frameCount = successfulPresentCount;
+        successfulPresentCount = 0;
+        mainLoopIterationCount = 0;
         timeElapsed += 1.0f;
 
 
@@ -2824,6 +3178,7 @@ void VoxelWaterfallApp::CalculateFrameStats()
             const std::wstring actualModeName(actualModeNameUtf8.begin(), actualModeNameUtf8.end());
             const std::wstring statisticsText =
                 L"\n\tFPS:" + std::to_wstring(fps)
+                + L"\n\tMain loop iterations:" + std::to_wstring(loopIterationsThisSecond)
                 + L"\n\tMSPF:" + std::to_wstring(mspf)
                 + L"\n\tActual mode:" + actualModeName;
 
@@ -2901,20 +3256,308 @@ int VoxelWaterfallApp::Run()
             CalculateFrameStats();
             Update(timer);
             Draw(timer);
-
-            if (primeDevice)
-            {
-                primeDevice->ResetAllocators(frameCount);
-            }
-            if (secondDevice && secondDevice != primeDevice)
-            {
-                secondDevice->ResetAllocators(frameCount);
-            }
+            ++frameSerial;
+            ServiceDeferredResourceLifetime();
         }
     }
 
     benchmarkController.Shutdown(BuildBenchmarkControllerContext());
     return 0;
+}
+
+void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
+{
+    if (primeDevice)
+        primeDevice->ResetAllocators(frameSerial);
+    if (secondDevice && secondDevice != primeDevice)
+        secondDevice->ResetAllocators(frameSerial);
+}
+
+void VoxelWaterfallApp::PumpOneMemoryAuditFrame()
+{
+    MSG msg{};
+    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    timer.Tick();
+    CalculateFrameStats();
+    Update(timer);
+    if (currentFrameResourceReady)
+    {
+        Draw(timer);
+        ++frameSerial;
+    }
+    else
+    {
+        std::this_thread::yield();
+    }
+    ServiceDeferredResourceLifetime();
+}
+
+int VoxelWaterfallApp::RunMemorySoakTestOnce(
+    const uint32_t durationSeconds,
+    const std::filesystem::path& outputDirectory)
+{
+    const auto outDir = outputDirectory.empty()
+                            ? std::filesystem::path(L"Artifacts") / L"memory_soak"
+                            : outputDirectory;
+    std::filesystem::create_directories(outDir);
+    const auto timelinePath = outDir / L"memory_timeline.csv";
+    const auto reportPath = outDir / L"leak_report.json";
+
+    ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DynamicSimulationAndRender);
+    AutomaticBenchmarkConfig config{};
+    config.Mode = VoxelExecutionMode::SingleGpuFull;
+    config.ModeName = "SingleGpuFull";
+    config.TotalCount = 123556;
+    config.SecondaryShare = 0.0f;
+    config.SpatialLodEnabled = false;
+    config.TemporalInterval = 1;
+    const auto applyResult = ApplyBenchmarkConfigurationAtomic(config);
+    if (!applyResult.Passed)
+    {
+        std::ofstream report(reportPath);
+        report << "{\n"
+               << "  \"status\":\"FAILED\",\n"
+               << "  \"scenario\":\"stable_workload_soak\",\n"
+               << "  \"reason\":\"" << EscapeJsonString(applyResult.Reason) << "\"\n"
+               << "}\n";
+        return 1;
+    }
+
+    std::ofstream timeline(timelinePath);
+    WriteMemoryTimelineHeader(timeline);
+    std::vector<MemoryAuditSnapshot> snapshots;
+    timer.Reset();
+    const auto start = std::chrono::steady_clock::now();
+    auto nextSample = start;
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(durationSeconds))
+    {
+        PumpOneMemoryAuditFrame();
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextSample)
+        {
+            const double elapsed = std::chrono::duration<double>(now - start).count();
+            auto snapshot = CaptureMemoryAuditSnapshot(frameSerial, elapsed, primeDevice, secondDevice);
+            WriteMemoryTimelineRow(timeline, snapshot);
+            snapshots.push_back(snapshot);
+            nextSample = now + std::chrono::seconds(1);
+        }
+    }
+    Flush();
+    ServiceDeferredResourceLifetime();
+    const auto finalSnapshot = CaptureMemoryAuditSnapshot(
+        frameSerial,
+        static_cast<double>(durationSeconds),
+        primeDevice,
+        secondDevice);
+    WriteMemoryTimelineRow(timeline, finalSnapshot);
+    snapshots.push_back(finalSnapshot);
+    timeline.close();
+
+    const size_t warmupCount = std::min<size_t>(30, snapshots.size() / 3);
+    const bool privateTrend = HasPositivePrivateUsageTrend(snapshots, warmupCount);
+    const bool hasStabilityWindow = snapshots.size() >= 10 && snapshots.size() > warmupCount + 2;
+    const bool allocatorStable = !hasStabilityWindow ||
+        snapshots[warmupCount].CommandListsCreated == snapshots.back().CommandListsCreated;
+    const bool descriptorStable = !hasStabilityWindow ||
+        snapshots[warmupCount].DescriptorCapacity == snapshots.back().DescriptorCapacity;
+    const bool liveResourcesStable = !hasStabilityWindow ||
+        snapshots[warmupCount].LiveResources == snapshots.back().LiveResources;
+    const bool passed = !privateTrend && allocatorStable && descriptorStable && liveResourcesStable;
+
+    std::ofstream report(reportPath);
+    report << "{\n"
+           << "  \"status\":\"" << (passed ? "PASS" : "FAIL") << "\",\n"
+           << "  \"scenario\":\"stable_workload_soak\",\n"
+           << "  \"duration_seconds\":" << durationSeconds << ",\n"
+           << "  \"workload\":{\"mode\":\"SingleGpuFull\",\"spatial_lod\":\"Off\",\"requested_voxels\":123556,"
+           << "\"actual_total\":" << applyResult.ActualTotalCount << "},\n"
+           << "  \"artifacts\":{\"memory_timeline\":\"" << EscapeJsonString(timelinePath.string()) << "\"},\n"
+           << "  \"checks\":{\n"
+           << "    \"command_allocators_stable\":" << (allocatorStable ? "true" : "false") << ",\n"
+           << "    \"descriptor_capacity_stable\":" << (descriptorStable ? "true" : "false") << ",\n"
+           << "    \"live_resources_stable\":" << (liveResourcesStable ? "true" : "false") << ",\n"
+           << "    \"private_usage_positive_trend\":" << (privateTrend ? "true" : "false") << "\n"
+           << "  },\n"
+           << "  \"final_snapshot\":{\"private_usage_bytes\":" << finalSnapshot.PrivateUsageBytes
+           << ",\"working_set_bytes\":" << finalSnapshot.WorkingSetBytes
+           << ",\"primary_local_vram_bytes\":" << finalSnapshot.PrimaryLocalUsageBytes
+           << ",\"secondary_local_vram_bytes\":" << finalSnapshot.SecondaryLocalUsageBytes
+           << ",\"descriptor_capacity\":" << finalSnapshot.DescriptorCapacity
+           << ",\"descriptor_active\":" << finalSnapshot.DescriptorActive
+           << ",\"live_d3d12_resources\":" << finalSnapshot.LiveResources << "}\n"
+           << "}\n";
+
+#if defined(DEBUG) || defined(_DEBUG)
+    if (primeDevice)
+        primeDevice->ReportLiveDeviceObjects();
+    if (secondDevice && secondDevice != primeDevice)
+        secondDevice->ReportLiveDeviceObjects();
+#endif
+
+    return passed ? 0 : 2;
+}
+
+int VoxelWaterfallApp::RunMemoryRebuildStressTestOnce(
+    const uint32_t rebuildCycles,
+    const uint32_t stableSeconds,
+    const std::filesystem::path& outputDirectory)
+{
+    const auto outDir = outputDirectory.empty()
+                            ? std::filesystem::path(L"Artifacts") / L"memory_rebuild_stress"
+                            : outputDirectory;
+    std::filesystem::create_directories(outDir);
+    const auto timelinePath = outDir / L"memory_timeline.csv";
+    const auto reportPath = outDir / L"leak_report.json";
+
+    ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DynamicSimulationAndRender);
+
+    std::ofstream timeline(timelinePath);
+    WriteMemoryTimelineHeader(timeline);
+    std::vector<MemoryAuditSnapshot> snapshots;
+    bool blocked = false;
+    std::string blockReason;
+
+    const std::array<uint32_t, 4> voxelCounts = {50000u, 123556u, 250000u, 500000u};
+    timer.Reset();
+    const auto start = std::chrono::steady_clock::now();
+    for (uint32_t cycle = 0; cycle < rebuildCycles; ++cycle)
+    {
+        const bool requestMulti = (cycle % 2u) == 1u;
+        if (requestMulti && !multiGpuAvailable)
+        {
+            blocked = true;
+            blockReason = "MultiGpu rebuild cycle requested but no compatible secondary adapter is available";
+            break;
+        }
+        if (requestMulti && !multiGpuVoxelRenderTargets.IsInitialized())
+        {
+            RebuildMultiGpuVoxelRenderTargets();
+            if (!multiGpuVoxelRenderTargets.IsInitialized())
+            {
+                blocked = true;
+                blockReason = WideToUtf8Local(multiGpuVoxelRenderTargets.GetFailureMessage());
+                if (blockReason.empty())
+                    blockReason = "MultiGpu rebuild cycle requested but cross-adapter render targets are not initialized";
+                break;
+            }
+        }
+
+        AutomaticBenchmarkConfig config{};
+        config.Mode = requestMulti ? VoxelExecutionMode::MultiGpuFull : VoxelExecutionMode::SingleGpuFull;
+        config.ModeName = requestMulti ? "MultiGpuFull" : "SingleGpuFull";
+        config.TotalCount = voxelCounts[cycle % voxelCounts.size()];
+        config.SecondaryShare = requestMulti ? 0.5f : 0.0f;
+        config.SpatialLodEnabled = (cycle % 4u) >= 2u;
+        config.TemporalInterval = 1;
+        const auto applyResult = ApplyBenchmarkConfigurationAtomic(config);
+        if (!applyResult.Passed)
+        {
+            blocked = true;
+            blockReason = applyResult.Reason;
+            break;
+        }
+
+        for (uint32_t frame = 0; frame < 5; ++frame)
+            PumpOneMemoryAuditFrame();
+        Flush();
+        ServiceDeferredResourceLifetime();
+
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        auto snapshot = CaptureMemoryAuditSnapshot(frameSerial, elapsed, primeDevice, secondDevice);
+        WriteMemoryTimelineRow(timeline, snapshot);
+        snapshots.push_back(snapshot);
+    }
+
+    const auto stableStart = std::chrono::steady_clock::now();
+    if (!blocked)
+    {
+        AutomaticBenchmarkConfig config{};
+        config.Mode = VoxelExecutionMode::SingleGpuFull;
+        config.ModeName = "SingleGpuFull";
+        config.TotalCount = 123556;
+        config.SecondaryShare = 0.0f;
+        config.SpatialLodEnabled = false;
+        config.TemporalInterval = 1;
+        const auto applyResult = ApplyBenchmarkConfigurationAtomic(config);
+        if (!applyResult.Passed)
+        {
+            blocked = true;
+            blockReason = applyResult.Reason;
+        }
+    }
+
+    auto nextSample = std::chrono::steady_clock::now();
+    while (!blocked &&
+           std::chrono::steady_clock::now() - stableStart < std::chrono::seconds(stableSeconds))
+    {
+        PumpOneMemoryAuditFrame();
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextSample)
+        {
+            const double elapsed = std::chrono::duration<double>(now - start).count();
+            auto snapshot = CaptureMemoryAuditSnapshot(frameSerial, elapsed, primeDevice, secondDevice);
+            WriteMemoryTimelineRow(timeline, snapshot);
+            snapshots.push_back(snapshot);
+            nextSample = now + std::chrono::seconds(1);
+        }
+    }
+    Flush();
+    ServiceDeferredResourceLifetime();
+    const double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start).count();
+    const auto finalSnapshot = CaptureMemoryAuditSnapshot(frameSerial, elapsed, primeDevice, secondDevice);
+    WriteMemoryTimelineRow(timeline, finalSnapshot);
+    timeline.close();
+    snapshots.push_back(finalSnapshot);
+
+    const size_t warmupCount = std::min<size_t>(10, snapshots.size() / 3);
+    const bool privateTrend = HasPositivePrivateUsageTrend(snapshots, warmupCount);
+    const bool hasStabilityWindow = snapshots.size() >= 10 && snapshots.size() > warmupCount + 2;
+    const bool allocatorStable = !hasStabilityWindow ||
+        snapshots[warmupCount].CommandListsCreated == snapshots.back().CommandListsCreated;
+    const bool descriptorStable = !hasStabilityWindow ||
+        snapshots[warmupCount].DescriptorCapacity == snapshots.back().DescriptorCapacity;
+    const bool liveResourcesStable = !hasStabilityWindow ||
+        snapshots[warmupCount].LiveResources == snapshots.back().LiveResources;
+    const bool passed = !blocked && !privateTrend && allocatorStable && descriptorStable && liveResourcesStable;
+
+    std::ofstream report(reportPath);
+    report << "{\n"
+           << "  \"status\":\"" << (blocked ? "BLOCKED" : (passed ? "PASS" : "FAIL")) << "\",\n"
+           << "  \"scenario\":\"rebuild_stress\",\n"
+           << "  \"rebuild_cycles\":" << rebuildCycles << ",\n"
+           << "  \"stable_seconds\":" << stableSeconds << ",\n"
+           << "  \"block_reason\":\"" << EscapeJsonString(blockReason) << "\",\n"
+           << "  \"artifacts\":{\"memory_timeline\":\"" << EscapeJsonString(timelinePath.string()) << "\"},\n"
+           << "  \"checks\":{\n"
+           << "    \"command_allocators_stable\":" << (allocatorStable ? "true" : "false") << ",\n"
+           << "    \"descriptor_capacity_stable\":" << (descriptorStable ? "true" : "false") << ",\n"
+           << "    \"live_resources_stable\":" << (liveResourcesStable ? "true" : "false") << ",\n"
+           << "    \"private_usage_positive_trend\":" << (privateTrend ? "true" : "false") << "\n"
+           << "  },\n"
+           << "  \"final_snapshot\":{\"private_usage_bytes\":" << finalSnapshot.PrivateUsageBytes
+           << ",\"working_set_bytes\":" << finalSnapshot.WorkingSetBytes
+           << ",\"primary_local_vram_bytes\":" << finalSnapshot.PrimaryLocalUsageBytes
+           << ",\"secondary_local_vram_bytes\":" << finalSnapshot.SecondaryLocalUsageBytes
+           << ",\"descriptor_capacity\":" << finalSnapshot.DescriptorCapacity
+           << ",\"descriptor_active\":" << finalSnapshot.DescriptorActive
+           << ",\"live_d3d12_resources\":" << finalSnapshot.LiveResources << "}\n"
+           << "}\n";
+
+#if defined(DEBUG) || defined(_DEBUG)
+    if (primeDevice)
+        primeDevice->ReportLiveDeviceObjects();
+    if (secondDevice && secondDevice != primeDevice)
+        secondDevice->ReportLiveDeviceObjects();
+#endif
+
+    return blocked ? 3 : (passed ? 0 : 2);
 }
 
 void VoxelWaterfallApp::UpdateMaterials()

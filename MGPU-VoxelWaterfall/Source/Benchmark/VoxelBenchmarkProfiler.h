@@ -39,6 +39,7 @@ public:
         PrimarySharedToLocalCopy,
         Composite,
         FinalResolveUi,
+        NoLodFastPath,
         Count
     };
 
@@ -77,6 +78,12 @@ public:
         uint32_t UpdatedVoxelCount = 0;
         uint32_t SimulationStepsThisFrame = 0;
         uint32_t SimulationDispatchCount = 0;
+        std::string SchedulerMode;
+        uint32_t RequestedFixedSteps = 0;
+        uint32_t ExecutedFixedSteps = 0;
+        uint32_t DroppedSteps = 0;
+        double DroppedSimulationTime = 0.0;
+        uint32_t LogicalUpdatedVoxelCount = 0;
         uint32_t Seed = 0;
         float SecondaryShare = 0.0f;
         uint32_t TemporalDecimationInterval = 1;
@@ -95,6 +102,7 @@ public:
         std::string OperatingSystem;
         std::string BuildConfiguration;
         std::string GitCommit;
+        std::string GitDirtyState;
         bool D3D12DebugLayerEnabled = false;
         double CpuWaitMs = 0.0;
         uint64_t TotalCrossAdapterBytes = 0;
@@ -113,6 +121,13 @@ public:
         uint32_t SecondaryLod0Count = 0;
         uint32_t SecondaryLod1Count = 0;
         uint32_t SecondaryLod2Count = 0;
+        bool NoLodFastPath = false;
+        uint32_t LodHashCapacity = 0;
+        float LodHashLoadFactor = 0.0f;
+        uint32_t LodDuplicateCount = 0;
+        uint32_t LodProbeOverflowCount = 0;
+        uint32_t LodMaxProbeCount = 0;
+        float LodAverageProbeCount = 0.0f;
         bool VisualValidationHasResult = false;
         bool VisualValidationPassed = false;
         std::string VisualValidationRunId;
@@ -141,6 +156,8 @@ public:
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
         std::string PairId;
+        std::string SessionId;
+        std::string BlockId;
         std::string SkipReason;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
@@ -188,6 +205,8 @@ public:
         double AverageSecondaryLod0Count = 0.0;
         double AverageSecondaryLod1Count = 0.0;
         double AverageSecondaryLod2Count = 0.0;
+        uint64_t TotalExecutedFixedSteps = 0;
+        uint64_t TotalLogicalUpdatedVoxelCount = 0;
         double SpeedupVsMatchingSingleGpu = 0.0;
         double Efficiency = 0.0;
         bool VisualValidationPassed = false;
@@ -242,7 +261,11 @@ public:
                const std::string& runId = "",
                const std::string& configId = "",
                const std::string& pairId = "",
+               const std::string& sessionId = "",
+               const std::string& blockId = "",
                uint32_t orderIndex = 0,
+               uint32_t blockOrderIndex = 0,
+               uint32_t pairMemberOrder = 0,
                uint32_t randomizationSeed = 0);
     void Stop();
     bool HasCompletedSummary() const { return completedSummaryReady; }
@@ -323,6 +346,8 @@ private:
     uint32_t recordedFrameCount = DefaultRecordedFrameCount;
     uint32_t currentRepetition = 0;
     uint32_t currentOrderIndex = 0;
+    uint32_t currentBlockOrderIndex = 0;
+    uint32_t currentPairMemberOrder = 0;
     uint32_t currentRandomizationSeed = 0;
     std::ofstream csv;
     std::filesystem::path csvPath;
@@ -331,6 +356,8 @@ private:
     std::string currentRunId;
     std::string currentConfigId;
     std::string currentPairId;
+    std::string currentSessionId;
+    std::string currentBlockId;
     BenchmarkSummary completedSummary{};
     TimingSnapshot latestTimingSnapshot{};
     bool completedSummaryReady = false;
@@ -360,6 +387,8 @@ private:
     std::vector<double> secondaryLod0Samples;
     std::vector<double> secondaryLod1Samples;
     std::vector<double> secondaryLod2Samples;
+    std::vector<uint64_t> executedFixedStepSamples;
+    std::vector<uint64_t> logicalUpdatedVoxelSamples;
     std::vector<std::string> invalidReasons;
 
     static uint32_t ToIndex(QueueId id) { return static_cast<uint32_t>(id); }

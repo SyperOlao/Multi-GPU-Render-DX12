@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <numeric>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -185,6 +187,77 @@ namespace
             << " expected=" << expected << " actual=" << actual << "\n";
         OutputDebugStringA(stream.str().c_str());
     }
+
+    uint32_t NextPowerOfTwo(uint32_t value)
+    {
+        if (value <= 1u)
+            return 1u;
+        --value;
+        value |= value >> 1u;
+        value |= value >> 2u;
+        value |= value >> 4u;
+        value |= value >> 8u;
+        value |= value >> 16u;
+        return value + 1u;
+    }
+
+    uint32_t HashGroupKey(uint32_t key)
+    {
+        uint32_t x = key;
+        x ^= x >> 16u;
+        x *= 0x7feb352du;
+        x ^= x >> 15u;
+        x *= 0x846ca68bu;
+        x ^= x >> 16u;
+        return x;
+    }
+
+    struct HashSimulationResult
+    {
+        uint32_t Emitted = 0;
+        uint32_t Duplicates = 0;
+        uint32_t Overflow = 0;
+        uint32_t MaxProbe = 0;
+    };
+
+    HashSimulationResult SimulateBoundedHash(const std::vector<uint32_t>& keys,
+                                             const uint32_t capacity,
+                                             const uint32_t maxProbeCount)
+    {
+        std::vector<uint32_t> table(capacity, 0xffffffffu);
+        HashSimulationResult result{};
+        const uint32_t mask = capacity - 1u;
+        for (const uint32_t key : keys)
+        {
+            uint32_t slot = HashGroupKey(key) & mask;
+            bool inserted = false;
+            bool duplicate = false;
+            uint32_t probe = 0;
+            for (; probe < maxProbeCount; ++probe)
+            {
+                if (table[slot] == 0xffffffffu)
+                {
+                    table[slot] = key;
+                    inserted = true;
+                    break;
+                }
+                if (table[slot] == key)
+                {
+                    duplicate = true;
+                    break;
+                }
+                slot = (slot + 1u) & mask;
+            }
+            result.MaxProbe = std::max(result.MaxProbe, probe + 1u);
+            if (inserted)
+                ++result.Emitted;
+            else if (duplicate)
+                ++result.Duplicates;
+            else
+                ++result.Overflow;
+        }
+        return result;
+    }
 }
 
 void RunVoxelSpatialLodReferenceTests()
@@ -254,6 +327,31 @@ void RunVoxelSpatialLodReferenceTests()
 
     AssertAabbCoverage(input, lod2);
     AssertAabbCoverage(negative, negativeItems);
+
+    std::vector<uint32_t> fastPathRepresentatives(256u);
+    std::iota(fastPathRepresentatives.begin(), fastPathRepresentatives.end(), 0u);
+    std::set<uint32_t> uniqueFastPath(fastPathRepresentatives.begin(), fastPathRepresentatives.end());
+    LogTestResult("lod_off_fast_path_count", 256u, static_cast<uint32_t>(uniqueFastPath.size()));
+    assert(uniqueFastPath.size() == fastPathRepresentatives.size());
+
+    const std::vector<uint32_t> duplicateKeys = {7u, 7u, 8u, 8u, 9u};
+    const auto duplicateHash = SimulateBoundedHash(duplicateKeys, 64u, 64u);
+    assert(duplicateHash.Emitted == 3u);
+    assert(duplicateHash.Duplicates == 2u);
+    assert(duplicateHash.Overflow == 0u);
+
+    std::vector<uint32_t> overflowKeys(96u);
+    std::iota(overflowKeys.begin(), overflowKeys.end(), 0u);
+    const auto overflowHash = SimulateBoundedHash(overflowKeys, 64u, 1u);
+    assert(overflowHash.Overflow > 0u);
+
+    std::vector<uint32_t> uniqueKeys(123556u);
+    std::iota(uniqueKeys.begin(), uniqueKeys.end(), 0u);
+    const uint32_t capacity = NextPowerOfTwo(std::max<uint32_t>(64u, static_cast<uint32_t>(uniqueKeys.size()) * 2u));
+    const auto largeHash = SimulateBoundedHash(uniqueKeys, capacity, 64u);
+    LogTestResult("unique_123556_overflow", 0u, largeHash.Overflow);
+    assert(largeHash.Emitted == uniqueKeys.size());
+    assert(largeHash.Overflow == 0u);
 }
 
 #endif

@@ -1,6 +1,8 @@
 #include "GDevice.h"
 
 
+#include <d3d12sdklayers.h>
+
 #include "d3dUtil.h"
 #include "GAllocator.h"
 #include "GCommandQueue.h"
@@ -29,6 +31,36 @@ namespace PEPEngine::Graphics
             return false;
         }
         return SUCCEEDED(adapter4->GetDesc3(&outDesc));
+    }
+
+    GVideoMemoryStats GDevice::QueryVideoMemoryStats() const
+    {
+        GVideoMemoryStats stats{};
+        if (!adapter)
+            return stats;
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO localInfo{};
+        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalInfo{};
+        const HRESULT localHr = adapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo);
+        const HRESULT nonLocalHr = adapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalInfo);
+        stats.Valid = SUCCEEDED(localHr) || SUCCEEDED(nonLocalHr);
+        if (SUCCEEDED(localHr))
+        {
+            stats.LocalBudget = localInfo.Budget;
+            stats.LocalCurrentUsage = localInfo.CurrentUsage;
+            stats.LocalAvailableForReservation = localInfo.AvailableForReservation;
+            stats.LocalCurrentReservation = localInfo.CurrentReservation;
+        }
+        if (SUCCEEDED(nonLocalHr))
+        {
+            stats.NonLocalBudget = nonLocalInfo.Budget;
+            stats.NonLocalCurrentUsage = nonLocalInfo.CurrentUsage;
+            stats.NonLocalAvailableForReservation = nonLocalInfo.AvailableForReservation;
+            stats.NonLocalCurrentReservation = nonLocalInfo.CurrentReservation;
+        }
+        return stats;
     }
 
     void GDevice::SharedFence(ComPtr<ID3D12Fence>& primaryFence, const std::shared_ptr<GDevice>& sharedDevice,
@@ -279,17 +311,31 @@ namespace PEPEngine::Graphics
 
     void GDevice::ResetAllocators(uint64_t frameCount) const
     {
+        (void)frameCount;
         for (auto& allocator : graphicAllocators)
         {
-            uint64_t fenceValue = 0;
-
-            for (auto&& queue : queues)
-            {
-                fenceValue = std::max(fenceValue, queue->GetFenceValue());
-            }
-
-            allocator->ReleaseStaleDescriptors(fenceValue);
+            allocator->ReleaseStaleDescriptors(0);
         }
+    }
+
+    GDeferredFenceSnapshot GDevice::CaptureSubmittedFenceSnapshot() const
+    {
+        GDeferredFenceSnapshot snapshot{};
+        for (size_t i = 0; i < queues.size(); ++i)
+            snapshot.QueueFenceValues[i] = queues[i] ? queues[i]->GetFenceValue() : 0;
+        return snapshot;
+    }
+
+    bool GDevice::IsFenceSnapshotComplete(const GDeferredFenceSnapshot& snapshot) const
+    {
+        for (size_t i = 0; i < queues.size(); ++i)
+        {
+            if (snapshot.QueueFenceValues[i] == 0)
+                continue;
+            if (!queues[i] || queues[i]->GetCompletedFenceValue() < snapshot.QueueFenceValues[i])
+                return false;
+        }
+        return true;
     }
 
     GDescriptor GDevice::AllocateDescriptors(const D3D12_DESCRIPTOR_HEAP_TYPE type, const uint32_t descriptorCount) const
@@ -324,5 +370,34 @@ namespace PEPEngine::Graphics
         {
             queue->HardStop();
         }
+    }
+
+    GDeviceLifetimeStats GDevice::GetLifetimeStats() const
+    {
+        GDeviceLifetimeStats stats{};
+        for (size_t i = 0; i < queues.size(); ++i)
+        {
+            if (queues[i])
+                stats.Queues[i] = queues[i]->GetLifetimeStats();
+        }
+        for (size_t i = 0; i < graphicAllocators.size(); ++i)
+        {
+            if (graphicAllocators[i])
+                stats.DescriptorAllocators[i] = graphicAllocators[i]->GetStats();
+        }
+        stats.VideoMemory = QueryVideoMemoryStats();
+        return stats;
+    }
+
+    void GDevice::ReportLiveDeviceObjects() const
+    {
+#if defined(DEBUG) || defined(_DEBUG)
+        ComPtr<ID3D12DebugDevice> debugDevice;
+        if (device && SUCCEEDED(device.As(&debugDevice)))
+        {
+            debugDevice->ReportLiveDeviceObjects(
+                D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL);
+        }
+#endif
     }
 }

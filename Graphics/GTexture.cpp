@@ -12,6 +12,7 @@
 #include "GDevice.h"
 #include "GShader.h"
 #include "GDeviceFactory.h"
+#include <utility>
 
 namespace PEPEngine::Graphics
 {
@@ -243,7 +244,7 @@ namespace PEPEngine::Graphics
     {
     }
 
-    GTexture::GTexture(GTexture&& copy) : GResource(copy)
+    GTexture::GTexture(GTexture&& copy) : GResource(std::move(copy))
     {
     }
 
@@ -256,7 +257,7 @@ namespace PEPEngine::Graphics
 
     GTexture& GTexture::operator=(GTexture&& other)
     {
-        GResource::operator=(other);
+        GResource::operator=(std::move(other));
 
         return *this;
     }

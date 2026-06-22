@@ -201,8 +201,12 @@ namespace
              << "  \"run_id\":\"" << EscapeJson(runId) << "\",\n"
              << "  \"config_id\":\"" << EscapeJson(config.ConfigId) << "\",\n"
              << "  \"pair_id\":\"" << EscapeJson(config.PairId) << "\",\n"
+             << "  \"session_id\":\"" << EscapeJson(config.SessionId) << "\",\n"
+             << "  \"block_id\":\"" << EscapeJson(config.BlockId) << "\",\n"
              << "  \"repetition\":" << config.Repetition << ",\n"
              << "  \"randomized_order_index\":" << config.OrderIndex << ",\n"
+             << "  \"block_order_index\":" << config.BlockOrderIndex << ",\n"
+             << "  \"pair_member_order\":" << config.PairMemberOrder << ",\n"
              << "  \"randomization_seed\":" << config.RandomizationSeed << ",\n"
              << "  \"warmup_frames\":" << config.WarmupFrameCount << ",\n"
              << "  \"measured_frames\":" << config.MeasuredFrameCount << ",\n"
@@ -295,7 +299,11 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
         artifactContext.GateStatus = "BLOCKED";
         ResearchArtifactWriter::WriteRunsCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
+        ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
+        ResearchArtifactWriter::WriteTelemetryCsv(artifactContext);
+        ResearchArtifactWriter::WriteMemoryTimelineCsv(artifactContext);
+        BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries);
         context.Log(L"\nAutomatic voxel benchmark blocked: " + ToWide(gateFailure.c_str()));
         return false;
     }
@@ -414,6 +422,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
         skipped.PairId = config.PairId;
+        skipped.SessionId = config.SessionId;
+        skipped.BlockId = config.BlockId;
         skipped.Repetition = config.Repetition;
         skipped.Valid = false;
         skipped.SkipReason = "secondary hardware adapter unavailable";
@@ -438,6 +448,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
         skipped.PairId = config.PairId;
+        skipped.SessionId = config.SessionId;
+        skipped.BlockId = config.BlockId;
         skipped.Repetition = config.Repetition;
         skipped.Valid = false;
         skipped.SkipReason = reason;
@@ -487,6 +499,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
         skipped.PairId = config.PairId;
+        skipped.SessionId = config.SessionId;
+        skipped.BlockId = config.BlockId;
         skipped.Repetition = config.Repetition;
         skipped.RepetitionCount = config.RepetitionCount;
         skipped.Valid = false;
@@ -510,7 +524,11 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
                                 activeSuiteRunId,
                                 config.ConfigId,
                                 config.PairId,
+                                config.SessionId,
+                                config.BlockId,
                                 config.OrderIndex,
+                                config.BlockOrderIndex,
+                                config.PairMemberOrder,
                                 config.RandomizationSeed))
     {
         context.Log(L"\nFailed to start benchmark " + ToWide(config.ModeName));
@@ -548,7 +566,10 @@ void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext
                                                 "");
     ResearchArtifactWriter::WriteRunsCsv(artifactContext, automaticBenchmarkSummaries);
     ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
     ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WriteTelemetryCsv(artifactContext);
+    ResearchArtifactWriter::WriteMemoryTimelineCsv(artifactContext);
 
     if (automaticBenchmarkSummaries.empty())
         return;

@@ -5,10 +5,27 @@
 #include "GCommandQueue.h"
 #include "GDevice.h"
 
+#include <algorithm>
 #include <numeric>
 
 using PEPEngine::Graphics::CounteredStructBuffer;
 using PEPEngine::Graphics::GBuffer;
+
+namespace
+{
+    DWORD NextPowerOfTwo(DWORD value)
+    {
+        if (value <= 1u)
+            return 1u;
+        --value;
+        value |= value >> 1u;
+        value |= value >> 2u;
+        value |= value >> 4u;
+        value |= value >> 8u;
+        value |= value >> 16u;
+        return value + 1u;
+    }
+}
 
 void VoxelPartitionGpuResources::SetOwnerDevice(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
@@ -46,6 +63,7 @@ void VoxelPartitionGpuResources::ResetResources()
     LodStats.reset();
     LodStatsUpload.reset();
     LodStatsReadback.reset();
+    LodGroupTableCapacity = 0;
     NewParticles.clear();
     InjectionCapacity = 0;
 }
@@ -74,23 +92,24 @@ void VoxelPartitionGpuResources::CreateParticleBuffers(
         device, 1u, static_cast<UINT>(sizeof(DWORD)), L"Voxel Simulation Stats Upload");
     SimulationStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
         device, 1, L"Voxel Simulation Stats Readback");
-    LodGroupKeys = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), particleCount,
+    LodGroupTableCapacity = NextPowerOfTwo(std::max<DWORD>(64u, std::max<DWORD>(1u, particleCount) * 2u));
+    LodGroupKeys = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), LodGroupTableCapacity,
                                              L"Voxel LOD Group Keys",
                                              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     LodGroupKeysUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
-        device, particleCount, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Group Keys Upload");
+        device, LodGroupTableCapacity, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Group Keys Upload");
     LodDrawArguments = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 4u,
                                                  L"Voxel LOD Indirect Draw Arguments",
                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     LodDrawArgumentsUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
         device, 4u, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Indirect Draw Arguments Upload");
-    LodStats = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 4u,
+    LodStats = std::make_shared<GBuffer>(device, static_cast<UINT>(sizeof(DWORD)), 8u,
                                          L"Voxel LOD Stats",
                                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     LodStatsUpload = std::make_shared<PEPEngine::Graphics::UploadBuffer>(
-        device, 4u, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Stats Upload");
+        device, 8u, static_cast<UINT>(sizeof(DWORD)), L"Voxel LOD Stats Upload");
     LodStatsReadback = std::make_shared<PEPEngine::Graphics::ReadBackBuffer<DWORD>>(
-        device, 4u, L"Voxel LOD Stats Readback");
+        device, 8u, L"Voxel LOD Stats Readback");
 
 #pragma warning(push)
 #pragma warning(disable : 4267)
@@ -129,7 +148,7 @@ void VoxelPartitionGpuResources::InitializeDeadParticleList(
 void VoxelPartitionGpuResources::InitializeLodState(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount) const
 {
-    std::vector<DWORD> emptyGroupKeys(particleCount, 0xffffffffu);
+    std::vector<DWORD> emptyGroupKeys(LodGroupTableCapacity, 0xffffffffu);
     auto queue = device->GetCommandQueue();
     auto initList = queue->GetCommandList();
     if (particleCount > 0)
@@ -149,7 +168,7 @@ void VoxelPartitionGpuResources::InitializeLodState(
     initList->CopyBufferRegion(*LodDrawArguments, 0, *LodDrawArgumentsUpload, 0,
                                static_cast<UINT>(sizeof(initialArgs)), false);
 
-    const DWORD zeroStats[4] = {};
+    const DWORD zeroStats[8] = {};
     LodStatsUpload->CopyData(0, zeroStats, sizeof(zeroStats));
     initList->TransitionBarrier(LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
     initList->FlushResourceBarriers();

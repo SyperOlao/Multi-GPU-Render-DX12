@@ -55,10 +55,77 @@ bool VoxelSimulationScheduler::ShouldDispatchPartition(
     if (!HasDispatchableEmitter(partition))
         return false;
 
-    if (!partition.GpuPartition->HasStartedSimulation())
-        return true;
+    return ShouldRunTemporalUpdate(
+        fixedStepIndex,
+        effectiveInterval,
+        partition.GpuPartition->HasStartedSimulation());
+}
 
+bool VoxelSimulationScheduler::ShouldRunTemporalUpdate(
+    const uint64_t fixedStepIndex,
+    const uint32_t effectiveInterval,
+    const bool hasStartedSimulation)
+{
+    if (!hasStartedSimulation)
+        return true;
     return effectiveInterval <= 1 || fixedStepIndex % effectiveInterval == 0;
+}
+
+const char* VoxelSimulationScheduler::SchedulerModeName(const VoxelSimulationSchedulerMode mode)
+{
+    switch (mode)
+    {
+    case VoxelSimulationSchedulerMode::Interactive:
+        return "Interactive";
+    case VoxelSimulationSchedulerMode::Benchmark:
+        return "Benchmark";
+    }
+    return "Interactive";
+}
+
+VoxelSimulationStepPlan VoxelSimulationScheduler::BuildStepPlan(
+    const VoxelSimulationSchedulerMode mode,
+    const double frameDeltaTime,
+    const double currentAccumulator,
+    const uint32_t interactiveMaxCatchUpSteps,
+    const uint32_t benchmarkFixedSteps)
+{
+    VoxelSimulationStepPlan plan{};
+    plan.Mode = mode;
+
+    if (mode == VoxelSimulationSchedulerMode::Benchmark)
+    {
+        plan.RequestedFixedSteps = std::max<uint32_t>(1, benchmarkFixedSteps);
+        plan.ExecutedFixedSteps = plan.RequestedFixedSteps;
+        plan.OutputAccumulator = 0.0;
+        plan.InterpolationAlpha = 0.0f;
+        return plan;
+    }
+
+    const double accumulated = std::max(0.0, currentAccumulator) + std::max(0.0, frameDeltaTime);
+    const uint32_t requestedSteps = static_cast<uint32_t>(
+        std::floor(accumulated / FixedSimulationDeltaTime));
+    const uint32_t maxCatchUpSteps = std::max<uint32_t>(1, interactiveMaxCatchUpSteps);
+    const uint32_t executedSteps = std::min(requestedSteps, maxCatchUpSteps);
+
+    plan.RequestedFixedSteps = requestedSteps;
+    plan.ExecutedFixedSteps = executedSteps;
+    if (requestedSteps > executedSteps)
+    {
+        plan.DroppedStepCount = requestedSteps - executedSteps;
+        plan.DroppedSimulationTime =
+            std::max(0.0, accumulated - static_cast<double>(executedSteps) * FixedSimulationDeltaTime);
+        plan.OutputAccumulator = 0.0;
+        plan.InterpolationAlpha = 0.0f;
+    }
+    else
+    {
+        plan.OutputAccumulator =
+            accumulated - static_cast<double>(executedSteps) * FixedSimulationDeltaTime;
+        plan.InterpolationAlpha = static_cast<float>(
+            std::clamp(plan.OutputAccumulator / FixedSimulationDeltaTime, 0.0, 1.0));
+    }
+    return plan;
 }
 
 float VoxelSimulationScheduler::CalculateInterpolationPhase(
@@ -132,15 +199,21 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
             FixedSimulationDeltaTime * static_cast<double>(partition.EffectiveUpdateInterval));
     }
 
-    const double clampedFrameDelta = std::clamp(context.FrameDeltaTime, 0.0, MaxAccumulatedSimulationTime);
-    context.SimulationAccumulator = std::min(context.SimulationAccumulator + clampedFrameDelta,
-                                             MaxAccumulatedSimulationTime);
-    const auto stepsToRun = static_cast<uint32_t>(
-        std::floor(context.SimulationAccumulator / FixedSimulationDeltaTime));
-    context.SimulationAccumulator -= static_cast<double>(stepsToRun) * FixedSimulationDeltaTime;
+    const auto stepPlan = BuildStepPlan(
+        context.SchedulerMode,
+        context.FrameDeltaTime,
+        context.SimulationAccumulator,
+        context.InteractiveMaxCatchUpSteps,
+        context.BenchmarkFixedSteps);
+    const uint32_t stepsToRun = stepPlan.ExecutedFixedSteps;
+    context.SimulationAccumulator = stepPlan.OutputAccumulator;
     context.SimulationStepsThisFrame = stepsToRun;
-    context.InterpolationAlpha = static_cast<float>(
-        std::clamp(context.SimulationAccumulator / FixedSimulationDeltaTime, 0.0, 1.0));
+    context.InterpolationAlpha = stepPlan.InterpolationAlpha;
+    result.SchedulerMode = stepPlan.Mode;
+    result.RequestedFixedSteps = stepPlan.RequestedFixedSteps;
+    result.ExecutedFixedSteps = stepPlan.ExecutedFixedSteps;
+    result.DroppedStepCount = stepPlan.DroppedStepCount;
+    result.DroppedSimulationTime = stepPlan.DroppedSimulationTime;
 
     bool needsSecondaryComputeQueue = false;
     for (uint32_t stepIndex = 0; stepIndex < stepsToRun && !needsSecondaryComputeQueue; ++stepIndex)
@@ -195,6 +268,8 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
             context.BenchmarkProfiler.EndRange(cmdList, queueId, range);
             context.BenchmarkProfiler.ResolveRange(cmdList, queueId, range);
             MarkPartitionUpdated(partition, fixedStepIndex);
+            ++result.SimulationDispatchCount;
+            result.LogicalUpdatedVoxelCount += partition.VoxelCount();
 
             if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
                 result.SecondaryWorkThisFrame = true;

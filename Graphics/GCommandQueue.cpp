@@ -265,6 +265,22 @@ namespace PEPEngine::Graphics
         return FenceValue;
     }
 
+    uint64_t GCommandQueue::GetCompletedFenceValue() const
+    {
+        return fence ? fence->GetCompletedValue() : 0;
+    }
+
+    GCommandQueueLifetimeStats GCommandQueue::GetLifetimeStats() const
+    {
+        GCommandQueueLifetimeStats stats{};
+        stats.SubmittedFenceValue = GetFenceValue();
+        stats.CompletedFenceValue = GetCompletedFenceValue();
+        stats.CreatedCommandLists = createdCommandList.size();
+        stats.AvailableCommandLists = availableCommandLists.Size();
+        stats.InFlightCommandLists = InFlightCommandLists.Size();
+        return stats;
+    }
+
     UINT64 GCommandQueue::GetTimestampFreq()
     {
         if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&

@@ -243,7 +243,7 @@ struct alignas(16) VoxelLodBuildData
     int32_t GridOriginX = 0;
     int32_t GridOriginY = 0;
     int32_t GridOriginZ = 0;
-    DWORD Padding1 = 0;
+    DWORD MaxProbeCount = 64;
 };
 
 static_assert(sizeof(VoxelLodBuildData) == 96);
@@ -282,10 +282,25 @@ struct VoxelSpatialLodStats
     uint32_t Lod1Rendered = 0;
     uint32_t Lod2Rendered = 0;
     uint32_t Aggregated = 0;
+    uint32_t ProbeOverflow = 0;
+    uint32_t MaxProbeCount = 0;
+    uint32_t TotalProbeCount = 0;
+    uint32_t EmittedGroups = 0;
+    uint32_t HashCapacity = 0;
 
     uint32_t TotalRendered() const
     {
         return Lod0Rendered + Lod1Rendered + Lod2Rendered;
+    }
+
+    float HashLoadFactor(uint32_t capacity) const
+    {
+        return capacity > 0 ? static_cast<float>(EmittedGroups) / static_cast<float>(capacity) : 0.0f;
+    }
+
+    float HashLoadFactor() const
+    {
+        return HashLoadFactor(HashCapacity);
     }
 };
 

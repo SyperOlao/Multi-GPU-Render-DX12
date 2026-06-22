@@ -119,6 +119,21 @@ namespace
         return key;
     }
 
+    bool IsSingleMode(const std::string& mode)
+    {
+        return mode == "SingleGpuFull" || mode == "SingleGpuTemporalDecimation";
+    }
+
+    bool IsMultiMode(const std::string& mode)
+    {
+        return mode == "MultiGpuFull" || mode == "MultiGpuTemporalDecimation";
+    }
+
+    std::string ModeFamily(const std::string& mode)
+    {
+        return mode.find("Temporal") != std::string::npos ? "Temporal" : "Full";
+    }
+
     double Average(const std::vector<double>& values)
     {
         if (values.empty())
@@ -305,6 +320,11 @@ namespace
         result.AverageSecondaryLod0Count = Average(secondaryLod0);
         result.AverageSecondaryLod1Count = Average(secondaryLod1);
         result.AverageSecondaryLod2Count = Average(secondaryLod2);
+        for (const auto& row : rows)
+        {
+            result.TotalExecutedFixedSteps += row.TotalExecutedFixedSteps;
+            result.TotalLogicalUpdatedVoxelCount += row.TotalLogicalUpdatedVoxelCount;
+        }
         result.SkipReason = result.Valid ? "" : result.ValidityReason;
         result.SpeedupStatistic = "run_mean_cpu_frame_ms_student_t_95_ci";
         return result;
@@ -316,11 +336,47 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
     const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries)
 {
     if (summaries.empty())
+    {
+        std::filesystem::create_directories(outputPath.parent_path());
+        std::ofstream summary(outputPath, std::ios::out | std::ios::trunc);
+        if (summary.is_open())
+        {
+            summary << "schema,status,reason\n"
+                    << "mgpu_voxel_paired_summary.v1,NOT_MEASURED,no valid benchmark summaries\n";
+        }
         return false;
+    }
 
     std::map<AggregateKey, std::vector<Summary>> groupedRows;
     for (const auto& summary : summaries)
         groupedRows[KeyFor(summary)].push_back(summary);
+
+    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string>, Summary> singleRuns;
+    for (const auto& summary : summaries)
+    {
+        if (!summary.Valid || !summary.SkipReason.empty() || !IsSingleMode(summary.RequestedMode))
+            continue;
+        singleRuns[{summary.SessionId, summary.PairId, summary.BlockId,
+                    summary.Repetition, ModeFamily(summary.RequestedMode)}] = summary;
+    }
+
+    std::map<AggregateKey, std::vector<double>> pairedLogSpeedups;
+    for (const auto& summary : summaries)
+    {
+        if (!summary.Valid || !summary.SkipReason.empty() || !IsMultiMode(summary.RequestedMode) ||
+            summary.AverageCpuFrameMs <= 0.0)
+        {
+            continue;
+        }
+        const auto singleIt = singleRuns.find({
+            summary.SessionId, summary.PairId, summary.BlockId, summary.Repetition,
+            ModeFamily(summary.RequestedMode)
+        });
+        if (singleIt == singleRuns.end() || singleIt->second.AverageCpuFrameMs <= 0.0)
+            continue;
+        pairedLogSpeedups[KeyFor(summary)].push_back(
+            std::log(singleIt->second.AverageCpuFrameMs / summary.AverageCpuFrameMs));
+    }
 
     std::map<AggregateKey, Summary> aggregates;
     for (const auto& [key, rows] : groupedRows)
@@ -328,8 +384,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
 
     for (auto& [key, row] : aggregates)
     {
-        const bool isMulti = row.RequestedMode == "MultiGpuFull" ||
-            row.RequestedMode == "MultiGpuTemporalDecimation";
+        const bool isMulti = IsMultiMode(row.RequestedMode);
         if (!isMulti)
         {
             row.SpeedupVsMatchingSingleGpu = 1.0;
@@ -338,21 +393,33 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
         }
 
         const auto baselineIt = aggregates.find(MatchingSingleKey(row));
+        const auto pairedIt = pairedLogSpeedups.find(key);
         if (baselineIt == aggregates.end() || !baselineIt->second.Valid || !row.Valid ||
-            row.AverageCpuFrameMs <= 0.0)
+            row.AverageCpuFrameMs <= 0.0 || pairedIt == pairedLogSpeedups.end() ||
+            pairedIt->second.empty())
         {
             row.SpeedupVsMatchingSingleGpu = 0.0;
             row.Efficiency = 0.0;
             if (row.ValidityReason.empty())
-                row.ValidityReason = "matching valid single-GPU aggregate not found";
+                row.ValidityReason = "matching valid Single/Multi run-level block not found";
             row.Valid = false;
             row.SkipReason = row.ValidityReason;
             continue;
         }
+        if (baselineIt->second.TotalExecutedFixedSteps != row.TotalExecutedFixedSteps ||
+            baselineIt->second.TotalLogicalUpdatedVoxelCount != row.TotalLogicalUpdatedVoxelCount)
+        {
+            row.SpeedupVsMatchingSingleGpu = 0.0;
+            row.Efficiency = 0.0;
+            row.Valid = false;
+            row.ValidityReason = "matching Single/Multi pair executed different logical simulation work";
+            row.SkipReason = row.ValidityReason;
+            continue;
+        }
 
-        row.SpeedupVsMatchingSingleGpu =
-            baselineIt->second.AverageCpuFrameMs / row.AverageCpuFrameMs;
+        row.SpeedupVsMatchingSingleGpu = std::exp(Average(pairedIt->second));
         row.Efficiency = row.SpeedupVsMatchingSingleGpu / 2.0;
+        row.SpeedupStatistic = "paired_run_log_speedup_student_t_95_ci";
     }
 
     std::filesystem::create_directories(outputPath.parent_path());
@@ -375,6 +442,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
         << "color_transfer_bytes,depth_transfer_bytes,particle_transfer_bytes,render_output_transfer_bytes,"
         << "secondary_draw_calls,primary_submitted_voxels,secondary_submitted_voxels,"
         << "primary_lod0,primary_lod1,primary_lod2,secondary_lod0,secondary_lod1,secondary_lod2,"
+        << "total_executed_fixed_steps,total_logical_updated_voxels,"
         << "speedup_vs_matching_single_gpu,two_device_nominal_efficiency,"
         << "visual_validation_passed,skip_reason\n";
 
@@ -436,6 +504,8 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << row.AverageSecondaryLod0Count << ','
             << row.AverageSecondaryLod1Count << ','
             << row.AverageSecondaryLod2Count << ','
+            << row.TotalExecutedFixedSteps << ','
+            << row.TotalLogicalUpdatedVoxelCount << ','
             << row.SpeedupVsMatchingSingleGpu << ','
             << row.Efficiency << ','
             << (row.VisualValidationPassed ? "true" : "false") << ','

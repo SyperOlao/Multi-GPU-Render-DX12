@@ -1,5 +1,6 @@
 #include "GResource.h"
 
+#include <atomic>
 #include <utility>
 
 
@@ -10,6 +11,31 @@
 
 namespace PEPEngine::Graphics
 {
+    namespace
+    {
+        std::atomic_uint64_t gCreatedResources{0};
+        std::atomic_uint64_t gDestroyedResources{0};
+        std::atomic_uint64_t gLiveResources{0};
+
+        void TrackCreatedResource(bool& tracked)
+        {
+            if (tracked)
+                return;
+            tracked = true;
+            ++gCreatedResources;
+            ++gLiveResources;
+        }
+
+        void TrackDestroyedResource(bool& tracked)
+        {
+            if (!tracked)
+                return;
+            tracked = false;
+            ++gDestroyedResources;
+            --gLiveResources;
+        }
+    }
+
     GResource::GResource(const std::wstring& name)
         : resourceName(std::move(name))
     {
@@ -36,6 +62,7 @@ namespace PEPEngine::Graphics
         ));
 
         GResourceStateTracker::AddCurrentState(dxResource.Get(), initState);
+        TrackCreatedResource(lifetimeTracked);
 
         SetName(name);
     }
@@ -60,6 +87,7 @@ namespace PEPEngine::Graphics
         ));
 
         GResourceStateTracker::AddCurrentState(dxResource.Get(), initState);
+        TrackCreatedResource(lifetimeTracked);
 
         SetName(name);
     }
@@ -69,6 +97,7 @@ namespace PEPEngine::Graphics
         : device(device), dxResource(std::move(resource))
     {
         description = dxResource->GetDesc();
+        TrackCreatedResource(lifetimeTracked);
         SetName(name);
     }
 
@@ -80,13 +109,16 @@ namespace PEPEngine::Graphics
             clearValue = (std::make_unique<D3D12_CLEAR_VALUE>(*copy.clearValue));
         else
             clearValue = nullptr;
+        lifetimeTracked = false;
     }
 
     GResource::GResource(GResource&& move)
         : device(std::move(move.device))
           , dxResource(std::move(move.dxResource))
           , clearValue(std::move(move.clearValue)), resourceName(std::move(move.resourceName)), description(move.description)
+          , lifetimeTracked(move.lifetimeTracked)
     {
+        move.lifetimeTracked = false;
     }
 
     GResource& GResource::operator=(const GResource& other)
@@ -94,6 +126,7 @@ namespace PEPEngine::Graphics
         if (this != &other)
         {
             description = other.description;
+            Reset();
             dxResource = other.dxResource;
             resourceName = other.resourceName;
             device = other.device;
@@ -101,6 +134,7 @@ namespace PEPEngine::Graphics
             {
                 clearValue = std::make_unique<D3D12_CLEAR_VALUE>(*other.clearValue);
             }
+            lifetimeTracked = false;
         }
         return *this;
     }
@@ -110,10 +144,13 @@ namespace PEPEngine::Graphics
         if (this != &other)
         {
             description = other.description;
+            Reset();
             dxResource = other.dxResource;
             resourceName = other.resourceName;
             device = other.device;
             clearValue = std::move(other.clearValue);
+            lifetimeTracked = other.lifetimeTracked;
+            other.lifetimeTracked = false;
             other.dxResource.Reset();
             other.resourceName.clear();
         }
@@ -144,9 +181,11 @@ namespace PEPEngine::Graphics
     void GResource::SetD3D12Resource(const std::shared_ptr<GDevice> device, ComPtr<ID3D12Resource> d3d12Resource,
                                      const D3D12_CLEAR_VALUE* clearValue)
     {
+        Reset();
         dxResource = std::move(d3d12Resource);
         description = dxResource->GetDesc();
         this->device = device;
+        TrackCreatedResource(lifetimeTracked);
         if (clearValue)
         {
             this->clearValue.reset();
@@ -197,6 +236,7 @@ namespace PEPEngine::Graphics
         if (dxResource)
         {
             dxResource.Reset();
+            TrackDestroyedResource(lifetimeTracked);
         }
 
         if (clearValue)
@@ -213,5 +253,14 @@ namespace PEPEngine::Graphics
     std::wstring GResource::GetName() const
     {
         return resourceName;
+    }
+
+    GResourceLifetimeStats GResource::GetLifetimeStats()
+    {
+        return {
+            gCreatedResources.load(),
+            gDestroyedResources.load(),
+            gLiveResources.load()
+        };
     }
 }

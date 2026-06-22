@@ -120,6 +120,15 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                     BenchmarkSuite::Full,
                     ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--memory-soak"))
+                result = theApp.RunMemorySoakTestOnce(
+                    ReadCommandLineUint(cmdLine, "--memory-duration-seconds=", 600),
+                    ReadCommandLinePath(cmdLine, "--memory-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--memory-rebuild-stress"))
+                result = theApp.RunMemoryRebuildStressTestOnce(
+                    ReadCommandLineUint(cmdLine, "--memory-rebuild-cycles=", 100),
+                    ReadCommandLineUint(cmdLine, "--memory-stable-seconds=", 60),
+                    ReadCommandLinePath(cmdLine, "--memory-output-dir="));
             else
                 result = theApp.Run();
         }

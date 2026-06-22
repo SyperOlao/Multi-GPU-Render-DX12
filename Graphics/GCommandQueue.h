@@ -52,6 +52,8 @@ namespace PEPEngine::Graphics
         void EndPixEvent() const;
 
         uint64_t GetFenceValue() const;
+        uint64_t GetCompletedFenceValue() const;
+        GCommandQueueLifetimeStats GetLifetimeStats() const;
 
         UINT64 GetTimestampFreq();
 

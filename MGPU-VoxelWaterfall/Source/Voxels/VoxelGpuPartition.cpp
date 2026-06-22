@@ -717,42 +717,76 @@ void VoxelGpuPartition::UpdateLodStatsReadback()
     DWORD lod1 = 0;
     DWORD lod2 = 0;
     DWORD aggregated = 0;
+    DWORD overflow = 0;
+    DWORD maxProbe = 0;
+    DWORD totalProbe = 0;
+    DWORD emitted = 0;
     gpuResources.LodStatsReadback->ReadData(0, lod0);
     gpuResources.LodStatsReadback->ReadData(1, lod1);
     gpuResources.LodStatsReadback->ReadData(2, lod2);
     gpuResources.LodStatsReadback->ReadData(3, aggregated);
+    gpuResources.LodStatsReadback->ReadData(4, overflow);
+    gpuResources.LodStatsReadback->ReadData(5, maxProbe);
+    gpuResources.LodStatsReadback->ReadData(6, totalProbe);
+    gpuResources.LodStatsReadback->ReadData(7, emitted);
     lastLodStats.Lod0Rendered = lod0;
     lastLodStats.Lod1Rendered = lod1;
     lastLodStats.Lod2Rendered = lod2;
     lastLodStats.Aggregated = aggregated;
+    lastLodStats.ProbeOverflow = overflow;
+    lastLodStats.MaxProbeCount = maxProbe;
+    lastLodStats.TotalProbeCount = totalProbe;
+    lastLodStats.EmittedGroups = emitted;
+    lastLodStats.HashCapacity = gpuResources.LodGroupTableCapacity;
 }
 
-void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList)
+void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList,
+                                           const bool forceStatsReadback)
 {
     ValidateCommandListOwnership(cmdList, "BuildLodRenderList");
     ValidateGpuResourceOwnership("BuildLodRenderList");
 
-    UpdateLodStatsReadback();
+    const bool lodEnabled = spatialLodSettings.Mode == VoxelSpatialLodMode::ThreeLevel;
+    const bool readbackThisFrame = forceStatsReadback || ((lodStatsReadbackThrottle++ & 15u) == 0u);
+    if (readbackThisFrame)
+        UpdateLodStatsReadback();
 
-    gpuResources.LodRenderItems->SetCounterValue(cmdList, 0u);
-    cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->FlushResourceBarriers();
-    cmdList->CopyBufferRegion(*gpuResources.LodGroupKeys, 0, *gpuResources.LodGroupKeysUpload, 0,
-                              static_cast<UINT>(sizeof(DWORD) * emitterData.ParticlesTotalCount), false);
+    if (lodEnabled)
+    {
+        gpuResources.LodRenderItems->SetCounterValue(cmdList, 0u);
+        cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->FlushResourceBarriers();
+        cmdList->CopyBufferRegion(*gpuResources.LodGroupKeys, 0, *gpuResources.LodGroupKeysUpload, 0,
+                                  static_cast<UINT>(sizeof(DWORD) * gpuResources.LodGroupTableCapacity), false);
+    }
 
-    const DWORD initialArgs[4] = {0u, 1u, 0u, 0u};
+    const DWORD initialArgs[4] = {
+        lodEnabled ? 0u : emitterData.ParticlesAliveCount,
+        1u,
+        0u,
+        0u
+    };
     gpuResources.LodDrawArgumentsUpload->CopyData(0, initialArgs, sizeof(initialArgs));
     cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->FlushResourceBarriers();
     cmdList->CopyBufferRegion(*gpuResources.LodDrawArguments, 0, *gpuResources.LodDrawArgumentsUpload, 0,
                               static_cast<UINT>(sizeof(initialArgs)), false);
 
-    const DWORD zeroStats[4] = {};
-    gpuResources.LodStatsUpload->CopyData(0, zeroStats, sizeof(zeroStats));
+    const DWORD initialStats[8] = {
+        lodEnabled ? 0u : emitterData.ParticlesAliveCount,
+        0u,
+        0u,
+        0u,
+        0u,
+        0u,
+        0u,
+        lodEnabled ? 0u : emitterData.ParticlesAliveCount
+    };
+    gpuResources.LodStatsUpload->CopyData(0, initialStats, sizeof(initialStats));
     cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->FlushResourceBarriers();
     cmdList->CopyBufferRegion(*gpuResources.LodStats, 0, *gpuResources.LodStatsUpload, 0,
-                              static_cast<UINT>(sizeof(zeroStats)), false);
+                              static_cast<UINT>(sizeof(initialStats)), false);
 
     VoxelLodBuildData lodData{};
     lodData.CameraPosition = spatialLodCameraPosition;
@@ -770,7 +804,8 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     lodData.SpatialLodMode = static_cast<DWORD>(spatialLodSettings.Mode);
     lodData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;
     lodData.StreamKind = emitterData.StreamKind;
-    lodData.GroupTableCapacity = emitterData.ParticlesTotalCount;
+    lodData.GroupTableCapacity = gpuResources.LodGroupTableCapacity;
+    lodData.MaxProbeCount = 64u;
     for (const auto& stream : drawStreams)
     {
         if (stream.LayerType == VoxelSceneLayerType::Static)
@@ -787,7 +822,8 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     cmdList->TransitionBarrier(gpuResources.LodRenderItems->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->TransitionBarrier(gpuResources.LodDrawArguments->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->TransitionBarrier(gpuResources.LodStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (lodEnabled)
+        cmdList->TransitionBarrier(gpuResources.LodGroupKeys->GetD3D12Resource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cmdList->FlushResourceBarriers();
 
     cmdList->SetComputeRootSignature(*lodBuildSignature);
@@ -803,8 +839,24 @@ void VoxelGpuPartition::BuildLodRenderList(const std::shared_ptr<GCommandList>& 
     cmdList->UAVBarrier(gpuResources.LodDrawArguments->GetD3D12Resource());
     cmdList->UAVBarrier(gpuResources.LodStats->GetD3D12Resource());
     cmdList->FlushResourceBarriers();
-    cmdList->CopyBufferRegion(*gpuResources.LodStatsReadback, 0, *gpuResources.LodStats, 0,
-                              static_cast<UINT>(sizeof(DWORD) * 4u), true);
+    if (readbackThisFrame)
+    {
+        cmdList->CopyBufferRegion(*gpuResources.LodStatsReadback, 0, *gpuResources.LodStats, 0,
+                                  static_cast<UINT>(sizeof(DWORD) * 8u), true);
+    }
+
+    if (!lodEnabled)
+    {
+        lastLodStats.Lod0Rendered = emitterData.ParticlesAliveCount;
+        lastLodStats.Lod1Rendered = 0;
+        lastLodStats.Lod2Rendered = 0;
+        lastLodStats.Aggregated = 0;
+        lastLodStats.ProbeOverflow = 0;
+        lastLodStats.MaxProbeCount = 0;
+        lastLodStats.TotalProbeCount = 0;
+        lastLodStats.EmittedGroups = emitterData.ParticlesAliveCount;
+        lastLodStats.HashCapacity = gpuResources.LodGroupTableCapacity;
+    }
 }
 
 VoxelPartitionRenderResult VoxelGpuPartition::RecordRender(
@@ -829,13 +881,17 @@ VoxelPartitionRenderResult VoxelGpuPartition::RecordRender(
     if (passConstants)
         ValidateBufferOwnership(passConstants, "PassConstants", "RecordRender");
 
+    const auto buildRange =
+        spatialLodSettings.Mode == VoxelSpatialLodMode::Off
+            ? VoxelBenchmarkProfiler::RangeId::NoLodFastPath
+            : lodCompactionRange;
     if (benchmarkProfiler)
-        benchmarkProfiler->BeginRange(cmdList, profilerQueue, lodCompactionRange);
-    BuildLodRenderList(cmdList);
+        benchmarkProfiler->BeginRange(cmdList, profilerQueue, buildRange);
+    BuildLodRenderList(cmdList, benchmarkProfiler != nullptr);
     if (benchmarkProfiler)
     {
-        benchmarkProfiler->EndRange(cmdList, profilerQueue, lodCompactionRange);
-        benchmarkProfiler->ResolveRange(cmdList, profilerQueue, lodCompactionRange);
+        benchmarkProfiler->EndRange(cmdList, profilerQueue, buildRange);
+        benchmarkProfiler->ResolveRange(cmdList, profilerQueue, buildRange);
     }
     emitterData.SpatialLodDebugMode = static_cast<DWORD>(spatialLodSettings.DebugMode);
     emitterData.AdapterOwner = adapterOwner == VoxelAdapterOwner::Secondary ? 1u : 0u;

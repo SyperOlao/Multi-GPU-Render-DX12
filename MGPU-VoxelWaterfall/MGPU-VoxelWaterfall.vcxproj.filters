@@ -93,6 +93,7 @@
     <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelResearchEnvironmentGenerator.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSimulationSchedulerReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSceneWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelSpatialLodReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
@@ -129,6 +130,7 @@
     <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelResearchEnvironmentGenerator.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSimulationSchedulerReferenceTests.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelSceneWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"><Filter>Header Files\Voxels</Filter></ClInclude>
@@ -138,6 +140,10 @@
   <ItemGroup>
     <None Include="README.md" />
     <None Include="Tools\analyze_benchmark.py" />
+    <None Include="Tools\plot_benchmark.py" />
+    <None Include="Docs\Methodology.md" />
+    <None Include="Docs\ThreatsToValidity.md" />
+    <None Include="Docs\Reproduction.md" />
     <None Include="packages.config" />
     <None Include="Shaders\Common.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Default.hlsl"><Filter>Shaders</Filter></None>

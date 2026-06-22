@@ -40,6 +40,7 @@ class VoxelGpuPartition : public Emitter
     DirectX::SimpleMath::Vector3 spatialLodCameraPosition = DirectX::SimpleMath::Vector3::Zero;
     DirectX::SimpleMath::Vector3 cachedObjectPosition = DirectX::SimpleMath::Vector3::Zero;
     VoxelSpatialLodStats lastLodStats{};
+    uint32_t lodStatsReadbackThrottle = 0;
 
     DWORD nextSpawnIndex = 0;
     bool isWorked = false;
@@ -80,7 +81,7 @@ class VoxelGpuPartition : public Emitter
     void ValidateGraphicsPsoOwnership(const PEPEngine::Graphics::GraphicPSO* pso,
                                       const char* psoName,
                                       const char* operation) const;
-    void BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList);
+    void BuildLodRenderList(const std::shared_ptr<GCommandList>& cmdList, bool forceStatsReadback);
     void UpdateLodStatsReadback();
 
 protected:

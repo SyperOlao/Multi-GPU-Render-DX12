@@ -3,10 +3,12 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <locale>
+#include <map>
 #include <sstream>
 #include <windows.h>
 #include <winternl.h>
@@ -155,21 +157,6 @@ namespace
     {
         std::string reason;
         return RunCommand("powercfg /getactivescheme", reason);
-    }
-
-    std::string GitCommit()
-    {
-        std::string reason;
-        return RunCommand("git rev-parse HEAD", reason);
-    }
-
-    std::string GitDirty()
-    {
-        std::string reason;
-        const auto status = RunCommand("git status --short", reason);
-        if (status == "Unknown")
-            return "Unknown: " + reason;
-        return status.empty() ? "clean" : "dirty";
     }
 
     std::string WindowsVersion()
@@ -329,8 +316,11 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
          << "    \"visual_validation_json\":\"voxel_visual_validation.json\",\n"
          << "    \"visual_validation_csv\":\"voxel_visual_validation.csv\",\n"
          << "    \"runs\":\"runs.csv\",\n"
+         << "    \"paired_runs\":\"paired_runs.csv\",\n"
          << "    \"paired_summary\":\"paired_summary.csv\",\n"
          << "    \"invalid_records\":\"invalid_records.csv\",\n"
+         << "    \"telemetry\":\"telemetry.csv\",\n"
+         << "    \"memory_timeline\":\"memory_timeline.csv\",\n"
          << "    \"raw_frames_glob\":\"VoxelBenchmark_*.csv\"\n"
          << "  },\n"
          << "  \"configs\":[\n";
@@ -340,6 +330,8 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
         const auto& config = configs[i];
         json << "    {\"config_id\":\"" << EscapeJson(config.ConfigId) << "\","
              << "\"pair_id\":\"" << EscapeJson(config.PairId) << "\","
+             << "\"session_id\":\"" << EscapeJson(config.SessionId) << "\","
+             << "\"block_id\":\"" << EscapeJson(config.BlockId) << "\","
              << "\"mode\":\"" << config.ModeName << "\","
              << "\"preset\":\"" << config.Preset << "\","
              << "\"total_count\":" << config.TotalCount << ","
@@ -347,7 +339,9 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
              << "\"spatial_lod\":\"" << (config.SpatialLodEnabled ? "ThreeLevel" : "Off") << "\","
              << "\"temporal_interval\":" << config.TemporalInterval << ","
              << "\"repetition\":" << config.Repetition << ","
-             << "\"order_index\":" << config.OrderIndex << "}"
+             << "\"order_index\":" << config.OrderIndex << ","
+             << "\"block_order_index\":" << config.BlockOrderIndex << ","
+             << "\"pair_member_order\":" << config.PairMemberOrder << "}"
              << (i + 1 == configs.size() ? "\n" : ",\n");
     }
     json << "  ]\n}\n";
@@ -359,8 +353,8 @@ void ResearchArtifactWriter::WriteEnvironment(const BenchmarkResearchArtifactCon
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream json(context.OutputDirectory / "environment.json", std::ios::out | std::ios::trunc);
     const auto shaderDir = std::filesystem::current_path() / "Shaders";
-    const auto gitCommit = GitCommit();
-    const auto gitDirty = GitDirty();
+    const auto gitCommit = metadata.GitCommit;
+    const auto gitDirty = metadata.GitDirtyState;
 
     json << "{\n"
          << "  \"schema\":\"mgpu_voxel_environment.v1\",\n"
@@ -414,11 +408,12 @@ void ResearchArtifactWriter::WriteInvalidRecords(
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "invalid_records.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
-    csv << "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,reason\n";
+    csv << "schema,suite,run_id,session_id,pair_id,block_id,requested_mode,actual_mode,repetition,reason\n";
     if (!context.GateReason.empty())
     {
         csv << "mgpu_voxel_invalid_records.v1," << AutomaticBenchmarkRunner::SuiteName(context.Suite)
-            << ',' << EscapeCsv(context.RunId) << ",suite_gate,,,0," << EscapeCsv(context.GateReason) << '\n';
+            << ',' << EscapeCsv(context.RunId) << ",,suite_gate,,,,0,"
+            << EscapeCsv(context.GateReason) << '\n';
     }
     for (const auto& summary : summaries)
     {
@@ -426,7 +421,9 @@ void ResearchArtifactWriter::WriteInvalidRecords(
             continue;
         csv << "mgpu_voxel_invalid_records.v1," << AutomaticBenchmarkRunner::SuiteName(context.Suite)
             << ',' << EscapeCsv(context.RunId)
+            << ',' << EscapeCsv(summary.SessionId)
             << ',' << EscapeCsv(summary.PairId)
+            << ',' << EscapeCsv(summary.BlockId)
             << ',' << EscapeCsv(summary.RequestedMode)
             << ',' << EscapeCsv(summary.ActualMode)
             << ',' << summary.Repetition
@@ -442,7 +439,7 @@ void ResearchArtifactWriter::WriteRunsCsv(
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "runs.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
-    csv << "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,valid,reason,"
+    csv << "schema,suite,run_id,session_id,pair_id,block_id,requested_mode,actual_mode,repetition,valid,reason,"
         << "measured_frame_count,valid_frame_count,invalid_frame_count,"
         << "mean_cpu_frame_ms,median_cpu_frame_ms,p95_cpu_frame_ms,"
         << "p99_cpu_frame_ms,stddev_cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,"
@@ -454,7 +451,9 @@ void ResearchArtifactWriter::WriteRunsCsv(
         csv << "mgpu_voxel_runs.v1,"
             << AutomaticBenchmarkRunner::SuiteName(context.Suite) << ','
             << EscapeCsv(context.RunId) << ','
+            << EscapeCsv(row.SessionId) << ','
             << EscapeCsv(row.PairId) << ','
+            << EscapeCsv(row.BlockId) << ','
             << EscapeCsv(row.RequestedMode) << ','
             << EscapeCsv(row.ActualMode) << ','
             << row.Repetition << ','
@@ -518,9 +517,96 @@ void ResearchArtifactWriter::WriteRawFramesCsv(
 
     if (!wroteHeader)
     {
-        out << "frame_index,suite,run_id,config_id,pair_id,repetition,randomized_order_index,"
-            << "randomization_seed,frame_valid,invalid_reason\n";
+        out << "frame_index,suite,run_id,session_id,config_id,pair_id,block_id,repetition,"
+            << "randomized_order_index,block_order_index,pair_member_order,randomization_seed,"
+            << "frame_valid,invalid_reason\n";
     }
+}
+
+void ResearchArtifactWriter::WritePairedRunsCsv(
+    const BenchmarkResearchArtifactContext& context,
+    const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries)
+{
+    std::filesystem::create_directories(context.OutputDirectory);
+    std::ofstream csv(context.OutputDirectory / "paired_runs.csv", std::ios::out | std::ios::trunc);
+    csv.imbue(std::locale::classic());
+    csv << "schema,suite,run_id,session_id,pair_id,block_id,repetition,single_mode,multi_mode,"
+        << "single_mean_cpu_frame_ms,multi_mean_cpu_frame_ms,paired_difference_ms,log_speedup,"
+        << "speedup,two_device_nominal_efficiency,valid,reason\n";
+
+    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string>,
+             const VoxelBenchmarkProfiler::BenchmarkSummary*> singles;
+    auto family = [](const std::string& mode)
+    {
+        return mode.find("Temporal") != std::string::npos ? std::string("Temporal") : std::string("Full");
+    };
+    auto isSingle = [](const std::string& mode)
+    {
+        return mode == "SingleGpuFull" || mode == "SingleGpuTemporalDecimation";
+    };
+    auto isMulti = [](const std::string& mode)
+    {
+        return mode == "MultiGpuFull" || mode == "MultiGpuTemporalDecimation";
+    };
+
+    for (const auto& row : summaries)
+    {
+        if (!row.Valid || !row.SkipReason.empty() || !isSingle(row.RequestedMode))
+            continue;
+        singles[{row.SessionId, row.PairId, row.BlockId, row.Repetition, family(row.RequestedMode)}] = &row;
+    }
+
+    for (const auto& row : summaries)
+    {
+        if (!isMulti(row.RequestedMode))
+            continue;
+        const auto key = std::make_tuple(row.SessionId, row.PairId, row.BlockId,
+                                         row.Repetition, family(row.RequestedMode));
+        const auto singleIt = singles.find(key);
+        const bool valid = row.Valid && row.SkipReason.empty() &&
+            singleIt != singles.end() && singleIt->second->AverageCpuFrameMs > 0.0 &&
+            row.AverageCpuFrameMs > 0.0;
+        const auto reason = valid ? "" : "missing valid matching Single/Multi block";
+        const double speedup = valid ? singleIt->second->AverageCpuFrameMs / row.AverageCpuFrameMs : 0.0;
+        csv << "mgpu_voxel_paired_runs.v1," << AutomaticBenchmarkRunner::SuiteName(context.Suite)
+            << ',' << EscapeCsv(context.RunId)
+            << ',' << EscapeCsv(row.SessionId)
+            << ',' << EscapeCsv(row.PairId)
+            << ',' << EscapeCsv(row.BlockId)
+            << ',' << row.Repetition
+            << ',' << (valid ? EscapeCsv(singleIt->second->RequestedMode) : "")
+            << ',' << EscapeCsv(row.RequestedMode)
+            << ',' << (valid ? singleIt->second->AverageCpuFrameMs : 0.0)
+            << ',' << row.AverageCpuFrameMs
+            << ',' << (valid ? singleIt->second->AverageCpuFrameMs - row.AverageCpuFrameMs : 0.0)
+            << ',' << (valid ? std::log(speedup) : 0.0)
+            << ',' << speedup
+            << ',' << (valid ? speedup / 2.0 : 0.0)
+            << ',' << (valid ? "true" : "false")
+            << ',' << EscapeCsv(reason) << '\n';
+    }
+}
+
+void ResearchArtifactWriter::WriteTelemetryCsv(const BenchmarkResearchArtifactContext& context)
+{
+    std::filesystem::create_directories(context.OutputDirectory);
+    std::ofstream csv(context.OutputDirectory / "telemetry.csv", std::ios::out | std::ios::trunc);
+    csv << "schema,utc,run_id,config_id,frame_index,process_private_bytes,working_set_bytes,"
+        << "adapter_index,local_budget,local_current_usage,nonlocal_budget,nonlocal_current_usage,"
+        << "gpu_temperature_c,gpu_power_w,gpu_core_clock_mhz,gpu_memory_clock_mhz,throttling_reason,"
+        << "cpu_utilization_percent,cpu_clock_mhz,dropped_steps,lod_probe_overflow_count,"
+        << "lod_max_probe_count,descriptor_count,command_allocator_count,background_process_snapshot,"
+        << "power_plan_snapshot\n";
+}
+
+void ResearchArtifactWriter::WriteMemoryTimelineCsv(const BenchmarkResearchArtifactContext& context)
+{
+    std::filesystem::create_directories(context.OutputDirectory);
+    std::ofstream csv(context.OutputDirectory / "memory_timeline.csv", std::ios::out | std::ios::trunc);
+    csv << "schema,utc,run_id,phase,frame_index,process_private_bytes,working_set_bytes,"
+        << "committed_virtual_bytes,primary_dedicated_vram_bytes,secondary_dedicated_vram_bytes,"
+        << "shared_gpu_memory_bytes,descriptor_ranges,command_allocators,live_resources,"
+        << "deferred_releases\n";
 }
 
 void ResearchArtifactWriter::WriteReproductionReadme(const BenchmarkResearchArtifactContext& context)

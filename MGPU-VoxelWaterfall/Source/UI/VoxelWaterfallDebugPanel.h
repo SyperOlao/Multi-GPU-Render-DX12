@@ -48,6 +48,10 @@ struct VoxelWaterfallDebugPanelContext
     size_t AutomaticBenchmarkIndex = 0;
     size_t AutomaticBenchmarkCount = 0;
     std::filesystem::path AutomaticBenchmarkSummaryPath;
+    uint64_t ProvenanceFileHashCount = 0;
+    uint64_t GitProcessSpawnCount = 0;
+    uint64_t SlowFrameValidationCount = 0;
+    uint64_t BenchmarkMetadataBuildCount = 0;
 
     std::function<void(VoxelResearchWorkloadProfile)> ApplyWorkloadProfile;
     std::function<void(VoxelResearchCameraMode)> ApplyCameraMode;

@@ -99,19 +99,55 @@ def load_artifacts(root: Path) -> tuple[dict, dict, list[dict[str, str]], list[d
     return manifest, environment, runs, raw, invalid
 
 
+def mode_family(mode: str) -> str | None:
+    if mode in ("SingleGpuFull", "MultiGpuFull"):
+        return "Full"
+    if mode in ("SingleGpuTemporalDecimation", "MultiGpuTemporalDecimation"):
+        return "Temporal"
+    return None
+
+
+def is_single(mode: str) -> bool:
+    return mode in ("SingleGpuFull", "SingleGpuTemporalDecimation")
+
+
+def is_multi(mode: str) -> bool:
+    return mode in ("MultiGpuFull", "MultiGpuTemporalDecimation")
+
+
+def run_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+    return (
+        row.get("session_id", ""),
+        row.get("pair_id", ""),
+        row.get("requested_mode", ""),
+        row.get("actual_mode", ""),
+    )
+
+
+def block_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+    block = row.get("block_id") or f"{row.get('pair_id', '')}:rep{row.get('repetition', '')}"
+    return (
+        row.get("session_id", ""),
+        row.get("pair_id", ""),
+        block,
+        row.get("repetition", ""),
+    )
+
+
 def aggregate_runs(runs: list[dict[str, str]]) -> list[dict[str, object]]:
     valid_runs = [row for row in runs if row.get("valid") == "true"]
-    groups: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict[str, str]]] = {}
     for row in valid_runs:
-        key = (row["pair_id"], row["requested_mode"], row["actual_mode"])
+        key = run_key(row)
         groups.setdefault(key, []).append(row)
 
     aggregates: list[dict[str, object]] = []
-    for (pair_id, requested_mode, actual_mode), rows in sorted(groups.items()):
+    for (session_id, pair_id, requested_mode, actual_mode), rows in sorted(groups.items()):
         cpu = [float(row["mean_cpu_frame_ms"]) for row in rows]
         critical = [float(row["critical_path_gpu_ms"]) for row in rows]
         aggregates.append(
             {
+                "session_id": session_id,
                 "pair_id": pair_id,
                 "requested_mode": requested_mode,
                 "actual_mode": actual_mode,
@@ -129,21 +165,55 @@ def aggregate_runs(runs: list[dict[str, str]]) -> list[dict[str, object]]:
             }
         )
 
-    by_pair_mode = {(row["pair_id"], row["requested_mode"]): row for row in aggregates}
+    singles_by_block: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+    multis_by_block: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+    for row in valid_runs:
+        family = mode_family(row.get("requested_mode", ""))
+        if not family:
+            continue
+        key = (*block_key(row), family)
+        if is_single(row.get("requested_mode", "")):
+            singles_by_block[key] = row
+        elif is_multi(row.get("requested_mode", "")):
+            multis_by_block[key] = row
+
+    paired_by_group: dict[tuple[str, str, str], list[dict[str, float]]] = {}
+    for key, multi in multis_by_block.items():
+        single = singles_by_block.get(key)
+        if not single:
+            continue
+        single_ms = float(single["mean_cpu_frame_ms"])
+        multi_ms = float(multi["mean_cpu_frame_ms"])
+        if single_ms <= 0.0 or multi_ms <= 0.0:
+            continue
+        group_key = (multi.get("session_id", ""), multi["pair_id"], multi["requested_mode"])
+        paired_by_group.setdefault(group_key, []).append(
+            {
+                "difference_ms": single_ms - multi_ms,
+                "log_speedup": math.log(single_ms / multi_ms),
+                "speedup": single_ms / multi_ms,
+            }
+        )
+
     for row in aggregates:
         mode = row["requested_mode"]
-        if mode == "MultiGpuFull":
-            baseline = by_pair_mode.get((row["pair_id"], "SingleGpuFull"))
-        elif mode == "MultiGpuTemporalDecimation":
-            baseline = by_pair_mode.get((row["pair_id"], "SingleGpuTemporalDecimation"))
+        if is_multi(str(mode)):
+            pairs = paired_by_group.get((str(row["session_id"]), str(row["pair_id"]), str(mode)), [])
+            diffs = [entry["difference_ms"] for entry in pairs]
+            logs = [entry["log_speedup"] for entry in pairs]
+            row["paired_run_count"] = len(pairs)
+            row["paired_single_multi_difference_ms"] = mean(diffs)
+            row["paired_difference_ci95_half_width_ms"] = student_t_ci95_half_width(diffs)
+            row["paired_log_speedup_mean"] = mean(logs)
+            row["paired_log_speedup_ci95_half_width"] = student_t_ci95_half_width(logs)
+            row["paired_speedup"] = math.exp(mean(logs)) if logs else None
+            row["two_device_nominal_efficiency"] = row["paired_speedup"] / 2.0 if row["paired_speedup"] else None
         else:
-            baseline = row
-        if baseline and row["mean_cpu_frame_ms"]:
-            row["paired_single_multi_difference_ms"] = baseline["mean_cpu_frame_ms"] - row["mean_cpu_frame_ms"]
-            row["paired_speedup"] = baseline["mean_cpu_frame_ms"] / row["mean_cpu_frame_ms"]
-            row["two_device_nominal_efficiency"] = row["paired_speedup"] / 2.0
-        else:
+            row["paired_run_count"] = 0
             row["paired_single_multi_difference_ms"] = None
+            row["paired_difference_ci95_half_width_ms"] = None
+            row["paired_log_speedup_mean"] = None
+            row["paired_log_speedup_ci95_half_width"] = None
             row["paired_speedup"] = None
             row["two_device_nominal_efficiency"] = None
     return aggregates
@@ -198,6 +268,26 @@ class AnalysisTests(unittest.TestCase):
         multi = next(row for row in aggregates if row["requested_mode"] == "MultiGpuFull")
         self.assertEqual(multi["paired_speedup"], 2.0)
         self.assertEqual(multi["two_device_nominal_efficiency"], 1.0)
+
+    def test_block_level_pairing_uses_matching_repetition(self) -> None:
+        runs = [
+            {"session_id": "s", "pair_id": "p", "block_id": "b0", "repetition": "0",
+             "requested_mode": "SingleGpuFull", "actual_mode": "SingleGpuFull", "valid": "true",
+             "mean_cpu_frame_ms": "20", "critical_path_gpu_ms": "8"},
+            {"session_id": "s", "pair_id": "p", "block_id": "b0", "repetition": "0",
+             "requested_mode": "MultiGpuFull", "actual_mode": "MultiGpuFull", "valid": "true",
+             "mean_cpu_frame_ms": "10", "critical_path_gpu_ms": "4"},
+            {"session_id": "s", "pair_id": "p", "block_id": "b1", "repetition": "1",
+             "requested_mode": "SingleGpuFull", "actual_mode": "SingleGpuFull", "valid": "true",
+             "mean_cpu_frame_ms": "9", "critical_path_gpu_ms": "8"},
+            {"session_id": "s", "pair_id": "p", "block_id": "b2", "repetition": "1",
+             "requested_mode": "MultiGpuFull", "actual_mode": "MultiGpuFull", "valid": "true",
+             "mean_cpu_frame_ms": "3", "critical_path_gpu_ms": "4"},
+        ]
+        aggregates = aggregate_runs(runs)
+        multi = next(row for row in aggregates if row["requested_mode"] == "MultiGpuFull")
+        self.assertEqual(multi["paired_run_count"], 1)
+        self.assertAlmostEqual(multi["paired_speedup"], 2.0)
 
     def test_blocked_artifact_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

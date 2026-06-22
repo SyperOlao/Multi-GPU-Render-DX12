@@ -35,6 +35,7 @@ public:
     std::shared_ptr<PEPEngine::Graphics::GBuffer> LodStats;
     std::shared_ptr<PEPEngine::Graphics::UploadBuffer> LodStatsUpload;
     std::shared_ptr<PEPEngine::Graphics::ReadBackBuffer<DWORD>> LodStatsReadback;
+    DWORD LodGroupTableCapacity = 0;
 
     std::vector<VoxelParticleData> NewParticles;
     PEPEngine::Graphics::GDescriptor ComputeDescriptors;

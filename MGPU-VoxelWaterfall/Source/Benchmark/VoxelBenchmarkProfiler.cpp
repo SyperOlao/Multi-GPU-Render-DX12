@@ -137,7 +137,11 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
                                    const std::string& runId,
                                    const std::string& configId,
                                    const std::string& pairId,
+                                   const std::string& sessionId,
+                                   const std::string& blockId,
                                    const uint32_t orderIndex,
+                                   const uint32_t blockOrderIndex,
+                                   const uint32_t pairMemberOrder,
                                    const uint32_t randomizationSeed)
 {
     if (!initialized)
@@ -163,17 +167,24 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     currentRunId = runId;
     currentConfigId = configId;
     currentPairId = pairId;
+    currentSessionId = sessionId;
+    currentBlockId = blockId;
     currentOrderIndex = orderIndex;
+    currentBlockOrderIndex = blockOrderIndex;
+    currentPairMemberOrder = pairMemberOrder;
     currentRandomizationSeed = randomizationSeed;
     completedSummaryReady = false;
     csv.imbue(std::locale::classic());
-    csv << "frame_index,suite,run_id,config_id,pair_id,repetition,randomized_order_index,randomization_seed,"
+    csv << "frame_index,suite,run_id,session_id,config_id,pair_id,block_id,repetition,"
+        << "randomized_order_index,block_order_index,pair_member_order,randomization_seed,"
         << "profile,scene_preset,requested_mode,actual_mode,fallback_reason,"
         << "benchmark_config_class,benchmark_config_reason,temporal_policy,spatial_lod_policy,"
         << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
         << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
         << "primary_partition_voxels,secondary_partition_voxels,visible_primary_count,visible_secondary_count,"
-        << "updated_voxels,simulation_steps,simulation_dispatches,seed,render_width,render_height,"
+        << "updated_voxels,simulation_steps,simulation_dispatches,scheduler_mode,requested_fixed_steps,"
+        << "executed_fixed_steps,dropped_steps,dropped_simulation_time,logical_updated_voxel_count,"
+        << "seed,render_width,render_height,"
         << "render_resolution_preset,camera_path,camera_fov_degrees,camera_near_plane,camera_far_plane,"
         << "lighting_preset,dynamic_shadows_enabled,"
         << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
@@ -190,11 +201,13 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "primary_lod_compaction_ms,primary_base_graphics_ms,secondary_compute_ms,"
         << "secondary_lod_compaction_ms,secondary_graphics_ms,"
         << "secondary_local_to_shared_copy_ms,primary_shared_to_local_copy_ms,transfer_ms,"
-        << "composite_ms,final_resolve_ui_ms,present_ready_gpu_ms,total_cross_adapter_bytes,"
+        << "composite_ms,final_resolve_ui_ms,no_lod_fast_path_ms,present_ready_gpu_ms,total_cross_adapter_bytes,"
         << "color_transfer_bytes,depth_transfer_bytes,particle_transfer_bytes,render_output_transfer_bytes,"
         << "secondary_draw_calls,primary_submitted_voxels,secondary_submitted_voxels,"
         << "primary_rendered_voxels,secondary_rendered_voxels,primary_lod0,primary_lod1,primary_lod2,"
-        << "secondary_lod0,secondary_lod1,secondary_lod2,"
+        << "secondary_lod0,secondary_lod1,secondary_lod2,no_lod_fast_path,lod_hash_capacity,"
+        << "lod_hash_load_factor,lod_duplicate_count,lod_probe_overflow_count,lod_max_probe_count,"
+        << "lod_average_probe_count,"
         << "visual_validation_has_result,visual_validation_passed,visual_validation_run_id,"
         << "visual_validation_snapshot_hash,visual_color_mae,visual_color_rmse,"
         << "visual_psnr,visual_max_error,visual_mismatched_pixel_percent,visual_depth_rmse,"
@@ -483,11 +496,12 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     const auto primaryCopy = ReadRangeTiming(frame, RangeId::PrimarySharedToLocalCopy);
     const auto composite = ReadRangeTiming(frame, RangeId::Composite);
     const auto finalResolveUi = ReadRangeTiming(frame, RangeId::FinalResolveUi);
+    const auto noLodFastPath = ReadRangeTiming(frame, RangeId::NoLodFastPath);
 
     const std::array timings = {
         primaryCompute, primaryLodCompaction, primaryBaseGraphics,
         secondaryCompute, secondaryLodCompaction, secondaryGraphics,
-        secondaryCopy, primaryCopy, composite, finalResolveUi
+        secondaryCopy, primaryCopy, composite, finalResolveUi, noLodFastPath
     };
 
     double firstStart = std::numeric_limits<double>::max();
@@ -545,6 +559,8 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     secondaryLod0Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod0Count));
     secondaryLod1Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod1Count));
     secondaryLod2Samples.push_back(static_cast<double>(frame.Metadata.SecondaryLod2Count));
+    executedFixedStepSamples.push_back(frame.Metadata.ExecutedFixedSteps);
+    logicalUpdatedVoxelSamples.push_back(frame.Metadata.LogicalUpdatedVoxelCount);
     if (!invalidReason.empty())
         invalidReasons.push_back(invalidReason);
 
@@ -570,10 +586,14 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     csv << frame.Metadata.FrameIndex << ','
         << EscapeCsv(currentSuiteName) << ','
         << EscapeCsv(currentRunId) << ','
+        << EscapeCsv(currentSessionId) << ','
         << EscapeCsv(currentConfigId) << ','
         << EscapeCsv(currentPairId) << ','
+        << EscapeCsv(currentBlockId) << ','
         << currentRepetition << ','
         << currentOrderIndex << ','
+        << currentBlockOrderIndex << ','
+        << currentPairMemberOrder << ','
         << currentRandomizationSeed << ','
         << EscapeCsv(frame.Metadata.ProfileName) << ','
         << EscapeCsv(frame.Metadata.ScenePreset) << ','
@@ -603,6 +623,12 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.UpdatedVoxelCount << ','
         << frame.Metadata.SimulationStepsThisFrame << ','
         << frame.Metadata.SimulationDispatchCount << ','
+        << EscapeCsv(frame.Metadata.SchedulerMode) << ','
+        << frame.Metadata.RequestedFixedSteps << ','
+        << frame.Metadata.ExecutedFixedSteps << ','
+        << frame.Metadata.DroppedSteps << ','
+        << frame.Metadata.DroppedSimulationTime << ','
+        << frame.Metadata.LogicalUpdatedVoxelCount << ','
         << frame.Metadata.Seed << ','
         << frame.Metadata.RenderWidth << ','
         << frame.Metadata.RenderHeight << ','
@@ -653,6 +679,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << transferMs << ','
         << composite.Ms << ','
         << finalResolveUi.Ms << ','
+        << noLodFastPath.Ms << ','
         << presentReadyGpuMs << ','
         << frame.Metadata.TotalCrossAdapterBytes << ','
         << frame.Metadata.ColorTransferBytes << ','
@@ -670,6 +697,13 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.SecondaryLod0Count << ','
         << frame.Metadata.SecondaryLod1Count << ','
         << frame.Metadata.SecondaryLod2Count << ','
+        << BoolText(frame.Metadata.NoLodFastPath) << ','
+        << frame.Metadata.LodHashCapacity << ','
+        << frame.Metadata.LodHashLoadFactor << ','
+        << frame.Metadata.LodDuplicateCount << ','
+        << frame.Metadata.LodProbeOverflowCount << ','
+        << frame.Metadata.LodMaxProbeCount << ','
+        << frame.Metadata.LodAverageProbeCount << ','
         << BoolText(frame.Metadata.VisualValidationHasResult) << ','
         << BoolText(frame.Metadata.VisualValidationPassed) << ','
         << EscapeCsv(frame.Metadata.VisualValidationRunId) << ','
@@ -727,6 +761,12 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
                    : metadata.BenchmarkConfigReason;
     if (metadata.ProfileName == "StaticRenderOnly" && metadata.SimulationDispatchCount != 0)
         return "StaticRenderOnly recorded simulation dispatch";
+    if (metadata.SchedulerMode == "Benchmark" && metadata.ExecutedFixedSteps != metadata.RequestedFixedSteps)
+        return "benchmark scheduler executed an unexpected fixed-step count";
+    if (metadata.SchedulerMode == "Benchmark" && metadata.DroppedSteps != 0)
+        return "benchmark scheduler dropped fixed steps";
+    if (metadata.SchedulerMode == "Benchmark" && !metadata.FallbackReason.empty())
+        return "benchmark frame used a mode fallback";
     if (metadata.ProfileName == "DynamicSimulationAndRender" && metadata.ActualStaticVoxelCount != 0)
         return "DynamicSimulationAndRender contains static voxels";
     if (metadata.ProfileName == "MixedStaticAndDynamic" &&
@@ -740,6 +780,8 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
         return "secondary graphics draw count is zero for a non-empty secondary partition";
     if (metadata.ParticleTransferBytes > 0)
         return "particle transfer bytes are non-zero";
+    if (metadata.LodProbeOverflowCount > 0)
+        return "spatial LOD hash probe overflow";
     if (requestedMultiGpu && metadata.RenderOutputTransferBytes == 0)
         return "render-output transfer bytes are zero";
     if (!metadata.VisualValidationHasResult)
@@ -821,6 +863,8 @@ void VoxelBenchmarkProfiler::ResetSamples()
     secondaryLod0Samples.clear();
     secondaryLod1Samples.clear();
     secondaryLod2Samples.clear();
+    executedFixedStepSamples.clear();
+    logicalUpdatedVoxelSamples.clear();
     invalidReasons.clear();
 }
 
@@ -853,6 +897,8 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
     completedSummary.SpatialLodPolicy = lastWritten ? lastWritten->Metadata.SpatialLodPolicy : "";
     completedSummary.PairId = currentPairId;
+    completedSummary.SessionId = currentSessionId;
+    completedSummary.BlockId = currentBlockId;
     completedSummary.PrimaryAdapterName = lastWritten ? lastWritten->Metadata.PrimaryAdapterName : L"";
     completedSummary.SecondaryAdapterName = lastWritten ? lastWritten->Metadata.SecondaryAdapterName : L"";
     completedSummary.TotalVoxelCount = lastWritten ? lastWritten->Metadata.TotalVoxelCount : 0;
@@ -906,6 +952,10 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.AverageSecondaryLod0Count = Average(secondaryLod0Samples);
     completedSummary.AverageSecondaryLod1Count = Average(secondaryLod1Samples);
     completedSummary.AverageSecondaryLod2Count = Average(secondaryLod2Samples);
+    completedSummary.TotalExecutedFixedSteps = std::accumulate(
+        executedFixedStepSamples.begin(), executedFixedStepSamples.end(), uint64_t{0});
+    completedSummary.TotalLogicalUpdatedVoxelCount = std::accumulate(
+        logicalUpdatedVoxelSamples.begin(), logicalUpdatedVoxelSamples.end(), uint64_t{0});
     completedSummary.VisualValidationPassed =
         lastWritten ? lastWritten->Metadata.VisualValidationPassed : false;
     completedSummary.CsvPath = csvPath;

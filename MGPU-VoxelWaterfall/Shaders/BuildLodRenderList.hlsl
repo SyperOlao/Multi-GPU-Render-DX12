@@ -26,19 +26,27 @@ struct LodBuildData
     int GridOriginX;
     int GridOriginY;
     int GridOriginZ;
-    uint Padding1;
+    uint MaxProbeCount;
 };
 
 ConstantBuffer<LodBuildData> LodData : register(b0);
 StructuredBuffer<ParticleData> ParticlesPool : register(t0);
 StructuredBuffer<uint> AliveParticles : register(t1);
-AppendStructuredBuffer<VoxelLodRenderItem> RenderParticles : register(u0);
+RWStructuredBuffer<VoxelLodRenderItem> RenderParticles : register(u0);
 RWByteAddressBuffer DrawArguments : register(u1);
 RWStructuredBuffer<uint> LodStats : register(u2);
 RWStructuredBuffer<uint> LodGroupKeys : register(u3);
 
 #define THREAD_GROUP_SIZE 256
 #define EMPTY_GROUP_KEY 0xffffffffu
+#define STAT_LOD0 0u
+#define STAT_LOD1 1u
+#define STAT_LOD2 2u
+#define STAT_DUPLICATES 3u
+#define STAT_OVERFLOW 4u
+#define STAT_MAX_PROBE 5u
+#define STAT_TOTAL_PROBE 6u
+#define STAT_EMITTED 7u
 
 uint HashGroupKey(uint key)
 {
@@ -106,24 +114,56 @@ float3 GroupCenter(const int3 groupCoord, const uint blockSize, const float voxe
     return (float3(groupCoord * (int)blockSize) + 0.5f * (float)blockSize) * voxelSize;
 }
 
-bool ClaimGroup(const uint groupKey)
+bool ClaimGroup(const uint groupKey, out uint probeCount, out bool duplicate)
 {
+    probeCount = 0u;
+    duplicate = false;
     const uint capacity = max(1u, LodData.GroupTableCapacity);
-    uint slot = HashGroupKey(groupKey) % capacity;
+    const uint mask = capacity - 1u;
+    uint slot = HashGroupKey(groupKey) & mask;
+    const uint maxProbeCount = clamp(LodData.MaxProbeCount, 1u, capacity);
 
     [loop]
-    for (uint probe = 0u; probe < capacity; ++probe)
+    for (uint probe = 0u; probe < maxProbeCount; ++probe)
     {
+        probeCount = probe + 1u;
         uint original;
         InterlockedCompareExchange(LodGroupKeys[slot], EMPTY_GROUP_KEY, groupKey, original);
         if (original == EMPTY_GROUP_KEY)
             return true;
         if (original == groupKey)
+        {
+            duplicate = true;
             return false;
-        slot = (slot + 1u) % capacity;
+        }
+        slot = (slot + 1u) & mask;
     }
 
     return false;
+}
+
+VoxelLodRenderItem MakeRenderItem(
+    const ParticleData particle,
+    const uint particleIndex,
+    const uint lodLevel,
+    const float3 previousCenter,
+    const float3 currentCenter,
+    const float3 halfExtent)
+{
+    VoxelLodRenderItem item;
+    item.PreviousCenter = previousCenter;
+    item.HalfExtentX = halfExtent.x;
+    item.CurrentCenter = currentCenter;
+    item.HalfExtentY = halfExtent.y;
+    item.HalfExtentZ = halfExtent.z;
+    item.LodLevel = lodLevel;
+    item.MaterialId = particle.MaterialId;
+    item.StreamKind = particle.StreamKind;
+    item.RepresentativeIndex = particleIndex;
+    item.Padding0 = 0u;
+    item.Padding1 = 0u;
+    item.Padding2 = 0u;
+    return item;
 }
 
 void BuildStaticSpatialData(
@@ -184,6 +224,20 @@ void CS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const ParticleData particle = ParticlesPool[particleIndex];
     const bool staticStream = LodData.StreamKind == 1u || particle.StreamKind == 1u;
 
+    if (LodData.SpatialLodMode == 0u)
+    {
+        const float voxelSize = max(LodData.VoxelSize, 0.05f);
+        const float halfExtent = staticStream ? 0.5f * voxelSize : 0.56f * voxelSize;
+        RenderParticles[aliveOrdinal] = MakeRenderItem(
+            particle,
+            particleIndex,
+            0u,
+            particle.PreviousContinuousPosition,
+            particle.CurrentContinuousPosition,
+            float3(halfExtent, halfExtent, halfExtent));
+        return;
+    }
+
     float3 distanceCenter;
     if (staticStream)
     {
@@ -213,27 +267,32 @@ void CS(uint3 dispatchThreadId : SV_DispatchThreadID)
         BuildDynamicSpatialData(particle, lodLevel, groupKey, previousCenter, currentCenter, halfExtent);
     }
 
-    if (!ClaimGroup(groupKey))
+    uint probeCount = 0u;
+    bool duplicate = false;
+    if (!ClaimGroup(groupKey, probeCount, duplicate))
     {
-        InterlockedAdd(LodStats[3], 1u);
+        if (duplicate)
+            InterlockedAdd(LodStats[STAT_DUPLICATES], 1u);
+        else
+            InterlockedAdd(LodStats[STAT_OVERFLOW], 1u);
+        InterlockedAdd(LodStats[STAT_TOTAL_PROBE], probeCount);
+        uint previousMax;
+        InterlockedMax(LodStats[STAT_MAX_PROBE], probeCount, previousMax);
         return;
     }
 
-    VoxelLodRenderItem item;
-    item.PreviousCenter = previousCenter;
-    item.HalfExtentX = halfExtent.x;
-    item.CurrentCenter = currentCenter;
-    item.HalfExtentY = halfExtent.y;
-    item.HalfExtentZ = halfExtent.z;
-    item.LodLevel = lodLevel;
-    item.MaterialId = particle.MaterialId;
-    item.StreamKind = particle.StreamKind;
-    item.RepresentativeIndex = particleIndex;
-    item.Padding0 = 0u;
-    item.Padding1 = 0u;
-    item.Padding2 = 0u;
-
-    RenderParticles.Append(item);
-    DrawArguments.InterlockedAdd(0, 1u);
+    uint outputIndex;
+    DrawArguments.InterlockedAdd(0, 1u, outputIndex);
+    RenderParticles[outputIndex] = MakeRenderItem(
+        particle,
+        particleIndex,
+        lodLevel,
+        previousCenter,
+        currentCenter,
+        halfExtent);
     InterlockedAdd(LodStats[lodLevel], 1u);
+    InterlockedAdd(LodStats[STAT_EMITTED], 1u);
+    InterlockedAdd(LodStats[STAT_TOTAL_PROBE], probeCount);
+    uint previousMax;
+    InterlockedMax(LodStats[STAT_MAX_PROBE], probeCount, previousMax);
 }

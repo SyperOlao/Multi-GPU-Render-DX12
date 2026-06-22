@@ -128,7 +128,7 @@ Exit codes:
 
 Visual validation is numeric, not based on submission flags. A valid result requires color/depth comparison metrics such as MAE, RMSE, PSNR, maximum error, mismatch percentages, and depth RMSE. Benchmark rows without available validation metrics are marked invalid and are excluded from speedup.
 
-Current limitation: the validation runner fails closed when deterministic Single/Multi validation textures are not captured, so those runs report invalid rather than a false pass.
+The validation runner fails closed when deterministic Single/Multi validation textures and `VoxelValidationCompare.hlsl` tile statistics are not supplied. When the GPU capture path provides completed color/depth compare stats, the runner performs CPU final reduction, exports color/depth metric rows, and links the result to build hash, shader hash, adapter pair, config hash, and camera hash.
 
 ## Research Protocol
 
@@ -166,7 +166,7 @@ Experimental procedure:
 - Run Smoke after every code change.
 - Run Full only after PASS Smoke, PASS visual validation, and PASS two-GPU verification on compatible hardware.
 - Full uses three independent repetitions per configuration. The randomized order is deterministic and logged by seed.
-- Pair/block IDs encode matching workload, seed, resolved counts, LOD policy, temporal policy, resolution, and requested secondary share.
+- Pair/block IDs encode matching workload, seed, resolved counts, LOD policy, temporal policy, resolution, requested secondary share, and repetition. Pair blocks are randomized as a complete block design, and Single-first versus Multi-first order is logged.
 - Multiple sessions can be run by selecting different output directories and seed overrides; each session writes its own manifest.
 
 Exclusion rules:

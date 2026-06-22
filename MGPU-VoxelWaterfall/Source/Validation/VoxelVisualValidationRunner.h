@@ -68,6 +68,47 @@ struct VoxelVisualValidationCase
     uint32_t TemporalInterval = 1;
 };
 
+struct VoxelValidationTileStats
+{
+    uint32_t PixelCount = 0;
+    uint32_t ForegroundUnionCount = 0;
+    uint32_t ForegroundIntersectionCount = 0;
+    uint32_t ColorMismatchCount = 0;
+    uint32_t DepthMismatchCount = 0;
+    uint32_t CombinedMismatchCount = 0;
+    uint32_t CoverageMismatchCount = 0;
+    uint32_t Padding0 = 0;
+    float RgbAbsoluteErrorSum = 0.0f;
+    float RgbSquaredErrorSum = 0.0f;
+    float RgbMaxAbsoluteError = 0.0f;
+    float AlphaAbsoluteErrorSum = 0.0f;
+    float DepthAbsoluteErrorSum = 0.0f;
+    float DepthSquaredErrorSum = 0.0f;
+    float DepthRelativeErrorSum = 0.0f;
+    float DepthMaxAbsoluteError = 0.0f;
+};
+
+struct VoxelVisualValidationComparisonInput
+{
+    std::string CaseId;
+    bool CaptureAvailable = false;
+    bool CompareShaderDispatched = false;
+    bool ReadbackComplete = false;
+    VoxelExecutionMode ActualSingleMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+    uint32_t RenderWidth = 0;
+    uint32_t RenderHeight = 0;
+    std::string ConfigHash;
+    std::string CameraHash;
+    std::string AdapterPairIdentity;
+    std::filesystem::path SingleColorReferencePath;
+    std::filesystem::path SingleDepthReferencePath;
+    std::filesystem::path MultiColorReferencePath;
+    std::filesystem::path MultiDepthReferencePath;
+    std::filesystem::path DiffReferencePath;
+    std::vector<VoxelValidationTileStats> TileStats;
+};
+
 struct VoxelVisualValidationCaseResult
 {
     std::string CaseId;
@@ -102,6 +143,14 @@ struct VoxelVisualValidationCaseResult
     double DepthMismatchPercent = 0.0;
     double CombinedMismatchPercent = 0.0;
     double CoverageMismatchPercent = 0.0;
+    std::string ConfigHash;
+    std::string CameraHash;
+    std::string AdapterPairIdentity;
+    std::filesystem::path SingleColorReferencePath;
+    std::filesystem::path SingleDepthReferencePath;
+    std::filesystem::path MultiColorReferencePath;
+    std::filesystem::path MultiDepthReferencePath;
+    std::filesystem::path DiffReferencePath;
     bool Passed = false;
     bool Blocked = true;
     std::string Status = "BLOCKED";
@@ -135,6 +184,7 @@ struct VoxelVisualValidationConfig
     VoxelVisualValidationSnapshot Snapshot{};
     VoxelVisualValidationTolerances Tolerances{};
     std::vector<VoxelVisualValidationCase> Cases;
+    std::vector<VoxelVisualValidationComparisonInput> CompletedComparisons;
 
     static std::vector<VoxelVisualValidationCase> DefaultCases();
 };

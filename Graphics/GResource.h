@@ -8,6 +8,13 @@
 
 namespace PEPEngine::Graphics
 {
+    struct GResourceLifetimeStats
+    {
+        uint64_t CreatedResources = 0;
+        uint64_t DestroyedResources = 0;
+        uint64_t LiveResources = 0;
+    };
+
     class GResource
     {
     public:
@@ -60,6 +67,7 @@ namespace PEPEngine::Graphics
 
 
         virtual void Reset();
+        static GResourceLifetimeStats GetLifetimeStats();
 
         std::shared_ptr<GDevice>& GetDevice();
         std::wstring GetName() const;
@@ -70,5 +78,6 @@ namespace PEPEngine::Graphics
         std::unique_ptr<D3D12_CLEAR_VALUE> clearValue;
         std::wstring resourceName;
         D3D12_RESOURCE_DESC description;
+        bool lifetimeTracked = false;
     };
 }

@@ -27,6 +27,50 @@ namespace PEPEngine::Graphics
         Count
     };
 
+    struct GDeferredFenceSnapshot
+    {
+        std::array<uint64_t, static_cast<size_t>(GQueueType::Count)> QueueFenceValues{};
+    };
+
+    struct GDescriptorAllocatorStats
+    {
+        uint64_t HeapPages = 0;
+        uint64_t DescriptorCapacity = 0;
+        uint64_t FreeDescriptors = 0;
+        uint64_t StaleRanges = 0;
+        uint64_t StaleDescriptors = 0;
+        uint64_t ActiveDescriptors = 0;
+    };
+
+    struct GCommandQueueLifetimeStats
+    {
+        uint64_t SubmittedFenceValue = 0;
+        uint64_t CompletedFenceValue = 0;
+        size_t CreatedCommandLists = 0;
+        size_t AvailableCommandLists = 0;
+        size_t InFlightCommandLists = 0;
+    };
+
+    struct GVideoMemoryStats
+    {
+        bool Valid = false;
+        uint64_t LocalBudget = 0;
+        uint64_t LocalCurrentUsage = 0;
+        uint64_t LocalAvailableForReservation = 0;
+        uint64_t LocalCurrentReservation = 0;
+        uint64_t NonLocalBudget = 0;
+        uint64_t NonLocalCurrentUsage = 0;
+        uint64_t NonLocalAvailableForReservation = 0;
+        uint64_t NonLocalCurrentReservation = 0;
+    };
+
+    struct GDeviceLifetimeStats
+    {
+        std::array<GCommandQueueLifetimeStats, static_cast<size_t>(GQueueType::Count)> Queues{};
+        std::array<GDescriptorAllocatorStats, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES> DescriptorAllocators{};
+        GVideoMemoryStats VideoMemory{};
+    };
+
     class GDevice : std::enable_shared_from_this<GDevice>
     {
         ComPtr<ID3D12Device> device;
@@ -80,6 +124,8 @@ namespace PEPEngine::Graphics
 
         void ReleaseSlateDescriptors(uint64_t frameCount) const;
         void ResetAllocators(uint64_t frameCount) const;
+        GDeferredFenceSnapshot CaptureSubmittedFenceSnapshot() const;
+        bool IsFenceSnapshotComplete(const GDeferredFenceSnapshot& snapshot) const;
 
         GDescriptor AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t descriptorCount = 1) const;
 
@@ -107,6 +153,9 @@ namespace PEPEngine::Graphics
         void Flush() const;
 
         void TerminatedQueuesWorker() const;
+        GDeviceLifetimeStats GetLifetimeStats() const;
+        GVideoMemoryStats QueryVideoMemoryStats() const;
+        void ReportLiveDeviceObjects() const;
 
         ComPtr<ID3D12Device> GetDXDevice() const;
 

@@ -3,6 +3,7 @@
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 #include "Source/Validation/VoxelVisualValidationRunner.h"
+#include "Source/Voxels/VoxelSimulationScheduler.h"
 #include "Source/Voxels/VoxelTypes.h"
 
 #include <d3d12.h>
@@ -34,6 +35,13 @@ struct VoxelFrameGraphTelemetry
     uint32_t SecondaryStepsSinceLastUpdate = 0;
     float SecondaryInterpolationPhase = 0.0f;
     float SecondaryCoarseDeltaTime = 1.0f / 60.0f;
+    VoxelSimulationSchedulerMode SchedulerMode = VoxelSimulationSchedulerMode::Interactive;
+    uint32_t RequestedFixedSteps = 0;
+    uint32_t ExecutedFixedSteps = 0;
+    uint32_t DroppedSimulationSteps = 0;
+    double DroppedSimulationTime = 0.0;
+    uint32_t SimulationDispatchCount = 0;
+    uint32_t LogicalUpdatedVoxelCount = 0;
     bool SecondaryRenderSubmitted = false;
     uint32_t SecondaryDrawCalls = 0;
     uint32_t SecondaryRenderedVoxelCount = 0;
