@@ -4759,6 +4759,10 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
+    uint32_t expectedPartitionVoxelCount = 0;
+    for (const auto& partition : voxelWorkload.Partitions)
+        expectedPartitionVoxelCount += partition.VoxelCount();
+
     uint32_t logicalDrawListVoxelCount = 0;
     for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
     {
@@ -4770,8 +4774,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         assert(partition != nullptr);
         logicalDrawListVoxelCount += partition->VoxelCount();
     }
-    assert(logicalDrawListVoxelCount == voxelWorkload.TotalVoxelCount &&
-           "Frame voxel draw lists do not cover the logical workload count");
+    assert(logicalDrawListVoxelCount == expectedPartitionVoxelCount &&
+           "Frame voxel draw lists do not cover the current partition workload count");
 
     uint32_t submittedVoxelCount = 0;
     uint32_t secondaryDrawCallCount = 0;

@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 SOURCE_CPP = ROOT / "Source.cpp"
+APP_CPP = ROOT / "VoxelWaterfallApp.cpp"
 ANALYZER = ROOT / "Tools" / "analyze_benchmark.py"
 DATA_DICTIONARY = ROOT / "Docs" / "schema" / "data_dictionary.md"
 REPRODUCTION = ROOT / "Docs" / "Reproduction.md"
@@ -128,6 +129,14 @@ class DocsConsistencyTests(unittest.TestCase):
         self.assertIn("context.SecondaryCopyQueue->Wait", body)
         self.assertIn("context.SecondaryRenderFence", body)
         self.assertIn("context.SecondaryRenderFenceValue", body)
+
+    def test_render_workload_coverage_uses_current_partitions_not_total_voxel_count(self) -> None:
+        source = read(APP_CPP)
+        body = extract_cpp_function_body(source, "void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap")
+        self.assertIn("expectedPartitionVoxelCount", body)
+        self.assertIn("partition.VoxelCount()", body)
+        self.assertIn("logicalDrawListVoxelCount == expectedPartitionVoxelCount", body)
+        self.assertNotIn("logicalDrawListVoxelCount == voxelWorkload.TotalVoxelCount", body)
 
     def test_results_notebook_integrity(self) -> None:
         notebook = json.loads(read(RESULTS_NOTEBOOK))
