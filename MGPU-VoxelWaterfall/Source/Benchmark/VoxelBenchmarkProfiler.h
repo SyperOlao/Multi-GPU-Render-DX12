@@ -95,6 +95,7 @@ public:
         uint32_t TemporalDecimationInterval = 1;
         uint32_t RenderWidth = 0;
         uint32_t RenderHeight = 0;
+        std::string ResolvedConfigHash;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
         uint32_t PrimaryVendorId = 0;

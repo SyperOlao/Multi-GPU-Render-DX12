@@ -187,7 +187,7 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "logical_updated_voxel_count,"
         << "wall_delta_ms,accepted_simulation_delta_ms,frame_resource_backpressure_poll_count,"
         << "drained_message_count,successful_present_count,simulation_steps_per_wall_second,"
-        << "seed,render_width,render_height,"
+        << "seed,render_width,render_height,resolved_config_hash,"
         << "render_resolution_preset,camera_path,camera_fov_degrees,camera_near_plane,camera_far_plane,"
         << "lighting_preset,dynamic_shadows_enabled,"
         << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
@@ -648,6 +648,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.Seed << ','
         << frame.Metadata.RenderWidth << ','
         << frame.Metadata.RenderHeight << ','
+        << EscapeCsv(frame.Metadata.ResolvedConfigHash) << ','
         << EscapeCsv(frame.Metadata.RenderResolutionPreset) << ','
         << EscapeCsv(frame.Metadata.CameraPath) << ','
         << frame.Metadata.CameraFovDegrees << ','
@@ -808,6 +809,8 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
         return "render-output transfer bytes are zero";
     if (!metadata.VisualValidationHasResult)
         return "visual validation metrics are not available";
+    if (metadata.ResolvedConfigHash.empty())
+        return "resolved_config_hash is empty";
     if (!metadata.VisualValidationPassed)
         return metadata.VisualValidationFailReason.empty()
                    ? "visual validation failed"
@@ -938,6 +941,7 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.SecondaryShare = lastWritten ? lastWritten->Metadata.SecondaryShare : 0.0f;
     completedSummary.RenderWidth = lastWritten ? lastWritten->Metadata.RenderWidth : 0;
     completedSummary.RenderHeight = lastWritten ? lastWritten->Metadata.RenderHeight : 0;
+    completedSummary.ResolvedConfigHash = lastWritten ? lastWritten->Metadata.ResolvedConfigHash : "";
     completedSummary.Repetition = currentRepetition;
     completedSummary.RepetitionCount = 1;
     completedSummary.MeasuredFrameCount = static_cast<uint32_t>(presentToPresentMsSamples.size());

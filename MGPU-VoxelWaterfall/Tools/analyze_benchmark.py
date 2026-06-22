@@ -106,7 +106,25 @@ def read_csv(path: Path) -> list[dict[str, str]]:
     require(path.exists(), f"missing artifact: {path.name}")
     with path.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
-    return rows
+    return [normalize_csv_row(row) for row in rows]
+
+
+CSV_FIELD_ALIASES = {
+    "visual_validation_case_id": "validation_case_id",
+    "visual_validation_protocol_hash": "validation_protocol_hash",
+    "visual_validation_config_hash": "validation_config_hash",
+    "visual_validation_camera_hash": "validation_camera_hash",
+    "spatial_lod_policy": "spatial_lod",
+    "seed": "randomization_seed",
+}
+
+
+def normalize_csv_row(row: dict[str, str]) -> dict[str, str]:
+    normalized = dict(row)
+    for source, target in CSV_FIELD_ALIASES.items():
+        if source in normalized and normalized[source] != "":
+            normalized[target] = normalized[source]
+    return normalized
 
 
 def sha256_file(path: Path) -> str:
@@ -449,21 +467,68 @@ def validate_validation_artifacts(artifacts: ArtifactSet, manifest_fields: dict[
         require(case_id and case_id not in by_id, f"missing or duplicate validation case {case_id!r}")
         require(case.get("status") == "PASS", f"validation case {case_id} is not PASS")
         require(bool_value(case.get("passed", True), f"{case_id}.passed"), f"validation case {case_id} passed=false")
-        require(str(case.get("config_hash", manifest_fields["validation.case_config_sha256"])) in
-                {manifest_fields["validation.case_config_sha256"], str(case.get("config_hash", ""))},
-                f"validation case {case_id} config hash invalid")
-        if "camera_hash" in case and case["camera_hash"]:
-            require(str(case["camera_hash"]) == manifest_fields["validation.camera_sha256"],
-                    f"validation case {case_id} camera hash stale")
+        require(not bool_value(case.get("blocked", False), f"{case_id}.blocked"),
+                f"validation case {case_id} is blocked")
+        require(str(case.get("validation_kind", "")) in {"implementation_equivalence", "approximation_fidelity"},
+                f"validation case {case_id} kind invalid")
+        require(str(case.get("protocol_hash", "")) == manifest_fields["validation.protocol_sha256"],
+                f"validation case {case_id} protocol hash stale")
+        require(str(case.get("camera_hash", "")) != "", f"validation case {case_id} camera hash missing")
+        require(str(case.get("reference_config_hash", "")) != "" or
+                str(case.get("candidate_config_hash", "")) != "",
+                f"validation case {case_id} lacks reference/candidate config hash")
         by_id[case_id] = case
     csv_cases = {row.get("case_id", ""): row for row in artifacts.validation_csv}
     for case_id, row in csv_cases.items():
         if case_id:
             require(row.get("status") == "PASS", f"validation CSV case {case_id} is not PASS")
-    required_cases = {expected_case_id(config) for config in configs}
-    missing = required_cases - by_id.keys()
-    require(not missing, f"validation missing required cases: {sorted(missing)}")
     return by_id
+
+
+def case_modes_match(case: dict[str, Any]) -> bool:
+    for prefix in ("single", "multi", "reference", "candidate"):
+        requested = str(case.get(f"requested_{prefix}_mode", ""))
+        actual = str(case.get(f"actual_{prefix}_mode", ""))
+        if requested and actual and requested != actual:
+            return False
+    return True
+
+
+def validate_frame_visual_evidence(row: dict[str, str],
+                                   config: dict[str, Any],
+                                   manifest_fields: dict[str, str],
+                                   validation_cases: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    case_id = row.get("validation_case_id", "")
+    require(case_id, "validation case id missing")
+    case = validation_cases.get(case_id)
+    require(case is not None, f"validation case not found: {case_id}")
+    require(case.get("status") == "PASS", f"validation case {case_id} is not PASS")
+    require(bool_value(case.get("passed", False), f"{case_id}.passed"), f"validation case {case_id} passed=false")
+    require(not bool_value(case.get("blocked", False), f"{case_id}.blocked"), f"validation case {case_id} blocked")
+    require(case_modes_match(case), f"validation case {case_id} requested/actual mode mismatch")
+    require(row.get("validation_protocol_hash", "") == str(case.get("protocol_hash", "")),
+            "validation protocol hash mismatch")
+    require(row.get("validation_protocol_hash", "") == manifest_fields["validation.protocol_sha256"],
+            "validation protocol hash stale")
+    require(row.get("validation_camera_hash", "") == str(case.get("camera_hash", "")),
+            "validation camera hash mismatch")
+    config_hash = row.get("validation_config_hash", "")
+    require(config_hash != "", "validation config hash missing")
+    require(config_hash in {str(case.get("reference_config_hash", "")),
+                            str(case.get("candidate_config_hash", ""))},
+            "validation config hash does not match case reference/candidate")
+    resolved_hash = row.get("resolved_config_hash", "")
+    validation_kind = str(case.get("validation_kind", ""))
+    if validation_kind == "approximation_fidelity":
+        require(str(case.get("candidate_config_hash", "")) == resolved_hash,
+                "approximation fidelity candidate_config_hash mismatch")
+    elif validation_kind == "implementation_equivalence":
+        require(resolved_hash in {str(case.get("reference_config_hash", "")),
+                                  str(case.get("candidate_config_hash", ""))},
+                "implementation equivalence resolved_config_hash mismatch")
+    else:
+        fail(f"validation case {case_id} kind invalid")
+    return case, validation_kind
 
 
 def validate_two_adapter(artifacts: ArtifactSet, manifest_fields: dict[str, str]) -> None:
@@ -511,6 +576,8 @@ def normalize_config(config: dict[str, Any], manifest: dict[str, Any]) -> dict[s
     normalized["randomization_seed"] = int(config.get("randomization_seed", manifest.get("randomization_seed", 0)))
     normalized["warmup_frames"] = int(config.get("warmup_frames", manifest.get("warmup_frames", 0)))
     normalized["measured_frames"] = int(config.get("measured_frames", manifest.get("measured_frames", 0)))
+    if "spatial_lod_enabled" not in normalized:
+        normalized["spatial_lod_enabled"] = str(config.get("spatial_lod", "")).lower() not in {"", "off", "false", "0"}
     normalized["expected_case_id"] = str(config.get("validation_case_id", expected_case_id(config)))
     normalized["expected_config_hash"] = str(config.get("resolved_config_hash") or canonical_config_hash(normalized))
     return normalized
@@ -571,7 +638,8 @@ def queue_calibration_valid(row: dict[str, str]) -> bool:
 
 
 def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
-                             manifest_fields: dict[str, str]) -> tuple[bool, str]:
+                             manifest_fields: dict[str, str],
+                             validation_cases: dict[str, dict[str, Any]]) -> tuple[bool, str]:
     try:
         requested = row.get("requested_mode", "")
         actual = row.get("actual_mode", "")
@@ -587,17 +655,15 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
         require(int_value(row, "actual_dynamic_voxels", minimum=0) >= 0, "bad dynamic count")
         require(row.get("resolved_config_hash", "") != "", "resolved_config_hash missing")
         require(row["resolved_config_hash"] == config["expected_config_hash"], "resolved_config_hash mismatch")
-        require(str(row.get("validation_case_id", config["expected_case_id"])) == config["expected_case_id"],
-                "validation case mismatch")
-        if row.get("validation_protocol_hash"):
-            require(row["validation_protocol_hash"] == manifest_fields["validation.protocol_sha256"],
-                    "validation protocol hash mismatch")
-        if row.get("validation_config_hash"):
-            require(row["validation_config_hash"] == manifest_fields["validation.case_config_sha256"],
-                    "validation config hash mismatch")
-        if row.get("validation_camera_hash"):
-            require(row["validation_camera_hash"] == manifest_fields["validation.camera_sha256"],
-                    "validation camera hash mismatch")
+        validation_case, validation_kind = validate_frame_visual_evidence(
+            row, config, manifest_fields, validation_cases)
+        row["_matched_validation_case_id"] = str(validation_case.get("case_id", ""))
+        row["_matched_validation_kind"] = validation_kind
+        row["_matched_validation_camera_hash"] = str(validation_case.get("camera_hash", ""))
+        row["_implementation_equivalence_pass"] = (
+            "true" if validation_kind == "implementation_equivalence" else "false")
+        row["_approximation_fidelity_pass"] = (
+            "true" if validation_kind == "approximation_fidelity" else "false")
         require(bool_value(row.get("visual_validation_has_result", "true"), "visual_validation_has_result"),
                 "visual validation result missing")
         require(bool_value(row.get("visual_validation_passed", "true"), "visual_validation_passed"),
@@ -659,7 +725,8 @@ def config_value(config: dict[str, Any], *names: str, default: Any = "") -> Any:
 
 
 def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, int], dict[str, Any]],
-                   manifest_fields: dict[str, str]) -> tuple[dict[tuple[str, int], dict[str, Any]], list[str]]:
+                   manifest_fields: dict[str, str],
+                   validation_cases: dict[str, dict[str, Any]]) -> tuple[dict[tuple[str, int], dict[str, Any]], list[str]]:
     frames_by_config: dict[tuple[str, int], list[dict[str, str]]] = {key: [] for key in configs}
     invalid_reasons: list[str] = []
     for row in raw_frames:
@@ -667,7 +734,7 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
         key = (row.get("config_id", ""), int_value(row, "repetition", minimum=0))
         require(key in configs, f"raw frame references unknown config: {key}")
         config = configs[key]
-        valid, reason = recompute_frame_validity(row, config, manifest_fields)
+        valid, reason = recompute_frame_validity(row, config, manifest_fields, validation_cases)
         row["_hostile_valid"] = "true" if valid else "false"
         row["_hostile_reason"] = reason
         if not valid:
@@ -709,6 +776,18 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             valid_frames, "validation_config_hash", default=manifest_fields["validation.case_config_sha256"])
         validation_camera_hash = constant_frame_value(
             valid_frames, "validation_camera_hash", default=manifest_fields["validation.camera_sha256"])
+        matched_validation_case_id = constant_frame_value(
+            valid_frames, "_matched_validation_case_id", default=validation_case_id)
+        matched_validation_kind = constant_frame_value(
+            valid_frames, "_matched_validation_kind", required=True)
+        matched_validation_camera_hash = constant_frame_value(
+            valid_frames, "_matched_validation_camera_hash", default=validation_camera_hash)
+        implementation_equivalence_pass = bool_value(
+            constant_frame_value(valid_frames, "_implementation_equivalence_pass", default="false"),
+            "implementation_equivalence_pass")
+        approximation_fidelity_pass = bool_value(
+            constant_frame_value(valid_frames, "_approximation_fidelity_pass", default="false"),
+            "approximation_fidelity_pass")
         render_width = int_value({"render_width": constant_frame_value(valid_frames, "render_width", required=True)},
                                  "render_width", minimum=1)
         render_height = int_value({"render_height": constant_frame_value(valid_frames, "render_height", required=True)},
@@ -756,6 +835,11 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "validation_protocol_hash": validation_protocol_hash,
             "validation_config_hash": validation_config_hash,
             "validation_camera_hash": validation_camera_hash,
+            "implementation_equivalence_pass": implementation_equivalence_pass,
+            "approximation_fidelity_pass": approximation_fidelity_pass,
+            "matched_validation_case_id": matched_validation_case_id,
+            "matched_validation_kind": matched_validation_kind,
+            "matched_validation_camera_hash": matched_validation_camera_hash,
             "render_width": render_width,
             "render_height": render_height,
             "actual_total_count": actual_static_count + actual_dynamic_count,
@@ -788,8 +872,6 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "secondary_compute_ms": mean(secondary_compute),
             "primary_submitted_voxels": mean(primary_submitted),
             "secondary_submitted_voxels": mean(secondary_submitted),
-            "approximation_fidelity_pass": bool_value(first.get("visual_validation_passed", "false"),
-                                                       "visual_validation_passed"),
         }
     return runs, invalid_reasons
 
@@ -929,6 +1011,8 @@ def recompute_pairs(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[st
             "speedup": primary["speedup"],
             "logical_work_equal": single["total_logical_updated_voxels"] == multi["total_logical_updated_voxels"],
             "executed_steps_equal": single["total_executed_fixed_steps"] == multi["total_executed_fixed_steps"],
+            "implementation_equivalence_pass": bool(single["implementation_equivalence_pass"]) and
+                                               bool(multi["implementation_equivalence_pass"]),
             "approximation_fidelity_pass": bool(single["approximation_fidelity_pass"]) and
                                            bool(multi["approximation_fidelity_pass"]),
             "single_primary_submitted_voxels": single["primary_submitted_voxels"],
@@ -1013,7 +1097,6 @@ H3_MATCH_FIELDS = (
     "preset", "requested_static_budget_label", "requested_static_budget",
     "requested_dynamic_budget", "secondary_share", "temporal_interval", "temporal_policy",
     "partition_strategy", "partition_chunk_size", "render_width", "render_height",
-    "actual_total_count", "actual_static_count", "actual_dynamic_count",
     "validation_protocol_hash", "validation_camera_hash",
 )
 
@@ -1040,9 +1123,9 @@ def submitted_total(run: dict[str, Any]) -> float:
     return float(run["primary_submitted_voxels"]) + float(run["secondary_submitted_voxels"])
 
 
-def is_approximation_fidelity_pass(run: dict[str, Any], expected_token: str) -> bool:
-    case_id = str(run.get("validation_case_id", "")).lower()
-    return bool(run.get("approximation_fidelity_pass")) and expected_token.lower() in case_id
+def is_approximation_fidelity_pass(run: dict[str, Any]) -> bool:
+    return bool(run.get("approximation_fidelity_pass")) and \
+        str(run.get("matched_validation_kind", "")) == "approximation_fidelity"
 
 
 def build_h1_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1070,12 +1153,32 @@ def build_h1_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict
             "difference": single_value - multi_value,
             "log_speedup": math.log(single_value / multi_value),
             "speedup": single_value / multi_value,
-            "validation_complete": bool(single["approximation_fidelity_pass"]) and bool(multi["approximation_fidelity_pass"]),
+            "validation_complete": bool(single["implementation_equivalence_pass"]) and
+                                   bool(multi["implementation_equivalence_pass"]),
         })
     return contrasts
 
 
-def build_h2_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+def build_h1_contrasts_from_pairs(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contrasts: list[dict[str, Any]] = []
+    for pair in pairs:
+        if pair["single_mode"] != "SingleGpuFull" or pair["multi_mode"] != "MultiGpuFull":
+            continue
+        metrics = pair["endpoint_metrics"][PRIMARY_ENDPOINT]
+        contrasts.append({
+            "single_config_id": pair["single_config_id"],
+            "multi_config_id": pair["multi_config_id"],
+            "single_mode": pair["single_mode"],
+            "multi_mode": pair["multi_mode"],
+            "difference": metrics["difference"],
+            "log_speedup": metrics["log_speedup"],
+            "speedup": metrics["speedup"],
+            "validation_complete": bool(pair["implementation_equivalence_pass"]),
+        })
+    return contrasts
+
+
+def build_h2_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     full: dict[tuple[Any, ...], dict[str, Any]] = {}
     temporal: dict[tuple[Any, ...], dict[str, Any]] = {}
     for run in runs.values():
@@ -1084,6 +1187,13 @@ def build_h2_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict
         elif run["requested_mode"] == "MultiGpuTemporalDecimation":
             require_unique_group(temporal, run_match_key(run, H2_MATCH_FIELDS), run, "H2 MultiGpuTemporalDecimation")
     contrasts: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for key, full_run in full.items():
+        if key not in temporal:
+            missing.append(f"missing MultiGpuTemporalDecimation mate for {full_run['config_id']}")
+    for key, temporal_run in temporal.items():
+        if key not in full:
+            missing.append(f"missing MultiGpuFull mate for {temporal_run['config_id']}")
     for key, temporal_run in sorted(temporal.items(), key=lambda item: str(item[0])):
         full_run = full.get(key)
         if full_run is None:
@@ -1102,12 +1212,12 @@ def build_h2_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict
             "speedup": full_value / temporal_value,
             "logical_work_equal": full_run["total_logical_updated_voxels"] == temporal_run["total_logical_updated_voxels"],
             "executed_steps_equal": full_run["total_executed_fixed_steps"] == temporal_run["total_executed_fixed_steps"],
-            "approximation_fidelity_pass": is_approximation_fidelity_pass(temporal_run, "temporal"),
+            "approximation_fidelity_pass": is_approximation_fidelity_pass(temporal_run),
         })
-    return contrasts
+    return contrasts, missing
 
 
-def build_h3_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+def build_h3_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     lod_off: dict[tuple[Any, ...], dict[str, Any]] = {}
     lod_on: dict[tuple[Any, ...], dict[str, Any]] = {}
     for run in runs.values():
@@ -1117,6 +1227,13 @@ def build_h3_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict
         else:
             require_unique_group(lod_off, key, run, "H3 LOD-off")
     contrasts: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for key, off_run in lod_off.items():
+        if key not in lod_on:
+            missing.append(f"missing LOD-on mate for {off_run['config_id']}")
+    for key, on_run in lod_on.items():
+        if key not in lod_off:
+            missing.append(f"missing LOD-off mate for {on_run['config_id']}")
     for key, on_run in sorted(lod_on.items(), key=lambda item: str(item[0])):
         off_run = lod_off.get(key)
         if off_run is None:
@@ -1138,9 +1255,9 @@ def build_h3_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict
             ),
             "logical_work_equal": off_run["total_logical_updated_voxels"] == on_run["total_logical_updated_voxels"],
             "executed_steps_equal": off_run["total_executed_fixed_steps"] == on_run["total_executed_fixed_steps"],
-            "approximation_fidelity_pass": is_approximation_fidelity_pass(on_run, "lod_on"),
+            "approximation_fidelity_pass": is_approximation_fidelity_pass(on_run),
         })
-    return contrasts
+    return contrasts, missing
 
 
 def summarize_paired_difference(contrasts: list[dict[str, Any]], endpoint: str) -> dict[str, Any]:
@@ -1183,6 +1300,15 @@ def support_reason(ok: bool, reason: str) -> str:
 
 def evaluate_h1(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
     contrasts = build_h1_contrasts(runs)
+    return evaluate_h1_contrasts(contrasts)
+
+
+def evaluate_h1_from_pairs(pairs: list[dict[str, Any]]) -> dict[str, Any]:
+    contrasts = build_h1_contrasts_from_pairs(pairs)
+    return evaluate_h1_contrasts(contrasts)
+
+
+def evaluate_h1_contrasts(contrasts: list[dict[str, Any]]) -> dict[str, Any]:
     stats = summarize_paired_difference(contrasts, PRIMARY_ENDPOINT)
     direction = ci_direction(stats["difference_ci95"], "MULTI_LOWER", "MULTI_HIGHER")
     validation_complete = bool(contrasts) and all(contrast["validation_complete"] for contrast in contrasts)
@@ -1215,7 +1341,7 @@ def evaluate_h1(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
 
 
 def evaluate_h2(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
-    contrasts = build_h2_contrasts(runs)
+    contrasts, missing = build_h2_contrasts(runs)
     stats = summarize_paired_difference(contrasts, "secondary_compute_ms")
     direction = ci_direction(stats["difference_ci95"], "TEMPORAL_LOWER", "TEMPORAL_HIGHER")
     logical_equal = bool(contrasts) and all(contrast["logical_work_equal"] for contrast in contrasts)
@@ -1228,7 +1354,8 @@ def evaluate_h2(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
         ci_excludes_zero and
         logical_equal and
         steps_equal and
-        fidelity
+        fidelity and
+        not missing
     )
     reasons = [
         support_reason(stats["paired_n"] >= 2, "paired_n < 2"),
@@ -1237,6 +1364,7 @@ def evaluate_h2(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
         support_reason(logical_equal, "logical work differs"),
         support_reason(steps_equal, "executed fixed steps differ"),
         support_reason(fidelity, "Temporal approximation-fidelity PASS missing"),
+        support_reason(not missing, "; ".join(missing[:3])),
     ]
     return {
         "claim": "Temporal decimation changes Multi secondary compute work",
@@ -1251,13 +1379,15 @@ def evaluate_h2(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
         "executed_steps_equal": steps_equal,
         "approximation_fidelity_pass": fidelity,
         "validation_requirements": ["strict analysis PASS", "Temporal approximation-fidelity PASS", "no fallback"],
+        "contrast_coverage_complete": not missing,
+        "missing_contrasts": missing,
         "reason": "; ".join(reason for reason in reasons if reason),
         "result": "SUPPORT" if support else ("NOT_MEASURED" if stats["paired_n"] < 2 else "NOT_SUPPORTED"),
     }
 
 
 def evaluate_h3(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
-    contrasts = build_h3_contrasts(runs)
+    contrasts, missing = build_h3_contrasts(runs)
     reductions = [float(contrast["difference"]) for contrast in contrasts]
     reduction_ci = ci95(reductions)
     monotonic = bool(contrasts) and all(contrast["monotonic_non_increase"] for contrast in contrasts)
@@ -1265,7 +1395,7 @@ def evaluate_h3(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
     logical_equal = bool(contrasts) and all(contrast["logical_work_equal"] for contrast in contrasts)
     steps_equal = bool(contrasts) and all(contrast["executed_steps_equal"] for contrast in contrasts)
     fidelity = bool(contrasts) and all(contrast["approximation_fidelity_pass"] for contrast in contrasts)
-    support = bool(contrasts) and monotonic and counts_same and logical_equal and steps_equal and fidelity
+    support = bool(contrasts) and monotonic and counts_same and logical_equal and steps_equal and fidelity and not missing
     reasons = [
         support_reason(bool(contrasts), "no matched LOD off/on contrasts"),
         support_reason(monotonic, "LOD-on submitted count exceeds LOD-off"),
@@ -1273,6 +1403,7 @@ def evaluate_h3(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
         support_reason(logical_equal, "logical updated work changed"),
         support_reason(steps_equal, "executed fixed steps changed"),
         support_reason(fidelity, "LOD approximation-fidelity PASS missing"),
+        support_reason(not missing, "; ".join(missing[:3])),
     ]
     return {
         "claim": "LOD-on submitted counts are monotonic/non-increasing versus LOD-off without simulation-work changes",
@@ -1294,6 +1425,8 @@ def evaluate_h3(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
         "executed_steps_equal": steps_equal,
         "approximation_fidelity_pass": fidelity,
         "validation_requirements": ["strict analysis PASS", "LOD-on approximation-fidelity PASS", "no fallback"],
+        "contrast_coverage_complete": not missing,
+        "missing_contrasts": missing,
         "reason": "; ".join(reason for reason in reasons if reason),
         "result": "SUPPORT" if support else ("NOT_MEASURED" if not contrasts else "NOT_SUPPORTED"),
         "contrasts": contrasts,
@@ -1320,7 +1453,7 @@ def hypothesis_results(runs: dict[tuple[str, int], dict[str, Any]],
         rq3_transfer_ci["lower"] >= 0.5
     )
     return {
-        "H1": evaluate_h1(runs),
+        "H1": evaluate_h1_from_pairs(pairs),
         "H2": evaluate_h2(runs),
         "H3": evaluate_h3(runs),
         "RQ3": {
@@ -1342,13 +1475,14 @@ def validate(root: Path) -> dict[str, Any]:
     artifacts = load_artifacts(root)
     run_id, suite, manifest_fields = validate_top_level(artifacts)
     configs = validate_matrix_and_executions(artifacts, run_id, suite)
-    validate_validation_artifacts(artifacts, manifest_fields, list(configs.values()))
+    validation_cases = validate_validation_artifacts(artifacts, manifest_fields, list(configs.values()))
     validate_two_adapter(artifacts, manifest_fields)
     require(artifacts.manifest.get("status") == "COMPLETE", "manifest status must be COMPLETE")
     require(artifacts.manifest.get("created_utc"), "created_utc is required")
     require(artifacts.manifest.get("start_utc"), "start_utc is required")
     require(artifacts.manifest.get("end_utc"), "end_utc is required")
-    recomputed_runs, invalid_reasons = recompute_runs(artifacts.raw_frames, configs, manifest_fields)
+    recomputed_runs, invalid_reasons = recompute_runs(
+        artifacts.raw_frames, configs, manifest_fields, validation_cases)
     require(not invalid_reasons, "invalid raw frames in COMPLETE suite: " + "; ".join(invalid_reasons[:3]))
     cross_check_runs(artifacts.runs, recomputed_runs)
     pairs = recompute_pairs(recomputed_runs)
@@ -1385,8 +1519,8 @@ class HostileFixture:
             "build.shader_bytecode_set_sha256": "shader",
             "adapter.luid_pair": "primary->secondary",
             "validation.protocol_sha256": "protocol",
-            "validation.case_config_sha256": "case-config",
-            "validation.camera_sha256": "camera",
+            "validation.case_config_sha256": "case-config-set",
+            "validation.camera_sha256": "camera-set",
             "render.resolution": "1920x1080",
             "render.color_format": "R8G8B8A8_UNORM",
             "render.depth_format": "R32_FLOAT",
@@ -1410,7 +1544,6 @@ class HostileFixture:
             "requested_dynamic_budget": 25000,
             "secondary_share": 0.5,
             "spatial_lod": "Off",
-            "spatial_lod_enabled": False,
             "temporal_interval": 1,
             "repetition": 0,
             "order_index": order,
@@ -1420,7 +1553,6 @@ class HostileFixture:
             "warmup_frames": 1,
             "measured_frames": 2,
             "resolved_config_hash": "single-full-hash" if mode == "SingleGpuFull" else "multi-full-hash",
-            "validation_case_id": "full_lod_off",
         }
 
     def write(self) -> None:
@@ -1443,8 +1575,20 @@ class HostileFixture:
             "schema": "mgpu_voxel_environment.v2", "suite": "Smoke", "run_id": "run0",
         }), encoding="utf-8")
         cases = [{
-            "case_id": "full_lod_off", "status": "PASS", "passed": True, "blocked": False,
-            "config_hash": "case-config", "camera_hash": "camera",
+            "case_id": "full_lod_off|equivalence|steady_240",
+            "validation_kind": "implementation_equivalence",
+            "status": "PASS",
+            "passed": True,
+            "blocked": False,
+            "protocol_hash": "protocol",
+            "reference_config_hash": "single-full-hash",
+            "candidate_config_hash": "multi-full-hash",
+            "config_hash": "case-config-set",
+            "camera_hash": "case-camera-full",
+            "requested_single_mode": "SingleGpuFull",
+            "actual_single_mode": "SingleGpuFull",
+            "requested_multi_mode": "MultiGpuFull",
+            "actual_multi_mode": "MultiGpuFull",
         }]
         (self.root / "voxel_visual_validation.json").write_text(json.dumps({
             "schema": "mgpu_voxel_visual_validation.v2",
@@ -1455,7 +1599,7 @@ class HostileFixture:
             "cases": cases,
         }), encoding="utf-8")
         self.write_csv("voxel_visual_validation.csv", ["schema", "run_id", "suite", "case_id", "status"], [
-            ["mgpu_voxel_visual_validation.v2", "run0", "Smoke", "full_lod_off", "PASS"],
+            ["mgpu_voxel_visual_validation.v2", "run0", "Smoke", "full_lod_off|equivalence|steady_240", "PASS"],
         ])
         (self.root / "two_adapter_preflight.json").write_text(json.dumps({
             "schema": "mgpu_voxel_two_adapter_preflight.v2",
@@ -1532,7 +1676,8 @@ class HostileFixture:
             cfg["mode"], cfg["mode"], "", "MixedStaticAndDynamic", "Valid matching benchmark configuration",
             "Benchmark", 1, 1, 0, 0, 0, 100000, 25000, 125000, 100000, 25000,
             100000, 25000 if multi else 0, 10, 1920, 1080,
-            cfg["resolved_config_hash"], "full_lod_off", "case-config", "camera", "true", "true",
+            cfg["resolved_config_hash"], "full_lod_off|equivalence|steady_240",
+            "protocol", cfg["resolved_config_hash"], "case-camera-full", "true", "true",
             "true", "true", "true", "true", "true", "true",
             0.5, 1.5, 2.0, 10.0 if not multi else 5.0,
             8.0 if not multi else 4.0, 9.0 if not multi else 5.0,
@@ -1559,7 +1704,8 @@ RAW_HEADER = [
     "dropped_simulation_time", "actual_static_voxels", "actual_dynamic_voxels", "total_voxels",
     "static_budget", "dynamic_budget", "primary_partition_voxels", "secondary_partition_voxels",
     "logical_updated_voxel_count", "render_width", "render_height", "resolved_config_hash",
-    "validation_case_id", "validation_config_hash", "validation_camera_hash",
+    "visual_validation_case_id", "visual_validation_protocol_hash",
+    "visual_validation_config_hash", "visual_validation_camera_hash",
     "visual_validation_has_result", "visual_validation_passed",
     "primary_compute_queue_calibration_valid", "primary_compute_queue_calibration_monotonic",
     "primary_graphics_queue_calibration_valid", "primary_graphics_queue_calibration_monotonic",
@@ -1614,6 +1760,13 @@ class AnalysisTests(unittest.TestCase):
                 row.update({key: str(value) for key, value in updates.items()})
         write_dict_csv(root / name, rows)
 
+    def update_validation_case(self, root: Path, case_id: str, **updates: Any) -> None:
+        data = read_json(root / "voxel_visual_validation.json")
+        for case in data["cases"]:
+            if case["case_id"] == case_id:
+                case.update(updates)
+        (root / "voxel_visual_validation.json").write_text(json.dumps(data), encoding="utf-8")
+
     def test_valid_fixture_passes_and_writes_v2_summary(self) -> None:
         temp, root = self.fixture()
         with temp:
@@ -1629,6 +1782,18 @@ class AnalysisTests(unittest.TestCase):
             path = write_summary(root, result)
             self.assertTrue(path.exists())
             self.assertTrue((root / "analysis_summary.v2.sha256").exists())
+
+    def test_real_producer_raw_csv_columns_are_accepted(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            rows = read_csv(root / "raw_frames.csv")
+            self.assertIn("visual_validation_case_id", rows[0])
+            self.assertIn("visual_validation_protocol_hash", rows[0])
+            self.assertIn("visual_validation_config_hash", rows[0])
+            self.assertIn("visual_validation_camera_hash", rows[0])
+            self.assertIn("validation_case_id", rows[0])
+            result = validate(root)
+            self.assertEqual(result["status"], "PASS")
 
     def test_pairing_fails_for_different_pair_id(self) -> None:
         temp, root = self.fixture()
@@ -1651,6 +1816,24 @@ class AnalysisTests(unittest.TestCase):
         with temp:
             self.update_manifest_config(root, "c_multi", secondary_share=0.75)
             self.assert_fails(root, "missing valid matching Single/Multi pair")
+
+    def test_threelevel_without_boolean_is_lod_on(self) -> None:
+        manifest = {"randomization_seed": 123, "warmup_frames": 1, "measured_frames": 2}
+        config = HostileFixture(Path(".")).config("c_lod", "SingleGpuFull", 0)
+        config["spatial_lod"] = "ThreeLevel"
+        config.pop("spatial_lod_enabled", None)
+        normalized = normalize_config(config, manifest)
+        self.assertTrue(normalized["spatial_lod_enabled"])
+
+    def test_equivalence_case_tokens_do_not_count_as_fidelity(self) -> None:
+        temporal = self.hypothesis_run(
+            "MultiGpuTemporalDecimation", "temporal_equivalence_token", 0,
+            validation_case_id="foo|equivalence|temporal|lod_on",
+            matched_validation_case_id="foo|equivalence|temporal|lod_on",
+            matched_validation_kind="implementation_equivalence",
+            approximation_fidelity_pass=False,
+        )
+        self.assertFalse(is_approximation_fidelity_pass(temporal))
 
     def test_full_does_not_pair_with_temporal(self) -> None:
         single = self.sample_pair_run("SingleGpuFull", "c_single")
@@ -1687,6 +1870,20 @@ class AnalysisTests(unittest.TestCase):
                                  resolved_config_hash="")
             self.assert_fails(root, "resolved_config_hash missing|invalid raw frame")
 
+    def test_wrong_candidate_config_hash_fails(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            self.update_validation_case(root, "full_lod_off|equivalence|steady_240",
+                                        candidate_config_hash="wrong-candidate")
+            self.assert_fails(root, "implementation equivalence resolved_config_hash mismatch|invalid raw frame")
+
+    def test_wrong_per_case_camera_hash_fails(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            self.update_csv_rows(root, "raw_frames.csv", lambda row: row["config_id"] == "c_multi",
+                                 visual_validation_camera_hash="wrong-camera")
+            self.assert_fails(root, "validation camera hash mismatch|invalid raw frame")
+
     def sample_pair_run(self, mode: str, config_id: str) -> dict[str, Any]:
         return {
             "run_id": "run0",
@@ -1721,6 +1918,11 @@ class AnalysisTests(unittest.TestCase):
             "validation_camera_hash": "camera",
             "validation_config_hash": "single-case" if mode in SINGLE_MODES else "multi-case",
             "resolved_config_hash": "single-full-hash" if mode in SINGLE_MODES else "multi-full-hash",
+            "implementation_equivalence_pass": True,
+            "approximation_fidelity_pass": False,
+            "matched_validation_case_id": "equivalence_case",
+            "matched_validation_kind": "implementation_equivalence",
+            "matched_validation_camera_hash": "camera",
             "mean_present_to_present_ms": 10.0 if mode in SINGLE_MODES else 5.0,
             "mean_cpu_submission_ms": 1.5,
             "mean_cpu_total_frame_ms": 2.0,
@@ -1729,7 +1931,6 @@ class AnalysisTests(unittest.TestCase):
             "secondary_compute_ms": 1.0 if mode in MULTI_MODES else 0.0,
             "transfer_ms": 1.0,
             "composite_ms": 1.0,
-            "approximation_fidelity_pass": True,
             "primary_submitted_voxels": 100000 if mode in SINGLE_MODES else 75000,
             "secondary_submitted_voxels": 0 if mode in SINGLE_MODES else 25000,
         }
@@ -1739,6 +1940,7 @@ class AnalysisTests(unittest.TestCase):
         run.update({
             "repetition": repetition,
             "validation_case_id": "temporal_lod_off" if "Temporal" in mode else "full_lod_off",
+            "matched_validation_case_id": "temporal_lod_off" if "Temporal" in mode else "full_lod_off",
             "temporal_interval": 4 if "Temporal" in mode else 1,
             "mean_present_to_present_ms": 10.0,
             "critical_path_gpu_ms": 8.0,
@@ -1746,6 +1948,14 @@ class AnalysisTests(unittest.TestCase):
             "secondary_compute_ms": 2.0 if mode in MULTI_MODES else 0.0,
         })
         run.update(updates)
+        if "approximation_fidelity_pass" not in updates:
+            run["approximation_fidelity_pass"] = bool(
+                "Temporal" in run["requested_mode"] or run.get("spatial_lod_enabled"))
+        if run["approximation_fidelity_pass"]:
+            run["matched_validation_kind"] = "approximation_fidelity"
+        if "matched_validation_case_id" not in updates:
+            run["matched_validation_case_id"] = run["validation_case_id"]
+        run["matched_validation_camera_hash"] = run["validation_camera_hash"]
         run["mode_family"] = mode_family(run["requested_mode"])
         return run
 
@@ -1887,6 +2097,17 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(h2["logical_work_equal"])
         self.assertEqual(h2["result"], "NOT_SUPPORTED")
 
+    def test_h2_missing_mate_fails_closed(self) -> None:
+        runs = [
+            self.hypothesis_run("MultiGpuFull", "multi_full_missing_h2_0", 0, secondary_compute_ms=4.0),
+            self.hypothesis_run("MultiGpuTemporalDecimation", "multi_temporal_missing_h2_0", 0,
+                                secondary_compute_ms=2.0),
+            self.hypothesis_run("MultiGpuFull", "multi_full_missing_h2_1", 1, secondary_compute_ms=4.0),
+        ]
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertFalse(h2["contrast_coverage_complete"])
+        self.assertNotEqual(h2["result"], "SUPPORT")
+
     def test_h3_ignores_single_multi_speed_when_lod_increases_submitted_count(self) -> None:
         runs = [
             self.hypothesis_run("MultiGpuFull", "multi_lod_off_bad", 0,
@@ -1919,6 +2140,23 @@ class AnalysisTests(unittest.TestCase):
         h3 = evaluate_h3(self.run_map(runs))
         self.assertEqual(h3["paired_n"], 4)
         self.assertEqual(h3["result"], "SUPPORT")
+
+    def test_h3_missing_mate_fails_closed(self) -> None:
+        runs = [
+            self.hypothesis_run("MultiGpuFull", "multi_lod_off_missing_0", 0,
+                                spatial_lod_enabled=False, spatial_lod="Off",
+                                primary_submitted_voxels=80, secondary_submitted_voxels=20),
+            self.hypothesis_run("MultiGpuFull", "multi_lod_on_missing_0", 0,
+                                spatial_lod_enabled=True, spatial_lod="ThreeLevel",
+                                validation_case_id="full_lod_on",
+                                primary_submitted_voxels=60, secondary_submitted_voxels=10),
+            self.hypothesis_run("SingleGpuFull", "single_lod_off_missing_0", 0,
+                                spatial_lod_enabled=False, spatial_lod="Off",
+                                primary_submitted_voxels=80, secondary_submitted_voxels=0),
+        ]
+        h3 = evaluate_h3(self.run_map(runs))
+        self.assertFalse(h3["contrast_coverage_complete"])
+        self.assertNotEqual(h3["result"], "SUPPORT")
 
     def test_ci_based_hypotheses_with_n1_are_not_measured(self) -> None:
         runs = [

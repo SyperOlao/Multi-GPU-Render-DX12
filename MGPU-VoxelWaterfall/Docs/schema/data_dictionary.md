@@ -197,7 +197,8 @@ Important fields:
 - `primary_partition_voxels`, `secondary_partition_voxels`
 - `logical_updated_voxel_count`
 - `render_width`, `render_height`
-- `resolved_config_hash`, `validation_case_id`, `validation_config_hash`, `validation_camera_hash`
+- `resolved_config_hash`: mode-specific resolved execution configuration hash; required in every raw frame and must match the execution manifest.
+- `visual_validation_case_id`, `visual_validation_protocol_hash`, `visual_validation_config_hash`, `visual_validation_camera_hash`
 - validation pass fields
 - queue calibration fields
 - `frame_resource_backpressure_ms`
@@ -225,7 +226,16 @@ Visual validation v2 records:
 - approximation-fidelity cases;
 - per-case/per-checkpoint metrics.
 
-Benchmark rows must reference the exact matching `validation_case_id`, `validation_config_hash`, `validation_camera_hash`, and protocol hash.
+Benchmark raw rows use the producer column names `visual_validation_case_id`, `visual_validation_protocol_hash`, `visual_validation_config_hash`, and `visual_validation_camera_hash`. The hostile analyzer normalizes these to `validation_case_id`, `validation_protocol_hash`, `validation_config_hash`, and `validation_camera_hash` internally.
+
+The raw validation references must match an exact visual JSON case:
+
+- raw case id equals `cases[].case_id`;
+- raw protocol hash equals `cases[].protocol_hash` and the aggregate validation protocol hash;
+- raw config hash equals `cases[].reference_config_hash` or `cases[].candidate_config_hash`;
+- raw camera hash equals `cases[].camera_hash`.
+
+Aggregate `validation.case_config_sha256` and `validation.camera_sha256` identify the validation case/camera sets. They are not required to equal an individual resolved config hash or per-case camera hash.
 
 ### Two-Adapter Evidence Fields
 

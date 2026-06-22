@@ -4122,6 +4122,7 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
         researchCameraController ? researchCameraController->GetCameraPathName() : voxelWorkload.CameraPath;
     metadata.LightingPreset = LightingPresetName(voxelWorkload.LightingMode);
     metadata.RenderResolutionPreset = ResolutionPresetName(voxelWorkload.ResolutionPreset);
+    metadata.ResolvedConfigHash = currentBenchmarkResolvedConfigHash;
     metadata.CameraFovDegrees = camera ? camera->GetFov() : 0.0f;
     metadata.CameraNearPlane = camera ? camera->GetNearZ() : 0.0f;
     metadata.CameraFarPlane = camera ? camera->GetFarZ() : 0.0f;
