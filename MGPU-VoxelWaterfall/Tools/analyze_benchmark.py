@@ -585,10 +585,13 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
                 "requested/executed fixed steps mismatch")
         require(int_value(row, "actual_static_voxels", minimum=0) >= 0, "bad static count")
         require(int_value(row, "actual_dynamic_voxels", minimum=0) >= 0, "bad dynamic count")
-        if "resolved_config_hash" in row and row["resolved_config_hash"]:
-            require(row["resolved_config_hash"] == config["expected_config_hash"], "resolved_config_hash mismatch")
+        require(row.get("resolved_config_hash", "") != "", "resolved_config_hash missing")
+        require(row["resolved_config_hash"] == config["expected_config_hash"], "resolved_config_hash mismatch")
         require(str(row.get("validation_case_id", config["expected_case_id"])) == config["expected_case_id"],
                 "validation case mismatch")
+        if row.get("validation_protocol_hash"):
+            require(row["validation_protocol_hash"] == manifest_fields["validation.protocol_sha256"],
+                    "validation protocol hash mismatch")
         if row.get("validation_config_hash"):
             require(row["validation_config_hash"] == manifest_fields["validation.case_config_sha256"],
                     "validation config hash mismatch")
@@ -637,6 +640,24 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
         return False, str(exc)
 
 
+def constant_frame_value(frames: list[dict[str, str]], field: str, *,
+                         default: Any = "", required: bool = False) -> Any:
+    values = [row.get(field, "") for row in frames if row.get(field, "") != ""]
+    if not values:
+        require(not required, f"missing constant frame field {field}")
+        return default
+    first = values[0]
+    require(all(value == first for value in values), f"{field} varies within run")
+    return first
+
+
+def config_value(config: dict[str, Any], *names: str, default: Any = "") -> Any:
+    for name in names:
+        if name in config and config[name] not in ("", None):
+            return config[name]
+    return default
+
+
 def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, int], dict[str, Any]],
                    manifest_fields: dict[str, str]) -> tuple[dict[tuple[str, int], dict[str, Any]], list[str]]:
     frames_by_config: dict[tuple[str, int], list[dict[str, str]]] = {key: [] for key in configs}
@@ -669,29 +690,77 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
         gpu_work = [float_value(row, "gpu_work_sum_ms", positive=True) for row in valid_frames]
         transfer = [optional_float(row, "transfer_ms") for row in valid_frames]
         composite = [optional_float(row, "composite_ms") for row in valid_frames]
+        secondary_compute = [optional_float(row, "secondary_compute_ms") for row in valid_frames]
         primary_submitted = [optional_float(row, "primary_submitted_voxels") for row in valid_frames]
         secondary_submitted = [optional_float(row, "secondary_submitted_voxels") for row in valid_frames]
         first = valid_frames[0]
+        run_id = constant_frame_value(valid_frames, "run_id", required=True)
+        session_id = constant_frame_value(valid_frames, "session_id", required=True)
+        pair_id = constant_frame_value(valid_frames, "pair_id", required=True)
+        block_id = constant_frame_value(valid_frames, "block_id", required=True)
+        requested_mode = constant_frame_value(valid_frames, "requested_mode", required=True)
+        actual_mode = constant_frame_value(valid_frames, "actual_mode", required=True)
+        resolved_hash = constant_frame_value(valid_frames, "resolved_config_hash", required=True)
+        validation_case_id = constant_frame_value(
+            valid_frames, "validation_case_id", default=config["expected_case_id"])
+        validation_protocol_hash = constant_frame_value(
+            valid_frames, "validation_protocol_hash", default=manifest_fields["validation.protocol_sha256"])
+        validation_config_hash = constant_frame_value(
+            valid_frames, "validation_config_hash", default=manifest_fields["validation.case_config_sha256"])
+        validation_camera_hash = constant_frame_value(
+            valid_frames, "validation_camera_hash", default=manifest_fields["validation.camera_sha256"])
+        render_width = int_value({"render_width": constant_frame_value(valid_frames, "render_width", required=True)},
+                                 "render_width", minimum=1)
+        render_height = int_value({"render_height": constant_frame_value(valid_frames, "render_height", required=True)},
+                                  "render_height", minimum=1)
+        actual_static_count = int_value(
+            {"actual_static_voxels": constant_frame_value(valid_frames, "actual_static_voxels", required=True)},
+            "actual_static_voxels", minimum=0)
+        actual_dynamic_count = int_value(
+            {"actual_dynamic_voxels": constant_frame_value(valid_frames, "actual_dynamic_voxels", required=True)},
+            "actual_dynamic_voxels", minimum=0)
+        exported_total_voxels = constant_frame_value(valid_frames, "total_voxels", default="")
+        if exported_total_voxels != "":
+            require(int_value({"total_voxels": exported_total_voxels}, "total_voxels", minimum=0) ==
+                    actual_static_count + actual_dynamic_count,
+                    "total_voxels does not match actual static + dynamic counts")
+        randomization_seed = int_value(
+            {"randomization_seed": constant_frame_value(valid_frames, "randomization_seed", required=True)},
+            "randomization_seed", minimum=0)
         runs[key] = {
-            "run_id": first["run_id"],
-            "session_id": first["session_id"],
+            "run_id": run_id,
+            "session_id": session_id,
             "config_id": key[0],
-            "pair_id": first["pair_id"],
-            "block_id": first["block_id"],
+            "pair_id": pair_id,
+            "block_id": block_id,
             "repetition": key[1],
-            "requested_mode": first["requested_mode"],
-            "actual_mode": first["actual_mode"],
-            "resolved_config_hash": first.get("resolved_config_hash", config["expected_config_hash"]),
-            "randomization_seed": int_value(first, "randomization_seed", minimum=0),
-            "validation_case_id": first.get("validation_case_id", config["expected_case_id"]),
-            "validation_config_hash": first.get("validation_config_hash", manifest_fields["validation.case_config_sha256"]),
-            "validation_camera_hash": first.get("validation_camera_hash", manifest_fields["validation.camera_sha256"]),
-            "render_width": int_value(first, "render_width", minimum=1),
-            "render_height": int_value(first, "render_height", minimum=1),
-            "actual_total_count": int_value(first, "actual_static_voxels", minimum=0) +
-                                  int_value(first, "actual_dynamic_voxels", minimum=0),
-            "actual_static_count": int_value(first, "actual_static_voxels", minimum=0),
-            "actual_dynamic_count": int_value(first, "actual_dynamic_voxels", minimum=0),
+            "requested_mode": requested_mode,
+            "actual_mode": actual_mode,
+            "mode_family": mode_family(requested_mode),
+            "preset": str(config_value(config, "preset")),
+            "requested_static_budget_label": config_value(
+                config, "requested_static_budget_label", "requested_label_count", "requested_static_budget"),
+            "requested_static_budget": config_value(config, "requested_static_budget"),
+            "requested_dynamic_budget": config_value(config, "requested_dynamic_budget"),
+            "secondary_share": config_value(config, "secondary_share"),
+            "spatial_lod": config_value(config, "spatial_lod", default=""),
+            "spatial_lod_enabled": bool_value(config_value(config, "spatial_lod_enabled", default=False),
+                                               "spatial_lod_enabled"),
+            "temporal_interval": int(config_value(config, "temporal_interval", default=1)),
+            "temporal_policy": str(config_value(config, "temporal_policy", "temporal_mode", default="")),
+            "partition_strategy": str(config_value(config, "partition_strategy", default="")),
+            "partition_chunk_size": str(config_value(config, "partition_chunk_size", "chunk_size", default="")),
+            "resolved_config_hash": resolved_hash,
+            "randomization_seed": randomization_seed,
+            "validation_case_id": validation_case_id,
+            "validation_protocol_hash": validation_protocol_hash,
+            "validation_config_hash": validation_config_hash,
+            "validation_camera_hash": validation_camera_hash,
+            "render_width": render_width,
+            "render_height": render_height,
+            "actual_total_count": actual_static_count + actual_dynamic_count,
+            "actual_static_count": actual_static_count,
+            "actual_dynamic_count": actual_dynamic_count,
             "total_logical_updated_voxels": sum(int_value(row, "logical_updated_voxel_count", minimum=0)
                                                 for row in valid_frames),
             "total_executed_fixed_steps": sum(int_value(row, "executed_fixed_steps", minimum=0)
@@ -716,6 +785,7 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "gpu_work_sum_ms": mean(gpu_work),
             "transfer_ms": mean(transfer),
             "composite_ms": mean(composite),
+            "secondary_compute_ms": mean(secondary_compute),
             "primary_submitted_voxels": mean(primary_submitted),
             "secondary_submitted_voxels": mean(secondary_submitted),
             "approximation_fidelity_pass": bool_value(first.get("visual_validation_passed", "false"),
@@ -759,12 +829,43 @@ def cross_check_runs(producer: list[dict[str, str]], recomputed: dict[tuple[str,
 
 def pair_key(run: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        run["run_id"], run["session_id"], run["block_id"], run["repetition"],
-        run["resolved_config_hash"], run["randomization_seed"],
-        run["validation_camera_hash"], run["render_width"], run["render_height"],
+        run["run_id"], run["session_id"], run["pair_id"], run["block_id"], run["repetition"],
+        run["randomization_seed"], run["mode_family"], run["preset"],
+        run["requested_static_budget_label"], run["requested_static_budget"],
+        run["requested_dynamic_budget"], run["secondary_share"], run["spatial_lod_enabled"],
+        run["spatial_lod"], run["temporal_interval"], run["temporal_policy"],
+        run["partition_strategy"], run["partition_chunk_size"],
+        run["render_width"], run["render_height"],
         run["actual_total_count"], run["actual_static_count"], run["actual_dynamic_count"],
-        run["total_logical_updated_voxels"], run["total_executed_fixed_steps"], mode_family(run["requested_mode"]),
+        run["total_logical_updated_voxels"], run["total_executed_fixed_steps"],
+        run["validation_protocol_hash"], run["validation_camera_hash"],
     )
+
+
+def validate_single_multi_pair(single: dict[str, Any], multi: dict[str, Any]) -> None:
+    allowed = {
+        "SingleGpuFull": "MultiGpuFull",
+        "SingleGpuTemporalDecimation": "MultiGpuTemporalDecimation",
+    }
+    require(single["requested_mode"] in allowed, f"invalid single mode for pair: {single['requested_mode']}")
+    require(multi["requested_mode"] == allowed[single["requested_mode"]],
+            f"{single['requested_mode']} cannot pair with {multi['requested_mode']}")
+    for run in (single, multi):
+        require(run["requested_mode"] == run["actual_mode"],
+                f"requested_mode != actual_mode for {run['config_id']}")
+        require(str(run.get("resolved_config_hash", "")) != "",
+                f"resolved_config_hash missing for {run['config_id']}")
+    invariant_fields = (
+        "run_id", "session_id", "pair_id", "block_id", "repetition", "randomization_seed",
+        "mode_family", "preset", "requested_static_budget_label", "requested_static_budget",
+        "requested_dynamic_budget", "secondary_share", "spatial_lod_enabled", "spatial_lod",
+        "temporal_interval", "temporal_policy", "partition_strategy", "partition_chunk_size",
+        "render_width", "render_height", "actual_total_count", "actual_static_count",
+        "actual_dynamic_count", "total_logical_updated_voxels", "total_executed_fixed_steps",
+        "validation_protocol_hash", "validation_camera_hash",
+    )
+    for field in invariant_fields:
+        require(single[field] == multi[field], f"pair invariant mismatch for {field}")
 
 
 def recompute_pairs(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
@@ -772,13 +873,18 @@ def recompute_pairs(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[st
     multis: dict[tuple[Any, ...], dict[str, Any]] = {}
     for run in runs.values():
         if run["requested_mode"] in SINGLE_MODES:
-            singles[pair_key(run)] = run
+            key = pair_key(run)
+            require(key not in singles, f"duplicate Single run for pair key: {run['config_id']}")
+            singles[key] = run
         elif run["requested_mode"] in MULTI_MODES:
-            multis[pair_key(run)] = run
+            key = pair_key(run)
+            require(key not in multis, f"duplicate Multi run for pair key: {run['config_id']}")
+            multis[key] = run
     pairs: list[dict[str, Any]] = []
     for key, multi in sorted(multis.items(), key=lambda item: str(item[0])):
         single = singles.get(key)
         require(single is not None, f"missing valid matching Single/Multi pair for {multi['config_id']}")
+        validate_single_multi_pair(single, multi)
         endpoint_metrics: dict[str, dict[str, float]] = {}
         for endpoint in PAIRED_ENDPOINTS:
             single_value = float(single[endpoint if endpoint in GPU_ENDPOINTS or endpoint in {"transfer_ms", "composite_ms"}
@@ -877,29 +983,325 @@ def summarize_pairs(pairs: list[dict[str, Any]]) -> dict[str, Any]:
         "log_speedup_ci95": primary["log_speedup_ci95"],
         "speedup_ci95": primary["speedup_ci95"],
         "multiplicity_control": {
-            "confirmatory": "predeclared primary contrast uses present_to_present_ms over all valid pairs",
+            "confirmatory": "predeclared H1 uses dedicated SingleGpuFull -> MultiGpuFull present_to_present_ms contrasts",
             "exploratory_per_config": "Holm/FDR control required before per-config claims; this summary marks per-config rows exploratory",
         },
     }
 
 
-def hypothesis_results(pairs: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
-    h1_stats = summary["endpoints"][PRIMARY_ENDPOINT]
-    h1_support = (
-        h1_stats["difference_ms_ci95"]["status"] == "MEASURED" and
-        h1_stats["difference_ms_ci95"]["lower"] is not None and
-        h1_stats["difference_ms_ci95"]["lower"] > 0.0 and
-        all(pair["approximation_fidelity_pass"] for pair in pairs)
+H1_MATCH_FIELDS = (
+    "run_id", "session_id", "repetition", "randomization_seed", "preset",
+    "requested_static_budget_label", "requested_static_budget", "requested_dynamic_budget",
+    "secondary_share", "spatial_lod_enabled", "spatial_lod", "temporal_interval",
+    "temporal_policy", "partition_strategy", "partition_chunk_size", "render_width",
+    "render_height", "actual_total_count", "actual_static_count", "actual_dynamic_count",
+    "total_logical_updated_voxels", "total_executed_fixed_steps", "validation_protocol_hash",
+    "validation_camera_hash",
+)
+
+H2_MATCH_FIELDS = (
+    "run_id", "session_id", "repetition", "randomization_seed", "preset",
+    "requested_static_budget_label", "requested_static_budget", "requested_dynamic_budget",
+    "secondary_share", "spatial_lod_enabled", "spatial_lod", "partition_strategy",
+    "partition_chunk_size", "render_width", "render_height", "actual_total_count",
+    "actual_static_count", "actual_dynamic_count", "validation_protocol_hash",
+    "validation_camera_hash",
+)
+
+H3_MATCH_FIELDS = (
+    "run_id", "session_id", "repetition", "randomization_seed", "requested_mode",
+    "preset", "requested_static_budget_label", "requested_static_budget",
+    "requested_dynamic_budget", "secondary_share", "temporal_interval", "temporal_policy",
+    "partition_strategy", "partition_chunk_size", "render_width", "render_height",
+    "actual_total_count", "actual_static_count", "actual_dynamic_count",
+    "validation_protocol_hash", "validation_camera_hash",
+)
+
+
+def run_match_key(run: dict[str, Any], fields: tuple[str, ...]) -> tuple[Any, ...]:
+    return tuple(run.get(field, "") for field in fields)
+
+
+def require_unique_group(groups: dict[tuple[Any, ...], dict[str, Any]],
+                         key: tuple[Any, ...],
+                         run: dict[str, Any],
+                         label: str) -> None:
+    require(key not in groups, f"duplicate {label} contrast run for key: {run['config_id']}")
+    groups[key] = run
+
+
+def run_metric(run: dict[str, Any], endpoint: str) -> float:
+    if endpoint == "present_to_present_ms":
+        return float(run["mean_present_to_present_ms"])
+    return float(run[endpoint])
+
+
+def submitted_total(run: dict[str, Any]) -> float:
+    return float(run["primary_submitted_voxels"]) + float(run["secondary_submitted_voxels"])
+
+
+def is_approximation_fidelity_pass(run: dict[str, Any], expected_token: str) -> bool:
+    case_id = str(run.get("validation_case_id", "")).lower()
+    return bool(run.get("approximation_fidelity_pass")) and expected_token.lower() in case_id
+
+
+def build_h1_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+    singles: dict[tuple[Any, ...], dict[str, Any]] = {}
+    multis: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for run in runs.values():
+        if run["requested_mode"] == "SingleGpuFull":
+            require_unique_group(singles, run_match_key(run, H1_MATCH_FIELDS), run, "H1 SingleGpuFull")
+        elif run["requested_mode"] == "MultiGpuFull":
+            require_unique_group(multis, run_match_key(run, H1_MATCH_FIELDS), run, "H1 MultiGpuFull")
+    contrasts: list[dict[str, Any]] = []
+    for key, multi in sorted(multis.items(), key=lambda item: str(item[0])):
+        single = singles.get(key)
+        if single is None:
+            continue
+        require(single["requested_mode"] == single["actual_mode"], f"H1 fallback in {single['config_id']}")
+        require(multi["requested_mode"] == multi["actual_mode"], f"H1 fallback in {multi['config_id']}")
+        single_value = run_metric(single, PRIMARY_ENDPOINT)
+        multi_value = run_metric(multi, PRIMARY_ENDPOINT)
+        contrasts.append({
+            "single_config_id": single["config_id"],
+            "multi_config_id": multi["config_id"],
+            "single_mode": single["requested_mode"],
+            "multi_mode": multi["requested_mode"],
+            "difference": single_value - multi_value,
+            "log_speedup": math.log(single_value / multi_value),
+            "speedup": single_value / multi_value,
+            "validation_complete": bool(single["approximation_fidelity_pass"]) and bool(multi["approximation_fidelity_pass"]),
+        })
+    return contrasts
+
+
+def build_h2_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+    full: dict[tuple[Any, ...], dict[str, Any]] = {}
+    temporal: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for run in runs.values():
+        if run["requested_mode"] == "MultiGpuFull":
+            require_unique_group(full, run_match_key(run, H2_MATCH_FIELDS), run, "H2 MultiGpuFull")
+        elif run["requested_mode"] == "MultiGpuTemporalDecimation":
+            require_unique_group(temporal, run_match_key(run, H2_MATCH_FIELDS), run, "H2 MultiGpuTemporalDecimation")
+    contrasts: list[dict[str, Any]] = []
+    for key, temporal_run in sorted(temporal.items(), key=lambda item: str(item[0])):
+        full_run = full.get(key)
+        if full_run is None:
+            continue
+        require(full_run["requested_mode"] == full_run["actual_mode"], f"H2 fallback in {full_run['config_id']}")
+        require(temporal_run["requested_mode"] == temporal_run["actual_mode"],
+                f"H2 fallback in {temporal_run['config_id']}")
+        full_value = run_metric(full_run, "secondary_compute_ms")
+        temporal_value = run_metric(temporal_run, "secondary_compute_ms")
+        require(full_value > 0.0 and temporal_value > 0.0, "H2 secondary_compute_ms must be positive")
+        contrasts.append({
+            "full_config_id": full_run["config_id"],
+            "temporal_config_id": temporal_run["config_id"],
+            "difference": full_value - temporal_value,
+            "log_speedup": math.log(full_value / temporal_value),
+            "speedup": full_value / temporal_value,
+            "logical_work_equal": full_run["total_logical_updated_voxels"] == temporal_run["total_logical_updated_voxels"],
+            "executed_steps_equal": full_run["total_executed_fixed_steps"] == temporal_run["total_executed_fixed_steps"],
+            "approximation_fidelity_pass": is_approximation_fidelity_pass(temporal_run, "temporal"),
+        })
+    return contrasts
+
+
+def build_h3_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+    lod_off: dict[tuple[Any, ...], dict[str, Any]] = {}
+    lod_on: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for run in runs.values():
+        key = run_match_key(run, H3_MATCH_FIELDS)
+        if bool(run.get("spatial_lod_enabled")):
+            require_unique_group(lod_on, key, run, "H3 LOD-on")
+        else:
+            require_unique_group(lod_off, key, run, "H3 LOD-off")
+    contrasts: list[dict[str, Any]] = []
+    for key, on_run in sorted(lod_on.items(), key=lambda item: str(item[0])):
+        off_run = lod_off.get(key)
+        if off_run is None:
+            continue
+        off_submitted = submitted_total(off_run)
+        on_submitted = submitted_total(on_run)
+        contrasts.append({
+            "mode": on_run["requested_mode"],
+            "lod_off_config_id": off_run["config_id"],
+            "lod_on_config_id": on_run["config_id"],
+            "lod_off_submitted_total": off_submitted,
+            "lod_on_submitted_total": on_submitted,
+            "difference": off_submitted - on_submitted,
+            "monotonic_non_increase": on_submitted <= off_submitted + EPS,
+            "simulation_counts_unchanged": (
+                off_run["actual_total_count"] == on_run["actual_total_count"] and
+                off_run["actual_static_count"] == on_run["actual_static_count"] and
+                off_run["actual_dynamic_count"] == on_run["actual_dynamic_count"]
+            ),
+            "logical_work_equal": off_run["total_logical_updated_voxels"] == on_run["total_logical_updated_voxels"],
+            "executed_steps_equal": off_run["total_executed_fixed_steps"] == on_run["total_executed_fixed_steps"],
+            "approximation_fidelity_pass": is_approximation_fidelity_pass(on_run, "lod_on"),
+        })
+    return contrasts
+
+
+def summarize_paired_difference(contrasts: list[dict[str, Any]], endpoint: str) -> dict[str, Any]:
+    diffs = [float(contrast["difference"]) for contrast in contrasts]
+    logs = [float(contrast["log_speedup"]) for contrast in contrasts if contrast.get("log_speedup") is not None]
+    diff_ci = ci95(diffs)
+    log_ci = ci95(logs)
+    speedup_ci = {
+        "mean": math.exp(log_ci["mean"]) if log_ci["mean"] is not None else None,
+        "lower": math.exp(log_ci["lower"]) if log_ci["lower"] is not None else None,
+        "upper": math.exp(log_ci["upper"]) if log_ci["upper"] is not None else None,
+        "status": log_ci["status"],
+    }
+    return {
+        "endpoint": endpoint,
+        "paired_n": len(contrasts),
+        "mean_difference": diff_ci["mean"],
+        "median_difference": statistics.median(diffs) if diffs else None,
+        "difference_ci95": diff_ci,
+        "mean_log_speedup": log_ci["mean"],
+        "log_speedup_ci95": log_ci,
+        "speedup_ci95": speedup_ci,
+        "coefficient_of_variation": coefficient_of_variation(diffs),
+    }
+
+
+def ci_direction(ci: dict[str, Any], positive_label: str, negative_label: str) -> str:
+    if ci["status"] != "MEASURED" or ci["lower"] is None or ci["upper"] is None:
+        return "NOT_MEASURED"
+    if ci["lower"] > 0.0:
+        return positive_label
+    if ci["upper"] < 0.0:
+        return negative_label
+    return "INCONCLUSIVE"
+
+
+def support_reason(ok: bool, reason: str) -> str:
+    return "" if ok else reason
+
+
+def evaluate_h1(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
+    contrasts = build_h1_contrasts(runs)
+    stats = summarize_paired_difference(contrasts, PRIMARY_ENDPOINT)
+    direction = ci_direction(stats["difference_ci95"], "MULTI_LOWER", "MULTI_HIGHER")
+    validation_complete = bool(contrasts) and all(contrast["validation_complete"] for contrast in contrasts)
+    support = (
+        stats["paired_n"] >= 2 and
+        stats["difference_ci95"]["status"] == "MEASURED" and
+        stats["difference_ci95"]["lower"] is not None and
+        stats["difference_ci95"]["lower"] > 0.0 and
+        validation_complete
     )
-    h2_stats = summary["endpoints"]["gpu_work_sum_ms"]
-    logical_equal = all(pair["logical_work_equal"] and pair["executed_steps_equal"] for pair in pairs)
-    fidelity = all(pair["approximation_fidelity_pass"] for pair in pairs)
-    h3_monotonic = all(
-        float(pair.get("multi_primary_submitted_voxels", 0.0)) +
-        float(pair.get("multi_secondary_submitted_voxels", 0.0)) <=
-        float(pair.get("single_primary_submitted_voxels", 0.0)) + EPS
-        for pair in pairs
+    reasons = [
+        support_reason(stats["paired_n"] >= 2, "paired_n < 2"),
+        support_reason(stats["difference_ci95"]["status"] == "MEASURED", "CI is NOT_MEASURED"),
+        support_reason(direction == "MULTI_LOWER", "CI does not show Multi lower end-to-end latency"),
+        support_reason(validation_complete, "validation/preflight/strict analysis completeness not satisfied"),
+    ]
+    return {
+        "claim": "MultiGpuFull improves paired end-to-end present_to_present_ms versus SingleGpuFull",
+        "contrast": "SingleGpuFull -> MultiGpuFull",
+        "endpoint": PRIMARY_ENDPOINT,
+        "paired_n": stats["paired_n"],
+        "matched_factor_fields": list(H1_MATCH_FIELDS),
+        "excluded_modes": ["SingleGpuTemporalDecimation", "MultiGpuTemporalDecimation"],
+        "statistics": stats,
+        "effect_direction": direction,
+        "validation_requirements": ["strict analysis PASS", "matching validation/preflight evidence", "no fallback"],
+        "reason": "; ".join(reason for reason in reasons if reason),
+        "result": "SUPPORT" if support else ("NOT_MEASURED" if stats["paired_n"] < 2 else "NOT_SUPPORTED"),
+    }
+
+
+def evaluate_h2(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
+    contrasts = build_h2_contrasts(runs)
+    stats = summarize_paired_difference(contrasts, "secondary_compute_ms")
+    direction = ci_direction(stats["difference_ci95"], "TEMPORAL_LOWER", "TEMPORAL_HIGHER")
+    logical_equal = bool(contrasts) and all(contrast["logical_work_equal"] for contrast in contrasts)
+    steps_equal = bool(contrasts) and all(contrast["executed_steps_equal"] for contrast in contrasts)
+    fidelity = bool(contrasts) and all(contrast["approximation_fidelity_pass"] for contrast in contrasts)
+    ci_excludes_zero = direction in {"TEMPORAL_LOWER", "TEMPORAL_HIGHER"}
+    support = (
+        stats["paired_n"] >= 2 and
+        stats["difference_ci95"]["status"] == "MEASURED" and
+        ci_excludes_zero and
+        logical_equal and
+        steps_equal and
+        fidelity
     )
+    reasons = [
+        support_reason(stats["paired_n"] >= 2, "paired_n < 2"),
+        support_reason(stats["difference_ci95"]["status"] == "MEASURED", "CI is NOT_MEASURED"),
+        support_reason(ci_excludes_zero, "secondary_compute_ms CI crosses zero"),
+        support_reason(logical_equal, "logical work differs"),
+        support_reason(steps_equal, "executed fixed steps differ"),
+        support_reason(fidelity, "Temporal approximation-fidelity PASS missing"),
+    ]
+    return {
+        "claim": "Temporal decimation changes Multi secondary compute work",
+        "contrast": "MultiGpuFull -> MultiGpuTemporalDecimation",
+        "endpoint": "secondary_compute_ms",
+        "paired_n": stats["paired_n"],
+        "matched_factor_fields": list(H2_MATCH_FIELDS),
+        "excluded_modes": ["SingleGpuFull", "SingleGpuTemporalDecimation"],
+        "statistics": stats,
+        "effect_direction": direction,
+        "logical_work_equal": logical_equal,
+        "executed_steps_equal": steps_equal,
+        "approximation_fidelity_pass": fidelity,
+        "validation_requirements": ["strict analysis PASS", "Temporal approximation-fidelity PASS", "no fallback"],
+        "reason": "; ".join(reason for reason in reasons if reason),
+        "result": "SUPPORT" if support else ("NOT_MEASURED" if stats["paired_n"] < 2 else "NOT_SUPPORTED"),
+    }
+
+
+def evaluate_h3(runs: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
+    contrasts = build_h3_contrasts(runs)
+    reductions = [float(contrast["difference"]) for contrast in contrasts]
+    reduction_ci = ci95(reductions)
+    monotonic = bool(contrasts) and all(contrast["monotonic_non_increase"] for contrast in contrasts)
+    counts_same = bool(contrasts) and all(contrast["simulation_counts_unchanged"] for contrast in contrasts)
+    logical_equal = bool(contrasts) and all(contrast["logical_work_equal"] for contrast in contrasts)
+    steps_equal = bool(contrasts) and all(contrast["executed_steps_equal"] for contrast in contrasts)
+    fidelity = bool(contrasts) and all(contrast["approximation_fidelity_pass"] for contrast in contrasts)
+    support = bool(contrasts) and monotonic and counts_same and logical_equal and steps_equal and fidelity
+    reasons = [
+        support_reason(bool(contrasts), "no matched LOD off/on contrasts"),
+        support_reason(monotonic, "LOD-on submitted count exceeds LOD-off"),
+        support_reason(counts_same, "actual simulation counts changed"),
+        support_reason(logical_equal, "logical updated work changed"),
+        support_reason(steps_equal, "executed fixed steps changed"),
+        support_reason(fidelity, "LOD approximation-fidelity PASS missing"),
+    ]
+    return {
+        "claim": "LOD-on submitted counts are monotonic/non-increasing versus LOD-off without simulation-work changes",
+        "contrast": "LOD off -> LOD on within each requested mode",
+        "endpoint": "primary_submitted_voxels + secondary_submitted_voxels",
+        "paired_n": len(contrasts),
+        "matched_factor_fields": list(H3_MATCH_FIELDS),
+        "excluded_modes": [],
+        "statistics": {
+            "paired_n": len(contrasts),
+            "mean_reduction": reduction_ci["mean"],
+            "median_reduction": statistics.median(reductions) if reductions else None,
+            "reduction_ci95": reduction_ci,
+        },
+        "effect_direction": "LOD_ON_NON_INCREASING" if monotonic else "LOD_ON_HIGHER",
+        "monotonic_non_increase": monotonic,
+        "simulation_counts_unchanged": counts_same,
+        "logical_work_equal": logical_equal,
+        "executed_steps_equal": steps_equal,
+        "approximation_fidelity_pass": fidelity,
+        "validation_requirements": ["strict analysis PASS", "LOD-on approximation-fidelity PASS", "no fallback"],
+        "reason": "; ".join(reason for reason in reasons if reason),
+        "result": "SUPPORT" if support else ("NOT_MEASURED" if not contrasts else "NOT_SUPPORTED"),
+        "contrasts": contrasts,
+    }
+
+
+def hypothesis_results(runs: dict[tuple[str, int], dict[str, Any]],
+                       pairs: list[dict[str, Any]]) -> dict[str, Any]:
     transfer_ratios = []
     composite_copy_shares = []
     for pair in pairs:
@@ -918,34 +1320,19 @@ def hypothesis_results(pairs: list[dict[str, Any]], summary: dict[str, Any]) -> 
         rq3_transfer_ci["lower"] >= 0.5
     )
     return {
-        "H1": {
-            "claim": "Multi improves paired end-to-end present_to_present_ms versus Single",
-            "endpoint": PRIMARY_ENDPOINT,
-            "statistics": h1_stats,
-            "validation_complete": fidelity,
-            "result": "SUPPORT" if h1_support else "NOT_SUPPORTED",
-        },
-        "H2": {
-            "claim": "Secondary compute work changes while logical work remains exactly equal and fidelity passes",
-            "endpoint": "gpu_work_sum_ms",
-            "statistics": h2_stats,
-            "logical_work_equal": logical_equal,
-            "approximation_fidelity_pass": fidelity,
-            "result": "SUPPORT" if logical_equal and fidelity and h2_stats["difference_ms_ci95"]["status"] == "MEASURED"
-                      else "NOT_SUPPORTED",
-        },
-        "H3": {
-            "claim": "LOD-on submitted counts are monotonic/non-increasing without changing simulation counts",
-            "monotonic_non_increase": h3_monotonic,
-            "simulation_counts_unchanged": logical_equal,
-            "approximation_fidelity_pass": fidelity,
-            "result": "SUPPORT" if h3_monotonic and logical_equal and fidelity else "NOT_SUPPORTED",
-        },
+        "H1": evaluate_h1(runs),
+        "H2": evaluate_h2(runs),
+        "H3": evaluate_h3(runs),
         "RQ3": {
             "claim": "Transfers dominate the Multi critical path under the predeclared >=0.5 transfer_ms/critical_path_ms criterion",
+            "contrast": "valid Single/Multi pairs, Multi transfer/composite share",
+            "endpoint": "transfer_ms / critical_path_gpu_ms",
+            "paired_n": len(transfer_ratios),
             "transfer_ms_over_critical_path_ms_ci95": rq3_transfer_ci,
             "composite_plus_copy_over_critical_path_ms_ci95": rq3_composite_copy_ci,
             "transfer_dominated_criterion": "lower_ci_bound >= 0.5",
+            "effect_direction": "TRANSFER_DOMINATED" if transfer_dominated else "NOT_TRANSFER_DOMINATED",
+            "reason": "" if transfer_dominated else "transfer dominance CI lower bound is not >= 0.5",
             "result": "TRANSFER_DOMINATED" if transfer_dominated else "NOT_TRANSFER_DOMINATED",
         },
     }
@@ -976,7 +1363,7 @@ def validate(root: Path) -> dict[str, Any]:
         "recomputed_runs": list(recomputed_runs.values()),
         "recomputed_pairs": pairs,
         "statistics": summary,
-        "hypothesis_results": hypothesis_results(pairs, summary),
+        "hypothesis_results": hypothesis_results(recomputed_runs, pairs),
     }
     return result
 
@@ -1032,7 +1419,7 @@ class HostileFixture:
             "randomization_seed": 123,
             "warmup_frames": 1,
             "measured_frames": 2,
-            "resolved_config_hash": "resolved0",
+            "resolved_config_hash": "single-full-hash" if mode == "SingleGpuFull" else "multi-full-hash",
             "validation_case_id": "full_lod_off",
         }
 
@@ -1145,7 +1532,7 @@ class HostileFixture:
             cfg["mode"], cfg["mode"], "", "MixedStaticAndDynamic", "Valid matching benchmark configuration",
             "Benchmark", 1, 1, 0, 0, 0, 100000, 25000, 125000, 100000, 25000,
             100000, 25000 if multi else 0, 10, 1920, 1080,
-            "resolved0", "full_lod_off", "case-config", "camera", "true", "true",
+            cfg["resolved_config_hash"], "full_lod_off", "case-config", "camera", "true", "true",
             "true", "true", "true", "true", "true", "true",
             0.5, 1.5, 2.0, 10.0 if not multi else 5.0,
             8.0 if not multi else 4.0, 9.0 if not multi else 5.0,
@@ -1159,7 +1546,7 @@ class HostileFixture:
         return [
             "mgpu_voxel_runs.v2", "run0", "Smoke", cfg["session_id"], cfg["config_id"], cfg["pair_id"],
             cfg["block_id"], cfg["mode"], cfg["mode"], cfg["repetition"], "true", "",
-            125000, 100000, 25000, "resolved0", 2, 2, 0, mean_ms, 1.5, 2.0,
+            125000, 100000, 25000, cfg["resolved_config_hash"], 2, 2, 0, mean_ms, 1.5, 2.0,
             8.0 if mean_ms == 10.0 else 4.0,
         ]
 
@@ -1207,6 +1594,26 @@ class AnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, pattern):
             validate(root)
 
+    def update_manifest_config(self, root: Path, config_id: str, **updates: Any) -> None:
+        manifest = read_json(root / "manifest.json")
+        for config in manifest["configs"]:
+            if config["config_id"] == config_id:
+                config.update(updates)
+        (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def update_execution_manifest(self, root: Path, config_id: str, **updates: Any) -> None:
+        for path in root.glob(f"VoxelBenchmark_*_{config_id}_manifest.json"):
+            data = read_json(path)
+            data.update(updates)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+    def update_csv_rows(self, root: Path, name: str, predicate: Any, **updates: Any) -> None:
+        rows = read_csv(root / name)
+        for row in rows:
+            if predicate(row):
+                row.update({key: str(value) for key, value in updates.items()})
+        write_dict_csv(root / name, rows)
+
     def test_valid_fixture_passes_and_writes_v2_summary(self) -> None:
         temp, root = self.fixture()
         with temp:
@@ -1215,9 +1622,314 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(result["schema"], "mgpu_voxel_analysis_summary.v2")
             self.assertEqual(result["statistics"]["speedup_ci95"]["status"], "NOT_MEASURED")
             self.assertEqual(result["primary_endpoint"], "present_to_present_ms")
+            self.assertEqual(result["statistics"]["pair_count"], 1)
+            runs = {run["config_id"]: run for run in result["recomputed_runs"]}
+            self.assertEqual(runs["c_single"]["resolved_config_hash"], "single-full-hash")
+            self.assertEqual(runs["c_multi"]["resolved_config_hash"], "multi-full-hash")
             path = write_summary(root, result)
             self.assertTrue(path.exists())
             self.assertTrue((root / "analysis_summary.v2.sha256").exists())
+
+    def test_pairing_fails_for_different_pair_id(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            self.update_manifest_config(root, "c_multi", pair_id="pair1")
+            self.update_execution_manifest(root, "c_multi", pair_id="pair1")
+            self.update_csv_rows(root, "raw_frames.csv", lambda row: row["config_id"] == "c_multi", pair_id="pair1")
+            self.update_csv_rows(root, "runs.csv", lambda row: row["config_id"] == "c_multi", pair_id="pair1")
+            self.assert_fails(root, "missing valid matching Single/Multi pair")
+
+    def test_validate_single_multi_pair_allows_mode_specific_hashes(self) -> None:
+        single = self.sample_pair_run("SingleGpuFull", "c_single")
+        multi = self.sample_pair_run("MultiGpuFull", "c_multi")
+        self.assertNotEqual(single["resolved_config_hash"], multi["resolved_config_hash"])
+        self.assertNotEqual(single["validation_config_hash"], multi["validation_config_hash"])
+        validate_single_multi_pair(single, multi)
+
+    def test_pairing_fails_for_secondary_share_mismatch(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            self.update_manifest_config(root, "c_multi", secondary_share=0.75)
+            self.assert_fails(root, "missing valid matching Single/Multi pair")
+
+    def test_full_does_not_pair_with_temporal(self) -> None:
+        single = self.sample_pair_run("SingleGpuFull", "c_single")
+        multi = self.sample_pair_run("MultiGpuTemporalDecimation", "c_multi")
+        with self.assertRaisesRegex(ValidationError, "cannot pair"):
+            validate_single_multi_pair(single, multi)
+
+    def test_duplicate_single_pair_key_fails(self) -> None:
+        single = self.sample_pair_run("SingleGpuFull", "c_single")
+        duplicate = dict(single)
+        duplicate["config_id"] = "c_single_duplicate"
+        multi = self.sample_pair_run("MultiGpuFull", "c_multi")
+        with self.assertRaisesRegex(ValidationError, "duplicate Single run"):
+            recompute_pairs({("c_single", 0): single, ("c_single_duplicate", 0): duplicate, ("c_multi", 0): multi})
+
+    def test_pairing_fails_for_mode_independent_invariant_mismatch(self) -> None:
+        for field, value in (
+            ("actual_static_count", 100001),
+            ("total_logical_updated_voxels", 11),
+            ("validation_camera_hash", "other-camera"),
+            ("total_executed_fixed_steps", 4),
+        ):
+            single = self.sample_pair_run("SingleGpuFull", "c_single")
+            multi = self.sample_pair_run("MultiGpuFull", "c_multi")
+            multi[field] = value
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValidationError, "pair invariant mismatch"):
+                    validate_single_multi_pair(single, multi)
+
+    def test_empty_resolved_config_hash_fails(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            self.update_csv_rows(root, "raw_frames.csv", lambda row: row["config_id"] == "c_multi",
+                                 resolved_config_hash="")
+            self.assert_fails(root, "resolved_config_hash missing|invalid raw frame")
+
+    def sample_pair_run(self, mode: str, config_id: str) -> dict[str, Any]:
+        return {
+            "run_id": "run0",
+            "session_id": "session0",
+            "config_id": config_id,
+            "pair_id": "pair0",
+            "block_id": "block0",
+            "repetition": 0,
+            "randomization_seed": 123,
+            "requested_mode": mode,
+            "actual_mode": mode,
+            "mode_family": mode_family(mode),
+            "preset": "Low",
+            "requested_static_budget_label": 100000,
+            "requested_static_budget": 100000,
+            "requested_dynamic_budget": 25000,
+            "secondary_share": 0.5,
+            "spatial_lod_enabled": False,
+            "spatial_lod": "Off",
+            "temporal_interval": 1,
+            "temporal_policy": "",
+            "partition_strategy": "",
+            "partition_chunk_size": "",
+            "render_width": 1920,
+            "render_height": 1080,
+            "actual_total_count": 125000,
+            "actual_static_count": 100000,
+            "actual_dynamic_count": 25000,
+            "total_logical_updated_voxels": 20,
+            "total_executed_fixed_steps": 2,
+            "validation_protocol_hash": "protocol",
+            "validation_camera_hash": "camera",
+            "validation_config_hash": "single-case" if mode in SINGLE_MODES else "multi-case",
+            "resolved_config_hash": "single-full-hash" if mode in SINGLE_MODES else "multi-full-hash",
+            "mean_present_to_present_ms": 10.0 if mode in SINGLE_MODES else 5.0,
+            "mean_cpu_submission_ms": 1.5,
+            "mean_cpu_total_frame_ms": 2.0,
+            "critical_path_gpu_ms": 8.0 if mode in SINGLE_MODES else 4.0,
+            "gpu_work_sum_ms": 9.0 if mode in SINGLE_MODES else 5.0,
+            "secondary_compute_ms": 1.0 if mode in MULTI_MODES else 0.0,
+            "transfer_ms": 1.0,
+            "composite_ms": 1.0,
+            "approximation_fidelity_pass": True,
+            "primary_submitted_voxels": 100000 if mode in SINGLE_MODES else 75000,
+            "secondary_submitted_voxels": 0 if mode in SINGLE_MODES else 25000,
+        }
+
+    def hypothesis_run(self, mode: str, config_id: str, repetition: int, **updates: Any) -> dict[str, Any]:
+        run = self.sample_pair_run(mode, config_id)
+        run.update({
+            "repetition": repetition,
+            "validation_case_id": "temporal_lod_off" if "Temporal" in mode else "full_lod_off",
+            "temporal_interval": 4 if "Temporal" in mode else 1,
+            "mean_present_to_present_ms": 10.0,
+            "critical_path_gpu_ms": 8.0,
+            "gpu_work_sum_ms": 8.0,
+            "secondary_compute_ms": 2.0 if mode in MULTI_MODES else 0.0,
+        })
+        run.update(updates)
+        run["mode_family"] = mode_family(run["requested_mode"])
+        return run
+
+    def run_map(self, runs: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+        return {(run["config_id"], int(run["repetition"])): run for run in runs}
+
+    def integration_hypothesis_runs(self) -> dict[tuple[str, int], dict[str, Any]]:
+        runs: list[dict[str, Any]] = []
+        for rep in range(3):
+            for mode in sorted(MODES):
+                for lod_enabled in (False, True):
+                    lod_name = "ThreeLevel" if lod_enabled else "Off"
+                    family = "temporal" if "Temporal" in mode else "full"
+                    lod_suffix = "lod_on" if lod_enabled else "lod_off"
+                    submitted_base = 120.0 if not lod_enabled else 70.0
+                    single = mode in SINGLE_MODES
+                    temporal = "Temporal" in mode
+                    run = self.hypothesis_run(
+                        mode,
+                        f"{mode}_{lod_suffix}_rep{rep}",
+                        rep,
+                        spatial_lod_enabled=lod_enabled,
+                        spatial_lod=lod_name,
+                        temporal_interval=4 if temporal else 1,
+                        validation_case_id=f"{family}_{lod_suffix}",
+                        resolved_config_hash=f"{mode}_{lod_suffix}_resolved_hash_rep{rep}",
+                        mean_present_to_present_ms=(
+                            10.0 + rep if mode == "SingleGpuFull" else
+                            8.0 + rep if mode == "MultiGpuFull" else
+                            100.0 + rep if mode == "SingleGpuTemporalDecimation" else
+                            1.0 + rep
+                        ),
+                        secondary_compute_ms=(
+                            4.0 + rep if mode == "MultiGpuFull" else
+                            1.0 + rep if mode == "MultiGpuTemporalDecimation" else
+                            0.0
+                        ),
+                        gpu_work_sum_ms=(
+                            1.0 if mode == "MultiGpuFull" else
+                            10.0 if mode == "MultiGpuTemporalDecimation" else
+                            5.0
+                        ),
+                        primary_submitted_voxels=submitted_base if single else submitted_base * 0.75,
+                        secondary_submitted_voxels=0.0 if single else submitted_base * 0.25,
+                    )
+                    runs.append(run)
+        return self.run_map(runs)
+
+    def test_integration_synthetic_fixture_separates_h1_h2_h3_factors(self) -> None:
+        runs = self.integration_hypothesis_runs()
+        self.assertEqual(len(runs), 24)
+        hashes = [run["resolved_config_hash"] for run in runs.values()]
+        self.assertEqual(len(set(hashes)), len(hashes))
+
+        h1 = evaluate_h1(runs)
+        h2 = evaluate_h2(runs)
+        h3 = evaluate_h3(runs)
+
+        self.assertEqual(h1["paired_n"], 6)
+        self.assertEqual(h1["result"], "SUPPORT")
+        self.assertEqual(h2["paired_n"], 6)
+        self.assertEqual(h2["endpoint"], "secondary_compute_ms")
+        self.assertEqual(h2["effect_direction"], "TEMPORAL_LOWER")
+        self.assertEqual(h2["result"], "SUPPORT")
+        self.assertEqual(h3["paired_n"], 12)
+        self.assertEqual(h3["endpoint"], "primary_submitted_voxels + secondary_submitted_voxels")
+        self.assertEqual(h3["result"], "SUPPORT")
+
+    def test_h1_ignores_temporal_pairs_with_large_speedup(self) -> None:
+        runs = []
+        for rep, diff in enumerate((1.0, -1.0)):
+            runs.append(self.hypothesis_run("SingleGpuFull", f"single_full_{rep}", rep,
+                                            mean_present_to_present_ms=10.0))
+            runs.append(self.hypothesis_run("MultiGpuFull", f"multi_full_{rep}", rep,
+                                            mean_present_to_present_ms=10.0 - diff))
+            runs.append(self.hypothesis_run("SingleGpuTemporalDecimation", f"single_temporal_{rep}", rep,
+                                            mean_present_to_present_ms=100.0))
+            runs.append(self.hypothesis_run("MultiGpuTemporalDecimation", f"multi_temporal_{rep}", rep,
+                                            mean_present_to_present_ms=1.0))
+        h1 = evaluate_h1(self.run_map(runs))
+        self.assertEqual(h1["paired_n"], 2)
+        self.assertNotEqual(h1["result"], "SUPPORT")
+
+    def test_h1_full_ci_crosses_zero_not_supported(self) -> None:
+        runs = []
+        for rep, diff in enumerate((2.0, -2.0)):
+            runs.append(self.hypothesis_run("SingleGpuFull", f"single_full_ci_{rep}", rep,
+                                            mean_present_to_present_ms=10.0))
+            runs.append(self.hypothesis_run("MultiGpuFull", f"multi_full_ci_{rep}", rep,
+                                            mean_present_to_present_ms=10.0 - diff))
+        h1 = evaluate_h1(self.run_map(runs))
+        self.assertEqual(h1["effect_direction"], "INCONCLUSIVE")
+        self.assertEqual(h1["result"], "NOT_SUPPORTED")
+
+    def test_h2_uses_secondary_compute_not_gpu_work_sum(self) -> None:
+        runs = []
+        for rep in range(2):
+            runs.append(self.hypothesis_run("MultiGpuFull", f"multi_full_gpuwork_{rep}", rep,
+                                            secondary_compute_ms=2.0, gpu_work_sum_ms=10.0))
+            runs.append(self.hypothesis_run("MultiGpuTemporalDecimation", f"multi_temporal_gpuwork_{rep}", rep,
+                                            secondary_compute_ms=2.0, gpu_work_sum_ms=1.0))
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertEqual(h2["endpoint"], "secondary_compute_ms")
+        self.assertNotEqual(h2["result"], "SUPPORT")
+
+    def test_h2_support_when_secondary_compute_ci_excludes_zero_and_fidelity_passes(self) -> None:
+        runs = []
+        for rep in range(2):
+            runs.append(self.hypothesis_run("MultiGpuFull", f"multi_full_h2_{rep}", rep,
+                                            secondary_compute_ms=4.0))
+            runs.append(self.hypothesis_run("MultiGpuTemporalDecimation", f"multi_temporal_h2_{rep}", rep,
+                                            secondary_compute_ms=2.0))
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertEqual(h2["effect_direction"], "TEMPORAL_LOWER")
+        self.assertEqual(h2["result"], "SUPPORT")
+
+    def test_h2_ci_crosses_zero_not_supported(self) -> None:
+        runs = []
+        for rep, temporal_value in enumerate((1.0, 5.0)):
+            runs.append(self.hypothesis_run("MultiGpuFull", f"multi_full_h2_ci_{rep}", rep,
+                                            secondary_compute_ms=3.0))
+            runs.append(self.hypothesis_run("MultiGpuTemporalDecimation", f"multi_temporal_h2_ci_{rep}", rep,
+                                            secondary_compute_ms=temporal_value))
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertEqual(h2["effect_direction"], "INCONCLUSIVE")
+        self.assertEqual(h2["result"], "NOT_SUPPORTED")
+
+    def test_h2_requires_fidelity_and_logical_work_equality(self) -> None:
+        runs = [
+            self.hypothesis_run("MultiGpuFull", "multi_full_h2_bad_0", 0, secondary_compute_ms=4.0),
+            self.hypothesis_run("MultiGpuTemporalDecimation", "multi_temporal_h2_bad_0", 0,
+                                secondary_compute_ms=2.0, approximation_fidelity_pass=False),
+            self.hypothesis_run("MultiGpuFull", "multi_full_h2_bad_1", 1, secondary_compute_ms=4.0),
+            self.hypothesis_run("MultiGpuTemporalDecimation", "multi_temporal_h2_bad_1", 1,
+                                secondary_compute_ms=2.0, total_logical_updated_voxels=21),
+        ]
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertFalse(h2["approximation_fidelity_pass"])
+        self.assertFalse(h2["logical_work_equal"])
+        self.assertEqual(h2["result"], "NOT_SUPPORTED")
+
+    def test_h3_ignores_single_multi_speed_when_lod_increases_submitted_count(self) -> None:
+        runs = [
+            self.hypothesis_run("MultiGpuFull", "multi_lod_off_bad", 0,
+                                spatial_lod_enabled=False, spatial_lod="Off",
+                                primary_submitted_voxels=50, secondary_submitted_voxels=50,
+                                mean_present_to_present_ms=10.0),
+            self.hypothesis_run("MultiGpuFull", "multi_lod_on_bad", 0,
+                                spatial_lod_enabled=True, spatial_lod="ThreeLevel",
+                                validation_case_id="full_lod_on",
+                                primary_submitted_voxels=80, secondary_submitted_voxels=80,
+                                mean_present_to_present_ms=1.0),
+        ]
+        h3 = evaluate_h3(self.run_map(runs))
+        self.assertFalse(h3["monotonic_non_increase"])
+        self.assertEqual(h3["result"], "NOT_SUPPORTED")
+
+    def test_h3_supports_matched_lod_non_increase_with_fidelity(self) -> None:
+        runs = []
+        for mode in sorted(MODES):
+            interval = 4 if "Temporal" in mode else 1
+            case_prefix = "temporal" if "Temporal" in mode else "full"
+            runs.append(self.hypothesis_run(mode, f"{mode}_lod_off", 0,
+                                            temporal_interval=interval, spatial_lod_enabled=False,
+                                            spatial_lod="Off", validation_case_id=f"{case_prefix}_lod_off",
+                                            primary_submitted_voxels=80, secondary_submitted_voxels=20))
+            runs.append(self.hypothesis_run(mode, f"{mode}_lod_on", 0,
+                                            temporal_interval=interval, spatial_lod_enabled=True,
+                                            spatial_lod="ThreeLevel", validation_case_id=f"{case_prefix}_lod_on",
+                                            primary_submitted_voxels=60, secondary_submitted_voxels=10))
+        h3 = evaluate_h3(self.run_map(runs))
+        self.assertEqual(h3["paired_n"], 4)
+        self.assertEqual(h3["result"], "SUPPORT")
+
+    def test_ci_based_hypotheses_with_n1_are_not_measured(self) -> None:
+        runs = [
+            self.hypothesis_run("SingleGpuFull", "single_full_n1", 0, mean_present_to_present_ms=10.0),
+            self.hypothesis_run("MultiGpuFull", "multi_full_n1", 0, mean_present_to_present_ms=5.0),
+            self.hypothesis_run("MultiGpuTemporalDecimation", "multi_temporal_n1", 0, secondary_compute_ms=1.0),
+        ]
+        h1 = evaluate_h1(self.run_map(runs))
+        h2 = evaluate_h2(self.run_map(runs))
+        self.assertEqual(h1["result"], "NOT_MEASURED")
+        self.assertEqual(h2["result"], "NOT_MEASURED")
 
     def test_student_t_quantile_df2(self) -> None:
         self.assertAlmostEqual(student_t_ppf(0.975, 2), 4.3026527299, places=6)

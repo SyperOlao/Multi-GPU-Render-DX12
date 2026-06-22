@@ -24,11 +24,15 @@ The inference unit is one independent run/repetition. Frames are descriptive sam
 Pairing uses explicit fields, not encoded `pair_id` semantics. A valid pair must match:
 
 - `session_id`, `pair_id`, `block_id`, and `repetition`;
-- resolved config hash, camera hash, validation protocol/config hash, render resolution/formats/sample count;
+- camera hash, validation protocol hash, render resolution/formats/sample count;
 - randomization seed, static workload seed, dynamic workload seed where exported;
 - requested and actual workload counts, temporal policy/interval, LOD state, secondary share, partition/chunk settings, and logical work.
 
 `pair_id` is an identifier only. It does not itself contain seed, resolution, or resolved-count evidence.
+
+`resolved_config_hash` is the identity of one concrete resolved execution configuration. It is expected to be mode-specific because `SingleGpuFull`/`MultiGpuFull` and `SingleGpuTemporalDecimation`/`MultiGpuTemporalDecimation` have different requested/actual modes and may have different validation candidate/reference config hashes. It is therefore required to be present and valid for each run, but it is not part of the Single/Multi pair key and equality across the pair is not required.
+
+Pair identity is `run_id` + `session_id` + `pair_id` + `block_id` + `repetition` plus explicit equality of all mode-independent invariants listed above. `validation_config_hash` may be mode-specific; the analyzer checks each run's validation evidence without using cross-mode equality of that hash as a pairing condition.
 
 ## Endpoints
 
@@ -109,7 +113,7 @@ PENDING/RUNNING -> BLOCKED | INVALID | CANCELLED | INTERRUPTED
 
 ## Statistical Decision Rules
 
-For valid pairs:
+For valid H1 pairs:
 
 - paired difference: `single_run_mean_ms - multi_run_mean_ms`;
 - log speedup: `log(single_run_mean_ms / multi_run_mean_ms)`;
@@ -119,9 +123,9 @@ Confidence intervals use two-sided Student-t over paired run-level values. For `
 
 Decision rules:
 
-- H1 `SUPPORT` requires strict analysis `PASS`, complete validation, and a primary endpoint CI whose lower bound is above zero.
-- H2 `SUPPORT` requires strict analysis `PASS`, exact logical-work equality, approximation-fidelity PASS, and measured secondary work statistics.
-- H3 `SUPPORT` requires strict analysis `PASS`, monotonic/non-increasing submitted counts, unchanged simulation counts, and approximation-fidelity PASS.
+- H1 `SUPPORT` uses only `SingleGpuFull -> MultiGpuFull` on `present_to_present_ms`; it requires strict analysis `PASS`, complete validation/preflight evidence, paired `n >= 2`, and a 95% CI for `single - multi` whose lower bound is above zero.
+- H2 `SUPPORT` uses only `MultiGpuFull -> MultiGpuTemporalDecimation` on `secondary_compute_ms`; it requires strict analysis `PASS`, paired `n >= 2`, a measured 95% CI that does not cross zero, exact logical-work and fixed-step equality, and Temporal approximation-fidelity PASS.
+- H3 `SUPPORT` uses matched `LOD off -> LOD on` contrasts within each requested mode on `primary_submitted_voxels + secondary_submitted_voxels`; it requires strict analysis `PASS`, monotonic/non-increasing LOD-on submitted counts, unchanged simulation counts/logical work/fixed steps, and LOD approximation-fidelity PASS.
 - RQ3 reports transfer dominance only when the lower CI bound for `transfer_ms / critical_path_gpu_ms` is at least `0.5`.
 
 The Full suite default `n=3` is preliminary. Publication runs must predeclare repetition count using `Tools/plan_benchmark_power.py` from pilot SD and target MDE or desired CI width. Per-config contrasts beyond the primary contrast are exploratory and require multiplicity control.

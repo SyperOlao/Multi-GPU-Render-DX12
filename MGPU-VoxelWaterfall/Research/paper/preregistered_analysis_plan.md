@@ -22,7 +22,10 @@ A run contributes to confirmatory analysis only when:
 - scheduler dropped steps are zero;
 - requested/executed fixed steps match;
 - raw frame counts match exact warmup/measured counts;
-- Single/Multi pairs match on session, block, repetition, resolved config hash, seeds, camera, resolution/formats/sample count, counts, and logical work.
+- `resolved_config_hash` is present for each execution, but Single/Multi equality of this hash is not required because the hash is mode-specific.
+- H1 Single/Multi pairs match on session, pair id, block, repetition, seeds, camera, validation protocol, resolution/formats/sample count, counts, temporal/LOD/partition policy, fixed steps, and logical work.
+- H2 Multi Full/Temporal contrasts match on session, repetition, workload, counts, secondary share, LOD state, seeds, resolution, camera, and validation protocol; temporal policy/interval is the experimental factor.
+- H3 LOD off/on contrasts match within each requested mode on workload, counts, share, temporal interval, repetition, seed, resolution, camera, validation protocol, and fixed-step configuration; LOD state is the experimental factor.
 
 ## Exclusions
 
@@ -57,7 +60,7 @@ Minimum acceptable confirmatory precision: TODO before final Full run. Record pi
 
 ## Multiplicity Policy
 
-The primary H1 contrast is confirmatory. Per-config contrasts across workload labels, shares, LOD states, temporal states, GPU endpoints, and CPU endpoints are exploratory unless explicitly listed here before the run.
+The primary H1 contrast is confirmatory. H2 and H3 are predeclared secondary hypothesis contrasts with their endpoints and matching rules below. Other per-config contrasts across workload labels, shares, GPU endpoints, and CPU endpoints are exploratory unless explicitly listed here before the run.
 
 Exploratory families must use Holm or FDR correction and must be labeled exploratory in tables and text.
 
@@ -72,16 +75,21 @@ H1 `SUPPORT`:
 H2 `SUPPORT`:
 
 - strict hostile analysis `PASS`;
+- contrast is `MultiGpuFull -> MultiGpuTemporalDecimation`;
+- endpoint is `secondary_compute_ms`;
 - exact logical work equality and fixed-step equality;
 - approximation-fidelity validation PASS;
-- measured secondary compute work statistics exist;
+- paired `n >= 2`;
+- measured secondary compute 95% CI does not cross zero;
 - any directional claim must state the CI and cannot be SUPPORT if the CI crosses the null.
 
 H3 `SUPPORT`:
 
 - strict hostile analysis `PASS`;
-- LOD-on submitted counts are monotonic/non-increasing relative to LOD-off;
-- simulation counts are unchanged;
+- contrast is `LOD off -> LOD on` within each requested mode;
+- endpoint is `primary_submitted_voxels + secondary_submitted_voxels`;
+- LOD-on submitted counts are monotonic/non-increasing relative to matched LOD-off;
+- simulation counts, logical work, and fixed steps are unchanged;
 - approximation-fidelity validation PASS.
 
 RQ3 transfer-dominated:

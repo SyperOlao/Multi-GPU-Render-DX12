@@ -16,6 +16,7 @@ DATA_DICTIONARY = ROOT / "Docs" / "schema" / "data_dictionary.md"
 REPRODUCTION = ROOT / "Docs" / "Reproduction.md"
 METHODOLOGY = ROOT / "Docs" / "Methodology.md"
 RESEARCH_PROVENANCE = ROOT / "Source" / "Benchmark" / "ResearchProvenance.cpp"
+RENDER_PIPELINE_CPP = ROOT / "Source" / "Rendering" / "RenderPipeline.cpp"
 
 
 def read(path: Path) -> str:
@@ -36,6 +37,25 @@ def source_files() -> list[Path]:
         ROOT / "Research" / "run_publication_suite.ps1",
         ROOT / "InternalBuild" / "test.ps1",
     ]
+
+
+def extract_cpp_function_body(source: str, signature: str) -> str:
+    start = source.find(signature)
+    if start < 0:
+        raise AssertionError(f"missing function signature: {signature}")
+    brace = source.find("{", start)
+    if brace < 0:
+        raise AssertionError(f"missing function body: {signature}")
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1:index]
+    raise AssertionError(f"unterminated function body: {signature}")
 
 
 class DocsConsistencyTests(unittest.TestCase):
@@ -82,6 +102,30 @@ class DocsConsistencyTests(unittest.TestCase):
         docs = read(DATA_DICTIONARY) + "\n" + read(REPRODUCTION)
         missing = [name for name in filenames if name not in docs]
         self.assertFalse(missing, f"undocumented artifact filenames: {missing}")
+
+    def test_render_pipeline_normal_submit_paths_do_not_cpu_wait(self) -> None:
+        source = read(RENDER_PIPELINE_CPP)
+        submit_signatures = [
+            "void RenderPipeline::SubmitPrimaryBasePass",
+            "void RenderPipeline::SubmitSecondaryVoxelPass",
+            "void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass",
+            "void RenderPipeline::SubmitPrimarySharedToLocalCopyPass",
+            "void RenderPipeline::SubmitFinalCompositeAndPresentPass",
+        ]
+        for signature in submit_signatures:
+            body = extract_cpp_function_body(source, signature)
+            self.assertNotIn("WaitForFenceValue", body, f"{signature} contains a CPU fence wait")
+            self.assertIsNone(
+                re.search(r"->\s*Flush\s*\(", body),
+                f"{signature} contains a queue/device CPU flush",
+            )
+
+    def test_secondary_copy_keeps_gpu_side_render_fence_wait(self) -> None:
+        source = read(RENDER_PIPELINE_CPP)
+        body = extract_cpp_function_body(source, "void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass")
+        self.assertIn("context.SecondaryCopyQueue->Wait", body)
+        self.assertIn("context.SecondaryRenderFence", body)
+        self.assertIn("context.SecondaryRenderFenceValue", body)
 
 
 if __name__ == "__main__":

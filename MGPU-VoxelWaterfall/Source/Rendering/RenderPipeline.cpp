@@ -43,6 +43,27 @@ namespace
     }
 }
 
+std::optional<D3D12_QUERY_DATA_PIPELINE_STATISTICS> ReadCompletedSecondaryPipelineStatistics(
+    const MultiGpuVoxelFrameRenderTargets& targets)
+{
+    if (!targets.SecondaryPipelineStatsReadback.IsValid())
+        return std::nullopt;
+
+    D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
+    void* mapped = nullptr;
+    const D3D12_RANGE readRange{0, sizeof(stats)};
+    if (FAILED(targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Map(0, &readRange, &mapped)) ||
+        !mapped)
+    {
+        return std::nullopt;
+    }
+
+    std::memcpy(&stats, mapped, sizeof(stats));
+    const D3D12_RANGE emptyRange{0, 0};
+    targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Unmap(0, &emptyRange);
+    return stats;
+}
+
 void RenderPipeline::SubmitPrimaryBasePass(const PrimaryBasePassContext& context) const
 {
     const auto cmdList = context.RenderQueue->GetCommandList();
@@ -169,7 +190,6 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
 
     context.CurrentFrameResource.SecondaryRenderFenceValue =
         context.SecondaryGraphicsQueue->ExecuteCommandList(cmdList);
-    context.SecondaryGraphicsQueue->WaitForFenceValue(context.CurrentFrameResource.SecondaryRenderFenceValue);
     context.BenchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
                                             context.CurrentFrameResource.SecondaryRenderFenceValue);
 
@@ -188,24 +208,6 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
         context.Telemetry->SecondaryGraphicsTimestampEndQuery = context.TimestampHeapIndex + 1;
         context.Telemetry->SecondaryIndirectArgumentMaxCommandCount = indirectDrawCalls > 0 ? 1u : 0u;
         context.Telemetry->SecondaryIndirectArgumentResolvedDrawCount = indirectDrawCalls;
-        if (targets.SecondaryPipelineStatsReadback.IsValid())
-        {
-            D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
-            void* mapped = nullptr;
-            const D3D12_RANGE readRange{0, sizeof(stats)};
-            if (SUCCEEDED(targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Map(0, &readRange, &mapped)) &&
-                mapped)
-            {
-                std::memcpy(&stats, mapped, sizeof(stats));
-                const D3D12_RANGE emptyRange{0, 0};
-                targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Unmap(0, &emptyRange);
-                context.Telemetry->SecondaryPipelineIAPrimitives = stats.IAPrimitives;
-                context.Telemetry->SecondaryPipelineVSInvocations = stats.VSInvocations;
-                context.Telemetry->SecondaryPipelinePSInvocations = stats.PSInvocations;
-                context.Telemetry->SecondaryPipelineCInvocations = stats.CInvocations;
-                context.Telemetry->SecondaryPipelineCPrimitives = stats.CPrimitives;
-            }
-        }
     }
 }
 

@@ -3081,16 +3081,6 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
             runtime.DepthSharedToLocalSource = frameGraphTelemetry.SharedToLocalDepthSource;
             runtime.DepthSharedToLocalDestination = frameGraphTelemetry.SharedToLocalDepthDestination;
         }
-        runtime.SecondaryPipelineIAPrimitives =
-            std::max(runtime.SecondaryPipelineIAPrimitives, frameGraphTelemetry.SecondaryPipelineIAPrimitives);
-        runtime.SecondaryPipelineVSInvocations =
-            std::max(runtime.SecondaryPipelineVSInvocations, frameGraphTelemetry.SecondaryPipelineVSInvocations);
-        runtime.SecondaryPipelinePSInvocations =
-            std::max(runtime.SecondaryPipelinePSInvocations, frameGraphTelemetry.SecondaryPipelinePSInvocations);
-        runtime.SecondaryPipelineCInvocations =
-            std::max(runtime.SecondaryPipelineCInvocations, frameGraphTelemetry.SecondaryPipelineCInvocations);
-        runtime.SecondaryPipelineCPrimitives =
-            std::max(runtime.SecondaryPipelineCPrimitives, frameGraphTelemetry.SecondaryPipelineCPrimitives);
         runtime.SecondaryIndirectArgumentMaxCommandCount =
             std::max(runtime.SecondaryIndirectArgumentMaxCommandCount,
                      frameGraphTelemetry.SecondaryIndirectArgumentMaxCommandCount);
@@ -3169,6 +3159,24 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
             accumulateFrameEvidence();
     }
     Flush();
+
+    for (const auto& frameTargets : multiGpuVoxelRenderTargets.GetFrames())
+    {
+        const auto stats = ReadCompletedSecondaryPipelineStatistics(frameTargets);
+        if (!stats)
+            continue;
+
+        runtime.SecondaryPipelineIAPrimitives =
+            std::max(runtime.SecondaryPipelineIAPrimitives, stats->IAPrimitives);
+        runtime.SecondaryPipelineVSInvocations =
+            std::max(runtime.SecondaryPipelineVSInvocations, stats->VSInvocations);
+        runtime.SecondaryPipelinePSInvocations =
+            std::max(runtime.SecondaryPipelinePSInvocations, stats->PSInvocations);
+        runtime.SecondaryPipelineCInvocations =
+            std::max(runtime.SecondaryPipelineCInvocations, stats->CInvocations);
+        runtime.SecondaryPipelineCPrimitives =
+            std::max(runtime.SecondaryPipelineCPrimitives, stats->CPrimitives);
+    }
 
     runtime.Fallback = !runtime.AnyActualMultiMode;
     runtime.FallbackReason = runtime.Fallback

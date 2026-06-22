@@ -9,6 +9,7 @@
 #include <d3d12.h>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <wrl.h>
@@ -122,6 +123,9 @@ struct VoxelFrameGraphTelemetry
     VoxelExecutionMode RequestedMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;
 };
+
+std::optional<D3D12_QUERY_DATA_PIPELINE_STATISTICS> ReadCompletedSecondaryPipelineStatistics(
+    const MultiGpuVoxelFrameRenderTargets& targets);
 
 struct PrimaryBasePassContext
 {
