@@ -4018,6 +4018,7 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.UpdatedVoxelCount = updatedVoxelCount;
     metadata.SimulationStepsThisFrame = voxelSimulationStepsThisFrame;
     metadata.SimulationDispatchCount = frameGraphTelemetry.SimulationDispatchCount;
+    metadata.SecondaryComputeSubmitted = frameGraphTelemetry.SecondaryComputeSubmitted;
     metadata.SchedulerMode = VoxelSimulationScheduler::SchedulerModeName(frameGraphTelemetry.SchedulerMode);
     metadata.RequestedFixedSteps = frameGraphTelemetry.RequestedFixedSteps;
     metadata.ExecutedFixedSteps = frameGraphTelemetry.ExecutedFixedSteps;

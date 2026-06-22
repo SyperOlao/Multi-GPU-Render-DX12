@@ -182,7 +182,8 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
         << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
         << "primary_partition_voxels,secondary_partition_voxels,visible_primary_count,visible_secondary_count,"
-        << "updated_voxels,simulation_steps,simulation_dispatches,scheduler_mode,requested_fixed_steps,"
+        << "updated_voxels,simulation_steps,simulation_dispatches,secondary_compute_submitted,"
+        << "scheduler_mode,requested_fixed_steps,"
         << "executed_fixed_steps,dropped_steps,dropped_simulation_steps,dropped_simulation_time,"
         << "logical_updated_voxel_count,"
         << "wall_delta_ms,accepted_simulation_delta_ms,frame_resource_backpressure_poll_count,"
@@ -632,6 +633,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.UpdatedVoxelCount << ','
         << frame.Metadata.SimulationStepsThisFrame << ','
         << frame.Metadata.SimulationDispatchCount << ','
+        << BoolText(frame.Metadata.SecondaryComputeSubmitted) << ','
         << EscapeCsv(frame.Metadata.SchedulerMode) << ','
         << frame.Metadata.RequestedFixedSteps << ','
         << frame.Metadata.ExecutedFixedSteps << ','

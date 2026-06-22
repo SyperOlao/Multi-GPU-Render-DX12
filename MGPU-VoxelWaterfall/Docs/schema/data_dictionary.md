@@ -195,7 +195,9 @@ Important fields:
 - `requested_fixed_steps`, `executed_fixed_steps`, dropped-step fields
 - `actual_static_voxels`, `actual_dynamic_voxels`, `total_voxels`
 - `primary_partition_voxels`, `secondary_partition_voxels`
-- `logical_updated_voxel_count`
+- `logical_updated_voxel_count`: requested logical dynamic update work for the frame. Temporal decimation does not reduce this count; it records the work that was logically due for active dynamic partitions.
+- `updated_voxels`, `simulation_dispatches`: physically executed update work. These fields count only actual simulation dispatches and can be lower for temporal modes.
+- `secondary_compute_submitted`: `true` when a secondary compute command list was submitted for this frame. `MultiGpuFull` requires this to be `true` with positive `secondary_compute_ms`; `MultiGpuTemporalDecimation` permits `false` with `secondary_compute_ms=0` on skipped temporal frames, but each temporal run must contain at least one submitted secondary compute frame and, for `temporal_interval > 1`, at least one skipped frame.
 - `render_width`, `render_height`
 - `resolved_config_hash`: mode-specific resolved execution configuration hash; required in every raw frame and must match the execution manifest.
 - `visual_validation_case_id`, `visual_validation_protocol_hash`, `visual_validation_config_hash`, `visual_validation_camera_hash`

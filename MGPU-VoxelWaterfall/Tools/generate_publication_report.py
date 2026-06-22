@@ -96,16 +96,21 @@ def endpoint_row(label: str, suite: str, result: dict[str, Any], endpoint: str |
     stats = result.get("statistics", {}) if isinstance(result, dict) else {}
     if endpoint is None:
         endpoint = str(result.get("endpoint") or stats.get("endpoint") or "")
-    diff = stats.get("difference_ms_ci95") if isinstance(stats.get("difference_ms_ci95"), dict) else {}
+    diff = stats.get("difference_ci95")
+    if not isinstance(diff, dict):
+        diff = stats.get("difference_ms_ci95") if isinstance(stats.get("difference_ms_ci95"), dict) else {}
     log_ci = stats.get("log_speedup_ci95") if isinstance(stats.get("log_speedup_ci95"), dict) else {}
     speed_ci = stats.get("speedup_ci95") if isinstance(stats.get("speedup_ci95"), dict) else {}
+    result_status = result.get("result", "NOT_MEASURED")
+    if result_status == "SUPPORT" and ci_status(diff) != "MEASURED":
+        result_status = "NOT_MEASURED"
     return {
         "suite": suite,
         "hypothesis": label,
         "endpoint": endpoint or "NOT_MEASURED",
         "paired_n": stats.get("paired_n", "NOT_MEASURED"),
-        "mean_difference_ms": stats.get("mean_difference_ms"),
-        "median_difference_ms": stats.get("median_difference_ms"),
+        "mean_difference_ms": stats.get("mean_difference", stats.get("mean_difference_ms")),
+        "median_difference_ms": stats.get("median_difference", stats.get("median_difference_ms")),
         "difference_ci_status": ci_status(diff),
         "difference_ci_lower_ms": diff.get("lower"),
         "difference_ci_upper_ms": diff.get("upper"),
@@ -117,9 +122,9 @@ def endpoint_row(label: str, suite: str, result: dict[str, Any], endpoint: str |
         "speedup_ci_status": ci_status(speed_ci),
         "speedup_ci_lower": speed_ci.get("lower"),
         "speedup_ci_upper": speed_ci.get("upper"),
-        "effect_direction": stats.get("effect_direction", "NOT_MEASURED"),
+        "effect_direction": result.get("effect_direction", stats.get("effect_direction", "NOT_MEASURED")),
         "coefficient_of_variation": stats.get("coefficient_of_variation"),
-        "result": result.get("result", "NOT_MEASURED"),
+        "result": result_status,
     }
 
 

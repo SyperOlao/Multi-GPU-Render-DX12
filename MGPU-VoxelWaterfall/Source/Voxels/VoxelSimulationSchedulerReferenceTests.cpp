@@ -33,21 +33,12 @@ namespace
     }
 
     uint32_t LogicalWorkForPair(const uint32_t frameCount,
-                                const uint32_t interval,
                                 const uint32_t primaryVoxels,
                                 const uint32_t secondaryVoxels)
     {
         uint32_t logicalWork = 0;
-        bool secondaryStarted = false;
         for (uint64_t step = 0; step < frameCount; ++step)
-        {
-            logicalWork += primaryVoxels;
-            if (VoxelSimulationScheduler::ShouldRunTemporalUpdate(step, interval, secondaryStarted))
-            {
-                logicalWork += secondaryVoxels;
-                secondaryStarted = true;
-            }
-        }
+            logicalWork += primaryVoxels + secondaryVoxels;
         return logicalWork;
     }
 }
@@ -117,14 +108,12 @@ void RunVoxelSimulationSchedulerReferenceTests()
     constexpr uint32_t frameCount = 16;
     constexpr uint32_t primaryVoxels = 700;
     constexpr uint32_t secondaryVoxels = 300;
-    for (const uint32_t interval : {1u, 2u, 4u})
-    {
-        const uint32_t singleLogicalWork =
-            LogicalWorkForPair(frameCount, interval, primaryVoxels, secondaryVoxels);
-        const uint32_t multiLogicalWork =
-            LogicalWorkForPair(frameCount, interval, primaryVoxels, secondaryVoxels);
-        assert(singleLogicalWork == multiLogicalWork);
-    }
+    const uint32_t fullLogicalWork = LogicalWorkForPair(frameCount, primaryVoxels, secondaryVoxels);
+    const uint32_t temporalLogicalWork = LogicalWorkForPair(frameCount, primaryVoxels, secondaryVoxels);
+    assert(fullLogicalWork == temporalLogicalWork);
+    assert(CountTemporalDispatches(frameCount, 4) < CountTemporalDispatches(frameCount, 1));
+    assert(CountTemporalDispatches(frameCount, 4) * secondaryVoxels <
+           CountTemporalDispatches(frameCount, 1) * secondaryVoxels);
 }
 
 #endif

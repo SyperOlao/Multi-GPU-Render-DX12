@@ -754,6 +754,11 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
         actual = row.get("actual_mode", "")
         require(requested == actual, "requested_mode != actual_mode")
         require(requested == config["mode"], "raw requested mode does not match config")
+        expected_temporal_policy = "Decimated" if "Temporal" in requested else "Full"
+        require(row.get("temporal_policy", "") == expected_temporal_policy,
+                "raw temporal_policy does not match requested_mode")
+        require(str(config.get("spatial_lod", "")) == row.get("spatial_lod", ""),
+                "raw spatial_lod_policy does not match manifest config")
         require(not row.get("fallback_reason", ""), "fallback_reason is non-empty")
         queue_calibration_valid(row)
         require(int_value(row, "dropped_steps", minimum=0) == 0, "dropped_steps != 0")
@@ -791,8 +796,19 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
                     "multi secondary partition empty")
             require(int_value(row, "secondary_draw_calls", minimum=1) > 0,
                     "multi secondary draw calls zero")
-            require(float_value(row, "secondary_compute_ms", minimum=0.0) > 0.0,
-                    "multi secondary compute is zero")
+            require("secondary_compute_submitted" in row and row["secondary_compute_submitted"] != "",
+                    "secondary_compute_submitted missing")
+            secondary_submitted = bool_value(row["secondary_compute_submitted"], "secondary_compute_submitted")
+            secondary_compute_ms = float_value(row, "secondary_compute_ms", minimum=0.0)
+            if requested == "MultiGpuFull":
+                require(secondary_submitted, "MultiGpuFull secondary compute was not submitted")
+                require(secondary_compute_ms > 0.0, "MultiGpuFull secondary compute is zero")
+            elif secondary_submitted:
+                require(secondary_compute_ms > 0.0,
+                        "MultiGpuTemporalDecimation submitted secondary compute has zero timing")
+            else:
+                require(abs(secondary_compute_ms) <= EPS,
+                        "MultiGpuTemporalDecimation skipped secondary compute has nonzero timing")
             require(float_value(row, "secondary_graphics_ms", minimum=0.0) > 0.0,
                     "multi secondary graphics is zero")
             require(float_value(row, "secondary_local_to_shared_copy_ms", minimum=0.0) > 0.0,
@@ -863,6 +879,10 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
         transfer = [optional_float(row, "transfer_ms") for row in valid_frames]
         composite = [optional_float(row, "composite_ms") for row in valid_frames]
         secondary_compute = [optional_float(row, "secondary_compute_ms") for row in valid_frames]
+        secondary_compute_submitted = [
+            bool_value(row.get("secondary_compute_submitted", "false"), "secondary_compute_submitted")
+            for row in valid_frames
+        ]
         primary_submitted = [optional_float(row, "primary_submitted_voxels") for row in valid_frames]
         secondary_submitted = [optional_float(row, "secondary_submitted_voxels") for row in valid_frames]
         first = valid_frames[0]
@@ -912,6 +932,12 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
         randomization_seed = int_value(
             {"randomization_seed": constant_frame_value(valid_frames, "randomization_seed", required=True)},
             "randomization_seed", minimum=0)
+        if requested_mode == "MultiGpuTemporalDecimation":
+            require(any(secondary_compute_submitted),
+                    f"Temporal run {key} has no submitted secondary compute frame")
+            if int(config_value(config, "temporal_interval", default=1)) > 1:
+                require(any(not submitted for submitted in secondary_compute_submitted),
+                        f"Temporal run {key} interval > 1 has no skipped secondary compute frames")
         runs[key] = {
             "run_id": run_id,
             "session_id": session_id,
@@ -978,6 +1004,7 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "transfer_ms": mean(transfer),
             "composite_ms": mean(composite),
             "secondary_compute_ms": mean(secondary_compute),
+            "secondary_compute_submitted_frame_count": sum(1 for submitted in secondary_compute_submitted if submitted),
             "primary_submitted_voxels": mean(primary_submitted),
             "secondary_submitted_voxels": mean(secondary_submitted),
         }
@@ -1786,14 +1813,15 @@ class HostileFixture:
             cfg["pair_id"], cfg["block_id"], cfg["repetition"], cfg["order_index"],
             cfg["block_order_index"], cfg["pair_member_order"], cfg["randomization_seed"],
             cfg["mode"], cfg["mode"], "", "MixedStaticAndDynamic", "Valid matching benchmark configuration",
-            "Benchmark", 1, 1, 0, 0, 0, 100000, 25000, 125000, 100000, 25000,
+            "Decimated" if "Temporal" in cfg["mode"] else "Full", cfg["spatial_lod"], "Benchmark",
+            1, 1, 0, 0, 0, 100000, 25000, 125000, 100000, 25000,
             100000, 25000 if multi else 0, 10, 1920, 1080,
             cfg["resolved_config_hash"], "full_lod_off|equivalence|steady_240",
             "protocol", cfg["resolved_config_hash"], "case-camera-full", "true", "true",
             "true", "true", "true", "true", "true", "true",
             0.5, 1.5, 2.0, 10.0 if not multi else 5.0,
             8.0 if not multi else 4.0, 9.0 if not multi else 5.0,
-            1.0, 2.0, 1.0 if multi else 0.0, 1.0 if multi else 0.0,
+            1.0, 2.0, "true" if multi else "false", 1.0 if multi else 0.0, 1.0 if multi else 0.0,
             0.5 if multi else 0.0, 0.5 if multi else 0.0, 1.0 if multi else 0.0, 1.0,
             100 if multi else 0, 100 if multi else 0, 0, 200 if multi else 0,
             2 if multi else 0, 75000 if multi else 100000, 25000 if multi else 0, "true", "",
@@ -1811,7 +1839,8 @@ class HostileFixture:
 RAW_HEADER = [
     "schema", "run_id", "suite", "frame_index", "session_id", "config_id", "pair_id", "block_id",
     "repetition", "randomized_order_index", "block_order_index", "pair_member_order", "randomization_seed",
-    "requested_mode", "actual_mode", "fallback_reason", "profile", "benchmark_config_class", "scheduler_mode",
+    "requested_mode", "actual_mode", "fallback_reason", "profile", "benchmark_config_class",
+    "temporal_policy", "spatial_lod_policy", "scheduler_mode",
     "requested_fixed_steps", "executed_fixed_steps", "dropped_steps", "dropped_simulation_steps",
     "dropped_simulation_time", "actual_static_voxels", "actual_dynamic_voxels", "total_voxels",
     "static_budget", "dynamic_budget", "primary_partition_voxels", "secondary_partition_voxels",
@@ -1824,7 +1853,7 @@ RAW_HEADER = [
     "secondary_compute_queue_calibration_valid", "secondary_graphics_queue_calibration_valid",
     "frame_resource_backpressure_ms", "cpu_submission_ms", "cpu_total_frame_ms",
     "present_to_present_ms", "critical_path_gpu_ms", "gpu_work_sum_ms", "primary_compute_ms",
-    "primary_base_graphics_ms", "secondary_compute_ms", "secondary_graphics_ms",
+    "primary_base_graphics_ms", "secondary_compute_submitted", "secondary_compute_ms", "secondary_graphics_ms",
     "secondary_local_to_shared_copy_ms", "primary_shared_to_local_copy_ms", "transfer_ms", "composite_ms",
     "color_transfer_bytes", "depth_transfer_bytes", "particle_transfer_bytes", "render_output_transfer_bytes",
     "secondary_draw_calls", "primary_submitted_voxels", "secondary_submitted_voxels",
@@ -1944,6 +1973,60 @@ class AnalysisTests(unittest.TestCase):
             self.assertIn("validation_case_id", rows[0])
             result = validate(root)
             self.assertEqual(result["status"], "PASS")
+
+    def test_temporal_secondary_compute_skipped_frames_are_valid_and_average_includes_zero(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            mode_hashes = {
+                "c_single": ("SingleGpuTemporalDecimation", "single-temporal-hash"),
+                "c_multi": ("MultiGpuTemporalDecimation", "multi-temporal-hash"),
+            }
+            manifest = read_json(root / "manifest.json")
+            for config in manifest["configs"]:
+                mode, resolved_hash = mode_hashes[config["config_id"]]
+                config["mode"] = mode
+                config["temporal_interval"] = 4
+                config["resolved_config_hash"] = resolved_hash
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            for config_id, (mode, resolved_hash) in mode_hashes.items():
+                self.update_execution_manifest(root, config_id, resolved_config_hash=resolved_hash)
+                self.update_csv_rows(
+                    root, "runs.csv", lambda row, cid=config_id: row["config_id"] == cid,
+                    requested_mode=mode, actual_mode=mode, resolved_config_hash=resolved_hash)
+                self.update_csv_rows(
+                    root, "raw_frames.csv", lambda row, cid=config_id: row["config_id"] == cid,
+                    requested_mode=mode, actual_mode=mode, temporal_policy="Decimated",
+                    resolved_config_hash=resolved_hash, visual_validation_config_hash=resolved_hash)
+            visual = read_json(root / "voxel_visual_validation.json")
+            case = visual["cases"][0]
+            case.update({
+                "reference_config_hash": "single-temporal-hash",
+                "candidate_config_hash": "multi-temporal-hash",
+                "requested_single_mode": "SingleGpuTemporalDecimation",
+                "actual_single_mode": "SingleGpuTemporalDecimation",
+                "requested_multi_mode": "MultiGpuTemporalDecimation",
+                "actual_multi_mode": "MultiGpuTemporalDecimation",
+            })
+            (root / "voxel_visual_validation.json").write_text(json.dumps(visual), encoding="utf-8")
+            self.rewrite_validation_csv_from_json(root)
+            rows = read_csv(root / "raw_frames.csv")
+            for row in rows:
+                if row["config_id"] == "c_multi":
+                    if row["frame_index"] == "0":
+                        row["secondary_compute_submitted"] = "true"
+                        row["secondary_compute_ms"] = "2.0"
+                    else:
+                        row["secondary_compute_submitted"] = "false"
+                        row["secondary_compute_ms"] = "0.0"
+                else:
+                    row["secondary_compute_submitted"] = "false"
+                    row["secondary_compute_ms"] = "0.0"
+            write_dict_csv(root / "raw_frames.csv", rows)
+
+            result = validate(root)
+            multi_run = next(run for run in result["recomputed_runs"] if run["config_id"] == "c_multi")
+            self.assertEqual(multi_run["secondary_compute_submitted_frame_count"], 1)
+            self.assertAlmostEqual(multi_run["secondary_compute_ms"], 1.0)
 
     def test_pairing_fails_for_different_pair_id(self) -> None:
         temp, root = self.fixture()
@@ -2081,6 +2164,9 @@ class AnalysisTests(unittest.TestCase):
             })
             (root / "voxel_visual_validation.json").write_text(json.dumps(visual), encoding="utf-8")
             self.rewrite_validation_csv_from_json(root)
+            self.update_csv_rows(
+                root, "raw_frames.csv", lambda row: row["config_id"] in {"c_single", "c_multi"},
+                spatial_lod_policy="ThreeLevel")
             self.update_csv_rows(
                 root, "raw_frames.csv", lambda row: row["config_id"] == "c_multi",
                 visual_validation_case_id="multi_lod_on|fidelity|steady_240")

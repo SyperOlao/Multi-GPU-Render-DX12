@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import json
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,7 @@ REPRODUCTION = ROOT / "Docs" / "Reproduction.md"
 METHODOLOGY = ROOT / "Docs" / "Methodology.md"
 RESEARCH_PROVENANCE = ROOT / "Source" / "Benchmark" / "ResearchProvenance.cpp"
 RENDER_PIPELINE_CPP = ROOT / "Source" / "Rendering" / "RenderPipeline.cpp"
+RESULTS_NOTEBOOK = ROOT / "Research" / "notebooks" / "results_analysis.ipynb"
 
 
 def read(path: Path) -> str:
@@ -126,6 +128,26 @@ class DocsConsistencyTests(unittest.TestCase):
         self.assertIn("context.SecondaryCopyQueue->Wait", body)
         self.assertIn("context.SecondaryRenderFence", body)
         self.assertIn("context.SecondaryRenderFenceValue", body)
+
+    def test_results_notebook_integrity(self) -> None:
+        notebook = json.loads(read(RESULTS_NOTEBOOK))
+        self.assertEqual(notebook.get("nbformat"), 4)
+        self.assertIsInstance(notebook.get("cells"), list)
+        forbidden_magics = []
+        old_summary_keys = []
+        for index, cell in enumerate(notebook["cells"]):
+            source = cell.get("source", "")
+            if isinstance(source, list):
+                source = "".join(source)
+            self.assertNotIn("???", source)
+            if cell.get("cell_type") == "code":
+                if re.search(r"(?m)^\\s*%%|^\\s*%sql\\b|^\\s*%load_ext\\b", source):
+                    forbidden_magics.append(index)
+                compile(source, f"{RESULTS_NOTEBOOK.name}:cell{index}", "exec")
+            if "difference_ms_ci95" in source or "mean_difference_ms" in source:
+                old_summary_keys.append(index)
+        self.assertFalse(forbidden_magics, f"unknown notebook magics in cells: {forbidden_magics}")
+        self.assertFalse(old_summary_keys, f"old summary keys in notebook cells: {old_summary_keys}")
 
 
 if __name__ == "__main__":

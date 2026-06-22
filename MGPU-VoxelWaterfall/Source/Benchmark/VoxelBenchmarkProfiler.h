@@ -78,6 +78,7 @@ public:
         uint32_t UpdatedVoxelCount = 0;
         uint32_t SimulationStepsThisFrame = 0;
         uint32_t SimulationDispatchCount = 0;
+        bool SecondaryComputeSubmitted = false;
         std::string SchedulerMode;
         uint32_t RequestedFixedSteps = 0;
         uint32_t ExecutedFixedSteps = 0;

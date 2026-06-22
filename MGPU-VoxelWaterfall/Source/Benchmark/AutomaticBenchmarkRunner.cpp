@@ -209,8 +209,8 @@ std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildConfigs(
     const uint32_t repetitionOverride)
 {
     constexpr ModeSpec smokeModes[] = {
-        {VoxelExecutionMode::SingleGpuFull, "SingleGpuFull", "Full", 2},
-        {VoxelExecutionMode::MultiGpuFull, "MultiGpuFull", "Full", 2},
+        {VoxelExecutionMode::SingleGpuFull, "SingleGpuFull", "Full", 1},
+        {VoxelExecutionMode::MultiGpuFull, "MultiGpuFull", "Full", 1},
         {VoxelExecutionMode::SingleGpuTemporalDecimation, "SingleGpuTemporalDecimation", "Temporal", 2},
         {VoxelExecutionMode::MultiGpuTemporalDecimation, "MultiGpuTemporalDecimation", "Temporal", 2}
     };

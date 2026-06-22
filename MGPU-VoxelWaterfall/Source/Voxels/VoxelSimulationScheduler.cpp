@@ -251,6 +251,8 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
         for (auto& partition : context.Workload.Partitions)
         {
             const uint32_t effectiveInterval = GetEffectiveUpdateInterval(context.ExecutionMode, partition);
+            if (HasDispatchableEmitter(partition))
+                result.LogicalUpdatedVoxelCount += partition.VoxelCount();
             if (!ShouldDispatchPartition(partition, fixedStepIndex, effectiveInterval))
                 continue;
 
@@ -269,7 +271,6 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
             context.BenchmarkProfiler.ResolveRange(cmdList, queueId, range);
             MarkPartitionUpdated(partition, fixedStepIndex);
             ++result.SimulationDispatchCount;
-            result.LogicalUpdatedVoxelCount += partition.VoxelCount();
 
             if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
                 result.SecondaryWorkThisFrame = true;
