@@ -547,7 +547,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         ImGui::Text("Benchmark progress: %.1f%%", context.BenchmarkProfiler.GetProgress() * 100.0f);
         ImGui::Text("Rows: %u/%u",
                     context.BenchmarkProfiler.GetRowsWritten(),
-                    VoxelBenchmarkProfiler::RecordedFrameCount);
+                    context.BenchmarkProfiler.GetRecordedFrameCount());
     }
 
     ImGui::End();

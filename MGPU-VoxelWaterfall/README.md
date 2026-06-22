@@ -80,11 +80,130 @@ Runs fix the seed, deterministic voxel ids, secondary share, render resolution, 
 
 The raw CSV includes CPU frame time, calibrated critical-path GPU time, GPU work sum, compute, LOD compaction, graphics, copy, composite, transfer bytes, submitted voxel counts, LOD counts, requested/actual mode, and visual validation metrics.
 
+Automatic benchmark suites are fail-closed. They start measurement only after deterministic visual validation and explicit two-hardware-adapter verification both report `PASS` for the same build, shader hash, adapter pair, and validation configuration.
+
+Smoke suite:
+
+- command: `MGPU-VoxelWaterfall.exe --benchmark-smoke --benchmark-output-dir=<dir>`;
+- optional deterministic seed override: `--benchmark-seed=<uint>`;
+- 8 executions: `SingleGpuFull`, `MultiGpuFull`, `SingleGpuTemporalDecimation`, `MultiGpuTemporalDecimation` crossed with Spatial LOD off/on;
+- Low canonical 100k preset, secondary share 0.5, recorded temporal interval 2;
+- 1 repetition, 30 warm-up frames, 120 measured frames;
+- intended after every code change.
+
+Full suite:
+
+- command: `MGPU-VoxelWaterfall.exe --benchmark-full --benchmark-output-dir=<dir>`;
+- optional deterministic seed override: `--benchmark-seed=<uint>`;
+- presets 100k, 250k, 500k, 1m;
+- Full and Temporal Single/Multi modes, shares 0.25/0.5/0.75, Spatial LOD off/on;
+- 3 repetitions, 100 warm-up frames, 500 measured frames;
+- deterministic randomized order with the recorded seed;
+- intended as an overnight run after PASS Smoke, visual validation, and hardware verification.
+
+Expected output files:
+
+- `VoxelBenchmark_<Suite>_Status.json` for suite PASS/RUNNING/COMPLETE/BLOCKED state;
+- `manifest.json` with suite, run id, gates, exact matrix, hashes, statistical method, and exclusion rules;
+- `environment.json` with git, executable/DLL/shader hashes, OS, CPU/RAM, GPU identifiers, drivers, display, debug layer, process, and timestamp metadata. Unknown values include a reason;
+- `two_adapter_preflight.json` from explicit hardware verification;
+- `voxel_visual_validation.json` and `voxel_visual_validation.csv`;
+- `raw_frames.csv`, the concatenated frame-level records;
+- one raw CSV per execution for traceability;
+- `runs.csv`, the independent repetition/run-level records;
+- `paired_summary.csv`, the paired aggregate summary;
+- `invalid_records.csv`, the predeclared exclusion journal;
+- one per-execution manifest JSON with run id, pair id, resolved counts, validation ids, hashes, and status;
+- `README.txt` with exact reproduction commands for the artifact directory.
+
+Exit codes:
+
+- `0`: suite completed or explicit verification passed;
+- `2`: failed or invalid runtime result;
+- `3`: blocked precondition, including missing validation PASS or incompatible two-adapter hardware.
+
+`--verify-two-adapter` is an inventory/preflight/runtime-verification command. If the machine lacks a compatible second hardware adapter, it exits `3` and writes BLOCKED evidence instead of falling back to Single mode.
+
 ## Validation
 
 Visual validation is numeric, not based on submission flags. A valid result requires color/depth comparison metrics such as MAE, RMSE, PSNR, maximum error, mismatch percentages, and depth RMSE. Benchmark rows without available validation metrics are marked invalid and are excluded from speedup.
 
 Current limitation: the validation runner fails closed when deterministic Single/Multi validation textures are not captured, so those runs report invalid rather than a false pass.
+
+## Research Protocol
+
+Research questions:
+
+- Does explicit two-hardware-adapter rendering reduce CPU frame time and calibrated critical-path GPU time for the deterministic synthetic voxel waterfall workload?
+- How do temporal decimation and spatial density LOD affect the Single/Multi paired difference?
+- Do cross-adapter color/depth transfers dominate or amortize under the tested workload sizes and secondary shares?
+
+Hypotheses:
+
+- H1: A validated `MultiGpuFull` run can reduce run-mean CPU frame time versus its matched `SingleGpuFull` block when the secondary partition is non-empty and render-output transfer is active.
+- H2: Temporal decimation reduces GPU1 compute work but must not invalidate visual validation or matching semantics.
+- H3: Spatial Density LOD reduces submitted voxel counts monotonically without changing simulation counts.
+
+Primary endpoint:
+
+- Run-level mean CPU frame time for explicit matched Single/Multi pairs.
+
+Secondary metrics:
+
+- Calibrated critical-path GPU time, GPU work sum, compute/graphics/copy/composite timing, transfer bytes, submitted/rendered voxel counts, LOD counts, validation metrics, and invalid frame counts.
+
+Workload definition:
+
+- The workload is a deterministic synthetic voxel waterfall scene with static canyon/basin geometry and dynamic voxel particles. It is a graphics benchmark and is not a physically correct fluid simulation.
+
+Validation criteria:
+
+- Benchmark measurement starts only after deterministic visual validation and explicit two-hardware-adapter verification both pass for the same build hash, shader hash, adapter pair, and validation configuration.
+- Requested Multi mode falling back to Single is `BLOCKED` or `INVALID`, not a valid comparative result.
+
+Experimental procedure:
+
+- Run Smoke after every code change.
+- Run Full only after PASS Smoke, PASS visual validation, and PASS two-GPU verification on compatible hardware.
+- Full uses three independent repetitions per configuration. The randomized order is deterministic and logged by seed.
+- Pair/block IDs encode matching workload, seed, resolved counts, LOD policy, temporal policy, resolution, and requested secondary share.
+- Multiple sessions can be run by selecting different output directories and seed overrides; each session writes its own manifest.
+
+Exclusion rules:
+
+- Exclusions are predeclared in `manifest.json` and recorded in `invalid_records.csv`.
+- No outliers are removed silently.
+- Invalid timestamp calibration invalidates dependent cross-queue metrics.
+- Missing visual validation, missing matching pair, mode fallback, nonzero particle transfer, zero Multi render-output transfer, or contradictory draw/partition records invalidate the row.
+
+Statistical method:
+
+- The experimental unit for inference is an independent benchmark repetition/run, not an individual frame.
+- Frames inside a run are descriptive distribution samples and contribute run mean/median/P95/P99 only.
+- Aggregate confidence intervals use a two-sided Student-t interval over run means. With three repetitions this uses `df=2`, not a normal `1.96` approximation.
+- Paired speedup is computed only after matching run-level aggregation.
+- `speedup / 2` is reported as `TwoDeviceNominalEfficiency`; it is not a capacity-normalized heterogeneous multi-GPU efficiency.
+
+Threats to internal validity:
+
+- Thermal drift, driver scheduling, background processes, power plan changes, display topology, debug layer/GPU validation state, and invalid timestamp calibration can affect timings.
+- Cross-adapter support and driver versions are adapter-pair specific.
+- Visual validation must pass for the exact build/shader/adapter pair; stale validation results are rejected.
+
+Threats to external validity:
+
+- Results apply to this synthetic voxel workload and tested hardware pair. They should not be generalized to physically correct fluid simulation, unrelated renderers, or heterogeneous adapters without new validation.
+
+Reproducibility instructions:
+
+- Use the commands recorded in each artifact directory `README.txt`.
+- Re-run offline analysis with:
+
+```text
+python MGPU-VoxelWaterfall\Tools\analyze_benchmark.py --input <artifact-dir>
+```
+
+- The analysis script reads only raw artifacts, validates schema/hash consistency, recomputes summaries, and exits nonzero for `FAIL` or `BLOCKED`.
 
 ## Requirements And Limits
 

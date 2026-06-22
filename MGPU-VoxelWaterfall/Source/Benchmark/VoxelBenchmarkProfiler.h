@@ -115,6 +115,8 @@ public:
         uint32_t SecondaryLod2Count = 0;
         bool VisualValidationHasResult = false;
         bool VisualValidationPassed = false;
+        std::string VisualValidationRunId;
+        uint64_t VisualValidationSnapshotHash = 0;
         double VisualValidationColorMAE = 0.0;
         double VisualValidationColorRMSE = 0.0;
         double VisualValidationPSNR = 0.0;
@@ -138,6 +140,7 @@ public:
         std::string BenchmarkConfigClass;
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
+        std::string PairId;
         std::string SkipReason;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
@@ -150,6 +153,8 @@ public:
         uint32_t Repetition = 0;
         uint32_t RepetitionCount = 1;
         uint32_t MeasuredFrameCount = 0;
+        uint32_t ValidFrameCount = 0;
+        uint32_t InvalidFrameCount = 0;
         bool Valid = true;
         std::string ValidityReason;
         std::string SpeedupStatistic = "mean_cpu_frame_ms";
@@ -220,15 +225,25 @@ public:
 
     bool IsInitialized() const { return initialized; }
     bool IsActive() const { return active; }
-    bool IsComplete() const { return rowsWritten >= RecordedFrameCount; }
+    bool IsComplete() const { return rowsWritten >= recordedFrameCount; }
     float GetProgress() const;
-    uint32_t GetWarmupFramesSeen() const { return std::min(framesSeen, WarmupFrameCount); }
+    uint32_t GetWarmupFramesSeen() const { return std::min(framesSeen, warmupFrameCount); }
     uint32_t GetRowsWritten() const { return rowsWritten; }
+    uint32_t GetWarmupFrameCount() const { return warmupFrameCount; }
+    uint32_t GetRecordedFrameCount() const { return recordedFrameCount; }
     const std::filesystem::path& GetCsvPath() const { return csvPath; }
 
     bool Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata);
     bool Start(const std::filesystem::path& outputDirectory, const FrameMetadata& metadata,
-               const std::string& fileName, const std::string& presetName, uint32_t repetition);
+               const std::string& fileName, const std::string& presetName, uint32_t repetition,
+               uint32_t warmupFrames = DefaultWarmupFrameCount,
+               uint32_t measuredFrames = DefaultRecordedFrameCount,
+               const std::string& suiteName = "",
+               const std::string& runId = "",
+               const std::string& configId = "",
+               const std::string& pairId = "",
+               uint32_t orderIndex = 0,
+               uint32_t randomizationSeed = 0);
     void Stop();
     bool HasCompletedSummary() const { return completedSummaryReady; }
     BenchmarkSummary ConsumeCompletedSummary();
@@ -244,8 +259,10 @@ public:
     void ResolveRange(const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList, QueueId queue, RangeId range);
     void SetQueueFence(QueueId queue, uint64_t fenceValue);
 
-    static constexpr uint32_t WarmupFrameCount = 100;
-    static constexpr uint32_t RecordedFrameCount = 500;
+    static constexpr uint32_t DefaultWarmupFrameCount = 100;
+    static constexpr uint32_t DefaultRecordedFrameCount = 500;
+    static constexpr uint32_t WarmupFrameCount = DefaultWarmupFrameCount;
+    static constexpr uint32_t RecordedFrameCount = DefaultRecordedFrameCount;
 
 private:
     static constexpr uint32_t RingFrameCount = 32;
@@ -263,6 +280,9 @@ private:
         uint64_t Frequency = 1;
         uint64_t CalibrationGpuTimestamp = 0;
         uint64_t CalibrationCpuQpc = 0;
+        HRESULT CalibrationHResult = E_FAIL;
+        bool CalibrationValid = false;
+        bool CalibrationMonotonic = false;
         bool Valid = false;
     };
 
@@ -299,10 +319,18 @@ private:
     bool active = false;
     uint32_t framesSeen = 0;
     uint32_t rowsWritten = 0;
+    uint32_t warmupFrameCount = DefaultWarmupFrameCount;
+    uint32_t recordedFrameCount = DefaultRecordedFrameCount;
     uint32_t currentRepetition = 0;
+    uint32_t currentOrderIndex = 0;
+    uint32_t currentRandomizationSeed = 0;
     std::ofstream csv;
     std::filesystem::path csvPath;
     std::string currentPresetName;
+    std::string currentSuiteName;
+    std::string currentRunId;
+    std::string currentConfigId;
+    std::string currentPairId;
     BenchmarkSummary completedSummary{};
     TimingSnapshot latestTimingSnapshot{};
     bool completedSummaryReady = false;

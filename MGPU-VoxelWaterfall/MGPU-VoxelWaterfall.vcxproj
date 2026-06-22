@@ -168,6 +168,7 @@
         <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"/>
         <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"/>
         <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"/>
+        <ClCompile Include="Source\Benchmark\ResearchArtifactWriter.cpp"/>
         <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"/>
         <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"/>
         <ClCompile Include="Source\Platform\Win32InputRouter.cpp"/>
@@ -178,6 +179,7 @@
         <ClCompile Include="Source\Scene\VoxelResearchCameraController.cpp"/>
         <ClCompile Include="Source\Scene\VoxelResearchSceneManager.cpp"/>
         <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"/>
+        <ClCompile Include="Source\Validation\TwoAdapterVerification.cpp"/>
         <ClCompile Include="Source\Validation\VoxelVisualValidationRunner.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"/>
         <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"/>
@@ -220,6 +222,7 @@
         <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"/>
         <ClInclude Include="Source\Benchmark\BenchmarkController.h"/>
         <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"/>
+        <ClInclude Include="Source\Benchmark\ResearchArtifactWriter.h"/>
         <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"/>
         <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"/>
         <ClInclude Include="Source\Platform\Win32InputRouter.h"/>
@@ -230,6 +233,7 @@
         <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"/>
         <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"/>
         <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"/>
+        <ClInclude Include="Source\Validation\TwoAdapterVerification.h"/>
         <ClInclude Include="Source\Validation\VoxelVisualValidationRunner.h"/>
         <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"/>
         <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"/>
@@ -244,6 +248,7 @@
     </ItemGroup>
     <ItemGroup>
         <None Include="README.md"/>
+        <None Include="Tools\analyze_benchmark.py"/>
         <None Include="packages.config"/>
         <None Include="Shaders\Common.hlsl">
             <FileType>Document</FileType>
@@ -353,9 +358,15 @@
         <None Include="Shaders\BuildLodRenderList.hlsl">
             <FileType>Document</FileType>
         </None>
-        <None Include="Shaders\VoxelValidationCompare.hlsl">
+        <FxCompile Include="Shaders\VoxelValidationCompare.hlsl">
             <FileType>Document</FileType>
-        </None>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">CS</EntryPointName>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
+        </FxCompile>
     </ItemGroup>
     <ItemGroup>
         <FxCompile Include="Shaders\ComputeParticle.hlsl">

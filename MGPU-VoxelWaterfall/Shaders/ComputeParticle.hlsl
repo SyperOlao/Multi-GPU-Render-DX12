@@ -120,7 +120,7 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
     const float2 spreadDirection = SafeNormalize2(particle.CurrentContinuousPosition.xz +
         float2(HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed) - 0.5f,
                HashUnitFloat(particle.GlobalVoxelId ^ EmitterBuffer.Seed ^ 0x68bc21ebu) - 0.5f));
-    const float basinContact = saturate((EmitterBuffer.FloorHeight + voxelSize * 2.5f -
+    const float preStepBasinContact = saturate((EmitterBuffer.FloorHeight + voxelSize * 2.5f -
         particle.CurrentContinuousPosition.y) / max(voxelSize * 2.5f, 0.001f));
     const float2 basinBounds = float2(
         max(EmitterBuffer.WaterfallWidth * 0.75f, voxelSize * 4.0f),
@@ -132,10 +132,10 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
     particle.Velocity += EmitterBuffer.Force * dt;
     particle.Velocity.xz += (float2(flowX, flowZ) + spreadDirection * floorSpread * 4.0f) * dt;
-    particle.Velocity.xz += spreadDirection * basinContact * 6.0f * dt;
-    particle.Velocity.y = lerp(particle.Velocity.y, -voxelSize * 1.25f, basinContact * 0.22f);
+    particle.Velocity.xz += spreadDirection * preStepBasinContact * 6.0f * dt;
+    particle.Velocity.y = lerp(particle.Velocity.y, -voxelSize * 1.25f, preStepBasinContact * 0.22f);
     particle.CurrentContinuousPosition += particle.Velocity * dt;
-    if (basinContact > 0.0f)
+    if (preStepBasinContact > 0.0f)
     {
         particle.CurrentContinuousPosition.xz = clamp(
             particle.CurrentContinuousPosition.xz,
@@ -146,18 +146,25 @@ void CS(uint3 groupID : SV_GroupID, uint groupIndex : SV_GroupIndex)
             particle.CurrentContinuousPosition.y = poolSurfaceY;
             particle.Velocity.y = max(particle.Velocity.y, 0.0f) * 0.15f;
         }
-        particle.Velocity.xz *= lerp(1.0f, 0.92f, basinContact);
+        particle.Velocity.xz *= lerp(1.0f, 0.92f, preStepBasinContact);
     }
+
+    const float postStepBasinContact = saturate((EmitterBuffer.FloorHeight + voxelSize * 2.5f -
+        particle.CurrentContinuousPosition.y) / max(voxelSize * 2.5f, 0.001f));
+    const bool inPool = postStepBasinContact > 0.0f &&
+        all(abs(particle.CurrentContinuousPosition.xz) <= basinBounds + voxelSize);
     particle.AgeSeconds += dt;
+    particle.BasinAgeSeconds = inPool ? particle.BasinAgeSeconds + dt : 0.0f;
 
     if (particle.CurrentContinuousPosition.y <= EmitterBuffer.FloorHeight - EmitterBuffer.RecycleMargin ||
-        (basinContact > 0.95f && particle.AgeSeconds >= basinResidenceSeconds))
+        particle.BasinAgeSeconds >= basinResidenceSeconds)
     {
         const float3 recyclePosition = DeterministicRecyclePosition(particle.GlobalVoxelId);
         particle.PreviousContinuousPosition = recyclePosition;
         particle.CurrentContinuousPosition = recyclePosition;
         particle.Velocity = DeterministicInitialVelocity(particle.GlobalVoxelId);
         particle.AgeSeconds = 0.0f;
+        particle.BasinAgeSeconds = 0.0f;
         InterlockedAdd(SimulationStats[0], 1u);
     }
 

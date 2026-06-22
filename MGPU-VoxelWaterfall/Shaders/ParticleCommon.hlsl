@@ -9,7 +9,7 @@ struct ParticleData
     uint MaterialId;
     uint StreamKind;
     float3 CurrentContinuousPosition;
-    float Padding0;
+    float BasinAgeSeconds;
 };
 
 struct EmitterData

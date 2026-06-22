@@ -76,6 +76,7 @@
     <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\ResearchArtifactWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
     <ClCompile Include="Source\Platform\Win32InputRouter.cpp"><Filter>Source Files\Platform</Filter></ClCompile>
@@ -86,6 +87,7 @@
     <ClCompile Include="Source\Scene\VoxelResearchCameraController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\Scene\VoxelResearchSceneManager.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
     <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Source\Validation\TwoAdapterVerification.cpp"><Filter>Source Files\Validation</Filter></ClCompile>
     <ClCompile Include="Source\Validation\VoxelVisualValidationRunner.cpp"><Filter>Source Files\Validation</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
     <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
@@ -110,6 +112,7 @@
     <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkController.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\ResearchArtifactWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>
     <ClInclude Include="Source\Platform\Win32InputRouter.h"><Filter>Header Files\Platform</Filter></ClInclude>
@@ -120,6 +123,7 @@
     <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Source\Validation\TwoAdapterVerification.h"><Filter>Header Files\Validation</Filter></ClInclude>
     <ClInclude Include="Source\Validation\VoxelVisualValidationRunner.h"><Filter>Header Files\Validation</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
     <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
@@ -133,6 +137,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />
+    <None Include="Tools\analyze_benchmark.py" />
     <None Include="packages.config" />
     <None Include="Shaders\Common.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Default.hlsl"><Filter>Shaders</Filter></None>

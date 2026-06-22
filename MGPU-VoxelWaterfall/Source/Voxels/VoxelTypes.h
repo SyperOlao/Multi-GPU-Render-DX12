@@ -176,7 +176,7 @@ struct alignas(16) VoxelParticleData
     DWORD MaterialId = 0;
     DWORD StreamKind = 0;
     DirectX::SimpleMath::Vector3 CurrentContinuousPosition = DirectX::SimpleMath::Vector3::Zero;
-    float Padding0 = 0.0f;
+    float BasinAgeSeconds = 0.0f;
 };
 
 struct alignas(16) VoxelEmitterData
@@ -213,6 +213,7 @@ struct alignas(16) VoxelEmitterData
 
 static_assert(sizeof(VoxelParticleData) == 64);
 static_assert(offsetof(VoxelParticleData, CurrentContinuousPosition) == 48);
+static_assert(offsetof(VoxelParticleData, BasinAgeSeconds) == 60);
 static_assert(sizeof(VoxelEmitterData) == 112);
 static_assert(offsetof(VoxelEmitterData, SimulationTime) == 80);
 

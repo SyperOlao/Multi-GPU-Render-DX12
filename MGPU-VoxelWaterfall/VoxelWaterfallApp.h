@@ -21,6 +21,7 @@
 #include "Source/Scene/VoxelResearchCameraController.h"
 #include "Source/Scene/VoxelResearchSceneManager.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
+#include "Source/Validation/TwoAdapterVerification.h"
 #include "Source/Validation/VoxelVisualValidationRunner.h"
 #include "Source/Voxels/VoxelSimulationScheduler.h"
 
@@ -38,6 +39,11 @@ public:
     bool Initialize() override;
 
     int Run() override;
+    int RunValidationSuiteOnce();
+    int RunTwoAdapterVerificationOnce();
+    int RunAutomaticBenchmarkSuiteOnce(BenchmarkSuite suite,
+                                       uint32_t seedOverride = 0,
+                                       const std::filesystem::path& outputDirectory = {});
 
 protected:
     void Update(const GameTimer& gt) override;
@@ -70,7 +76,9 @@ protected:
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
     BenchmarkControllerContext BuildBenchmarkControllerContext();
     void StartAutomaticBenchmark();
+    void StartAutomaticBenchmark(BenchmarkSuite suite, uint32_t seedOverride = 0);
     void StopAutomaticBenchmark();
+    BenchmarkConfigurationApplyResult ApplyBenchmarkConfigurationAtomic(const AutomaticBenchmarkConfig& config);
     void ApplyBenchmarkVoxelCount(int totalCount);
     void ApplyBenchmarkSecondaryShare(float secondaryShare);
     void ApplyBenchmarkSpatialLodEnabled(bool enabled);
@@ -172,8 +180,14 @@ protected:
 
     VoxelBenchmarkProfiler benchmarkProfiler;
     BenchmarkController benchmarkController;
+    TwoAdapterVerificationRunner twoAdapterVerificationRunner;
+    TwoAdapterVerificationResult twoAdapterVerificationResult{};
+    bool twoAdapterVerificationHasResult = false;
     VoxelVisualValidationRunner visualValidationRunner;
     VoxelVisualValidationMetrics visualValidationMetrics{};
+    std::string visualValidationBuildHash;
+    std::string visualValidationShaderHash;
+    std::string visualValidationAdapterPairIdentity;
     std::chrono::steady_clock::time_point cpuFrameStart{};
     double currentPrimaryWaitMs = 0.0;
     bool currentFrameResourceReady = true;

@@ -31,6 +31,65 @@ namespace
         return Fnv1aAppend32(hash, static_cast<uint32_t>(value));
     }
 
+    DWORD HashVoxel(const DWORD value)
+    {
+        DWORD x = value;
+        x ^= x >> 16u;
+        x *= 0x7feb352du;
+        x ^= x >> 15u;
+        x *= 0x846ca68bu;
+        x ^= x >> 16u;
+        return x;
+    }
+
+    float HashUnitFloat(const DWORD value)
+    {
+        return static_cast<float>(HashVoxel(value) & 0x00ffffffu) / static_cast<float>(0x01000000u);
+    }
+
+    float Saturate(const float value)
+    {
+        return std::clamp(value, 0.0f, 1.0f);
+    }
+
+    DirectX::SimpleMath::Vector2 SafeNormalize2(const DirectX::SimpleMath::Vector2& value)
+    {
+        const float lengthSquared = value.Dot(value);
+        if (lengthSquared <= 1.0e-5f)
+            return DirectX::SimpleMath::Vector2(1.0f, 0.0f);
+        return value / std::sqrt(lengthSquared);
+    }
+
+    DirectX::SimpleMath::Vector3 DeterministicRecyclePosition(
+        const DWORD voxelIndex,
+        const VoxelSimulationParameters& parameters)
+    {
+        const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
+        const auto cell = VoxelParticleSpawner::ComputeSpawnGridCell(voxelIndex, parameters);
+        const DWORD topLayer = HashVoxel(voxelIndex + parameters.Seed * 13u) % 3u;
+        const float x = (static_cast<float>(cell.X) - 0.5f * static_cast<float>(cell.Width - 1u)) * voxelSize;
+        const float y = parameters.SpawnHeight + static_cast<float>(topLayer) * voxelSize;
+        const float z = (static_cast<float>(cell.Z) - 0.5f * static_cast<float>(cell.Depth - 1u)) * voxelSize;
+        return DirectX::SimpleMath::Vector3(x, y, z);
+    }
+
+    DirectX::SimpleMath::Vector3 DeterministicInitialVelocity(
+        const DWORD voxelIndex,
+        const VoxelSimulationParameters& parameters)
+    {
+        const float speedVariation = 0.75f + 0.5f * HashUnitFloat(voxelIndex ^ parameters.Seed ^ 0x9e3779b9u);
+        const float lateralX = (HashUnitFloat(voxelIndex ^ parameters.Seed ^ 0x85ebca6bu) - 0.5f) * 0.8f;
+        const float lateralZ = (HashUnitFloat(voxelIndex ^ parameters.Seed ^ 0xc2b2ae35u) - 0.5f) * 0.45f;
+        return DirectX::SimpleMath::Vector3(lateralX, -parameters.InitialFallSpeed * speedVariation, lateralZ);
+    }
+
+    struct SimulationSummary
+    {
+        uint32_t RecycleCount = 0;
+        uint32_t CurtainOccupiedSamples = 0;
+        uint64_t StateHash = 1469598103934665603ull;
+    };
+
     VoxelSimulationParameters SmallWaterfallParameters()
     {
         VoxelSimulationParameters parameters{};
@@ -65,11 +124,150 @@ namespace
         return hash;
     }
 
+    void SimulateParticleStep(
+        VoxelParticleData& particle,
+        const VoxelSimulationParameters& parameters,
+        const float dt,
+        const float time,
+        uint32_t& recycleCount)
+    {
+        particle.PreviousContinuousPosition = particle.CurrentContinuousPosition;
+
+        const float voxelSize = std::max(parameters.VoxelSize, 0.05f);
+        const float phase = particle.FlowPhase;
+        const float flowX = std::sin(phase + time * 0.91f + particle.CurrentContinuousPosition.y * 0.037f) * 0.85f;
+        const float flowZ = std::cos(phase * 1.37f + time * 0.67f + particle.CurrentContinuousPosition.x * 0.041f) * 0.45f;
+        const float floorSpread = Saturate((parameters.FloorHeight + voxelSize * 6.0f -
+            particle.CurrentContinuousPosition.y) / std::max(voxelSize * 8.0f, 0.001f));
+        const DirectX::SimpleMath::Vector2 currentXZ(
+            particle.CurrentContinuousPosition.x,
+            particle.CurrentContinuousPosition.z);
+        const DirectX::SimpleMath::Vector2 stableOffset(
+            HashUnitFloat(particle.GlobalVoxelId ^ parameters.Seed) - 0.5f,
+            HashUnitFloat(particle.GlobalVoxelId ^ parameters.Seed ^ 0x68bc21ebu) - 0.5f);
+        const auto spreadDirection = SafeNormalize2(currentXZ + stableOffset);
+        const float preStepBasinContact = Saturate((parameters.FloorHeight + voxelSize * 2.5f -
+            particle.CurrentContinuousPosition.y) / std::max(voxelSize * 2.5f, 0.001f));
+        const DirectX::SimpleMath::Vector2 basinBounds(
+            std::max(parameters.WaterfallWidth * 0.75f, voxelSize * 4.0f),
+            std::max(parameters.WaterfallDepth * 2.0f, voxelSize * 6.0f));
+        const DWORD poolLayer = HashVoxel(particle.GlobalVoxelId ^ parameters.Seed ^ 0x91e10da5u) % 5u;
+        const float poolSurfaceY = parameters.FloorHeight + voxelSize * (0.35f + 0.28f * static_cast<float>(poolLayer));
+        const float basinResidenceSeconds = 3.25f +
+            2.25f * HashUnitFloat(particle.GlobalVoxelId ^ parameters.Seed ^ 0x4cf5ad43u);
+
+        particle.Velocity.y += -parameters.Gravity * dt;
+        particle.Velocity.x += (flowX + spreadDirection.x * floorSpread * 4.0f) * dt;
+        particle.Velocity.z += (flowZ + spreadDirection.y * floorSpread * 4.0f) * dt;
+        particle.Velocity.x += spreadDirection.x * preStepBasinContact * 6.0f * dt;
+        particle.Velocity.z += spreadDirection.y * preStepBasinContact * 6.0f * dt;
+        particle.Velocity.y = particle.Velocity.y +
+            (-voxelSize * 1.25f - particle.Velocity.y) * preStepBasinContact * 0.22f;
+        particle.CurrentContinuousPosition += particle.Velocity * dt;
+        if (preStepBasinContact > 0.0f)
+        {
+            particle.CurrentContinuousPosition.x = std::clamp(
+                particle.CurrentContinuousPosition.x,
+                -basinBounds.x,
+                basinBounds.x);
+            particle.CurrentContinuousPosition.z = std::clamp(
+                particle.CurrentContinuousPosition.z,
+                -basinBounds.y,
+                basinBounds.y);
+            if (particle.CurrentContinuousPosition.y < poolSurfaceY)
+            {
+                particle.CurrentContinuousPosition.y = poolSurfaceY;
+                particle.Velocity.y = std::max(particle.Velocity.y, 0.0f) * 0.15f;
+            }
+            const float damping = 1.0f + (0.92f - 1.0f) * preStepBasinContact;
+            particle.Velocity.x *= damping;
+            particle.Velocity.z *= damping;
+        }
+
+        const float postStepBasinContact = Saturate((parameters.FloorHeight + voxelSize * 2.5f -
+            particle.CurrentContinuousPosition.y) / std::max(voxelSize * 2.5f, 0.001f));
+        const bool inPool = postStepBasinContact > 0.0f &&
+            std::abs(particle.CurrentContinuousPosition.x) <= basinBounds.x + voxelSize &&
+            std::abs(particle.CurrentContinuousPosition.z) <= basinBounds.y + voxelSize;
+        particle.AgeSeconds += dt;
+        particle.BasinAgeSeconds = inPool ? particle.BasinAgeSeconds + dt : 0.0f;
+
+        if (particle.CurrentContinuousPosition.y <= parameters.FloorHeight - voxelSize * 8.0f ||
+            particle.BasinAgeSeconds >= basinResidenceSeconds)
+        {
+            const auto recyclePosition = DeterministicRecyclePosition(particle.GlobalVoxelId, parameters);
+            particle.PreviousContinuousPosition = recyclePosition;
+            particle.CurrentContinuousPosition = recyclePosition;
+            particle.Velocity = DeterministicInitialVelocity(particle.GlobalVoxelId, parameters);
+            particle.AgeSeconds = 0.0f;
+            particle.BasinAgeSeconds = 0.0f;
+            ++recycleCount;
+        }
+    }
+
+    SimulationSummary SimulateWaterfallLifecycle(
+        const VoxelSimulationParameters& parameters,
+        const uint32_t particleCount,
+        const uint32_t stepCount)
+    {
+        std::vector<VoxelParticleData> particles;
+        particles.reserve(particleCount);
+        for (uint32_t i = 0; i < particleCount; ++i)
+            particles.push_back(VoxelParticleSpawner::Generate(i, parameters));
+
+        constexpr float dt = 1.0f / 60.0f;
+        SimulationSummary summary{};
+        for (uint32_t step = 0; step < stepCount; ++step)
+        {
+            const float time = static_cast<float>(step) * dt;
+            uint32_t curtainCount = 0;
+            for (auto& particle : particles)
+            {
+                SimulateParticleStep(particle, parameters, dt, time, summary.RecycleCount);
+                if (particle.CurrentContinuousPosition.y > parameters.FloorHeight + parameters.VoxelSize * 8.0f &&
+                    particle.CurrentContinuousPosition.y < parameters.SpawnHeight + parameters.VoxelSize * 4.0f)
+                {
+                    ++curtainCount;
+                }
+            }
+            if (step + 600u >= stepCount && curtainCount > particleCount / 20u)
+                ++summary.CurtainOccupiedSamples;
+        }
+
+        for (const auto& particle : particles)
+        {
+            summary.StateHash = Fnv1aAppend32(summary.StateHash, particle.GlobalVoxelId);
+            summary.StateHash = Fnv1aAppendSigned32(
+                summary.StateHash,
+                static_cast<int32_t>(std::lround(particle.CurrentContinuousPosition.x * 1000.0f)));
+            summary.StateHash = Fnv1aAppendSigned32(
+                summary.StateHash,
+                static_cast<int32_t>(std::lround(particle.CurrentContinuousPosition.y * 1000.0f)));
+            summary.StateHash = Fnv1aAppendSigned32(
+                summary.StateHash,
+                static_cast<int32_t>(std::lround(particle.CurrentContinuousPosition.z * 1000.0f)));
+            summary.StateHash = Fnv1aAppendSigned32(
+                summary.StateHash,
+                static_cast<int32_t>(std::lround(particle.BasinAgeSeconds * 1000.0f)));
+        }
+        return summary;
+    }
+
     void LogTestResult(const char* name, const uint32_t expected, const uint32_t actual)
     {
         std::ostringstream stream;
         stream << "[VoxelWaterfallDynamicReferenceTests] " << name
             << " expected=" << expected << " actual=" << actual << "\n";
+        OutputDebugStringA(stream.str().c_str());
+    }
+
+    void LogLifecycleResult(const SimulationSummary& summary)
+    {
+        std::ostringstream stream;
+        stream << "[VoxelWaterfallDynamicReferenceTests] lifecycle recycleCount="
+            << summary.RecycleCount
+            << " curtainOccupiedSamples=" << summary.CurtainOccupiedSamples
+            << " stateHash=0x" << std::hex << summary.StateHash << std::dec << "\n";
         OutputDebugStringA(stream.str().c_str());
     }
 }
@@ -118,6 +316,32 @@ void RunVoxelWaterfallDynamicReferenceTests()
     const uint64_t secondHash = HashFirstSpawnSamples(parameters, 128u);
     assert(firstHash == expectedFirstSamplesHash);
     assert(secondHash == expectedFirstSamplesHash);
+
+    for (uint32_t poolLayer = 0; poolLayer < 5u; ++poolLayer)
+    {
+        const float poolSurfaceY = parameters.FloorHeight +
+            parameters.VoxelSize * (0.35f + 0.28f * static_cast<float>(poolLayer));
+        const float maximumBasinContactAfterClamp = Saturate(
+            (parameters.FloorHeight + parameters.VoxelSize * 2.5f - poolSurfaceY) /
+            std::max(parameters.VoxelSize * 2.5f, 0.001f));
+        assert(maximumBasinContactAfterClamp < 0.95f);
+    }
+
+    constexpr uint32_t lifecycleParticleCount = 4096u;
+    constexpr uint32_t lifecycleStepCount = 3600u;
+    const auto firstLifecycle = SimulateWaterfallLifecycle(
+        parameters,
+        lifecycleParticleCount,
+        lifecycleStepCount);
+    const auto secondLifecycle = SimulateWaterfallLifecycle(
+        parameters,
+        lifecycleParticleCount,
+        lifecycleStepCount);
+    LogLifecycleResult(firstLifecycle);
+    assert(firstLifecycle.RecycleCount > 0u);
+    assert(firstLifecycle.CurtainOccupiedSamples > 0u);
+    assert(firstLifecycle.RecycleCount == secondLifecycle.RecycleCount);
+    assert(firstLifecycle.StateHash == secondLifecycle.StateHash);
 }
 
 #endif

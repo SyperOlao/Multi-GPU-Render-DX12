@@ -31,6 +31,47 @@ namespace
     {
         return value ? "true" : "false";
     }
+
+    std::string Hex64(const uint64_t value)
+    {
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << value;
+        return stream.str();
+    }
+
+    std::string HResultHex(const HRESULT hr)
+    {
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(8) << std::setfill('0')
+               << static_cast<uint32_t>(hr);
+        return stream.str();
+    }
+
+    void WriteQueueCalibrationHeader(std::ostream& stream, const char* prefix)
+    {
+        stream << prefix << "_timestamp_frequency,"
+               << prefix << "_clock_calibration_hresult,"
+               << prefix << "_calibration_cpu_qpc,"
+               << prefix << "_calibration_gpu_timestamp,"
+               << prefix << "_calibration_valid,"
+               << prefix << "_calibration_monotonic,";
+    }
+
+    void WriteQueueCalibrationValues(std::ostream& stream,
+                                     const uint64_t frequency,
+                                     const HRESULT hresult,
+                                     const uint64_t cpuQpc,
+                                     const uint64_t gpuTimestamp,
+                                     const bool valid,
+                                     const bool monotonic)
+    {
+        stream << frequency << ','
+               << HResultHex(hresult) << ','
+               << cpuQpc << ','
+               << gpuTimestamp << ','
+               << BoolText(valid) << ','
+               << BoolText(monotonic) << ',';
+    }
 }
 
 void VoxelBenchmarkProfiler::Initialize(const std::shared_ptr<GDevice>& primaryDevice,
@@ -69,10 +110,10 @@ void VoxelBenchmarkProfiler::Initialize(const std::shared_ptr<GDevice>& primaryD
 
 float VoxelBenchmarkProfiler::GetProgress() const
 {
-    if (!active && rowsWritten >= RecordedFrameCount)
+    if (!active && rowsWritten >= recordedFrameCount)
         return 1.0f;
 
-    const float total = static_cast<float>(WarmupFrameCount + RecordedFrameCount);
+    const float total = static_cast<float>(warmupFrameCount + recordedFrameCount);
     return std::min(1.0f, static_cast<float>(framesSeen + rowsWritten) / total);
 }
 
@@ -89,7 +130,15 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
                                    const FrameMetadata& metadata,
                                    const std::string& fileName,
                                    const std::string& presetName,
-                                   const uint32_t repetition)
+                                   const uint32_t repetition,
+                                   const uint32_t warmupFrames,
+                                   const uint32_t measuredFrames,
+                                   const std::string& suiteName,
+                                   const std::string& runId,
+                                   const std::string& configId,
+                                   const std::string& pairId,
+                                   const uint32_t orderIndex,
+                                   const uint32_t randomizationSeed)
 {
     if (!initialized)
         return false;
@@ -105,12 +154,21 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         return false;
 
     ResetSamples();
+    warmupFrameCount = warmupFrames;
+    recordedFrameCount = measuredFrames;
     latestTimingSnapshot = {};
     currentPresetName = presetName;
     currentRepetition = repetition;
+    currentSuiteName = suiteName;
+    currentRunId = runId;
+    currentConfigId = configId;
+    currentPairId = pairId;
+    currentOrderIndex = orderIndex;
+    currentRandomizationSeed = randomizationSeed;
     completedSummaryReady = false;
     csv.imbue(std::locale::classic());
-    csv << "frame_index,profile,scene_preset,requested_mode,actual_mode,fallback_reason,"
+    csv << "frame_index,suite,run_id,config_id,pair_id,repetition,randomized_order_index,randomization_seed,"
+        << "profile,scene_preset,requested_mode,actual_mode,fallback_reason,"
         << "benchmark_config_class,benchmark_config_reason,temporal_policy,spatial_lod_policy,"
         << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
         << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
@@ -120,8 +178,14 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "lighting_preset,dynamic_shadows_enabled,"
         << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
         << "primary_luid,primary_dedicated_memory,secondary_vendor_id,secondary_device_id,secondary_luid,"
-        << "secondary_dedicated_memory,operating_system,build_configuration,git_commit,d3d12_debug_layer,"
-        << "cpu_wait_ms,"
+        << "secondary_dedicated_memory,operating_system,build_configuration,git_commit,d3d12_debug_layer,";
+    WriteQueueCalibrationHeader(csv, "primary_compute_queue");
+    WriteQueueCalibrationHeader(csv, "primary_graphics_queue");
+    WriteQueueCalibrationHeader(csv, "secondary_compute_queue");
+    WriteQueueCalibrationHeader(csv, "secondary_graphics_queue");
+    WriteQueueCalibrationHeader(csv, "secondary_copy_queue");
+    WriteQueueCalibrationHeader(csv, "primary_copy_queue");
+    csv << "cpu_wait_ms,"
         << "cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
         << "primary_lod_compaction_ms,primary_base_graphics_ms,secondary_compute_ms,"
         << "secondary_lod_compaction_ms,secondary_graphics_ms,"
@@ -131,7 +195,8 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "secondary_draw_calls,primary_submitted_voxels,secondary_submitted_voxels,"
         << "primary_rendered_voxels,secondary_rendered_voxels,primary_lod0,primary_lod1,primary_lod2,"
         << "secondary_lod0,secondary_lod1,secondary_lod2,"
-        << "visual_validation_has_result,visual_validation_passed,visual_color_mae,visual_color_rmse,"
+        << "visual_validation_has_result,visual_validation_passed,visual_validation_run_id,"
+        << "visual_validation_snapshot_hash,visual_color_mae,visual_color_rmse,"
         << "visual_psnr,visual_max_error,visual_mismatched_pixel_percent,visual_depth_rmse,"
         << "visual_depth_mismatched_pixel_percent,visual_pipeline_primitive_count,visual_fail_reason,"
         << "frame_valid,invalid_reason\n";
@@ -158,7 +223,7 @@ void VoxelBenchmarkProfiler::Stop()
 
 void VoxelBenchmarkProfiler::BeginFrame(const FrameMetadata& metadata)
 {
-    if (!active || rowsWritten >= RecordedFrameCount)
+    if (!active || rowsWritten >= recordedFrameCount)
         return;
 
     ProcessCompletedFrames();
@@ -178,7 +243,7 @@ void VoxelBenchmarkProfiler::BeginFrame(const FrameMetadata& metadata)
 
     frame = {};
     frame.Active = true;
-    frame.CsvEligible = framesSeen >= WarmupFrameCount;
+    frame.CsvEligible = framesSeen >= warmupFrameCount;
     frame.Written = false;
     frame.Slot = slot;
     frame.Metadata = metadata;
@@ -220,7 +285,7 @@ void VoxelBenchmarkProfiler::ProcessCompletedFrames()
             WriteFrame(frame);
     }
 
-    if (rowsWritten >= RecordedFrameCount)
+    if (rowsWritten >= recordedFrameCount)
     {
         FinalizeCompletedSummary();
         Stop();
@@ -405,7 +470,7 @@ VoxelBenchmarkProfiler::RangeTiming VoxelBenchmarkProfiler::ReadRangeTiming(
 
 void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
 {
-    if (!csv.is_open() || rowsWritten >= RecordedFrameCount)
+    if (!csv.is_open() || rowsWritten >= recordedFrameCount)
         return;
 
     const auto primaryCompute = ReadRangeTiming(frame, RangeId::PrimaryCompute);
@@ -429,15 +494,20 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     double finalEnd = 0.0;
     double gpuWorkSum = 0.0;
     bool timestampsValid = false;
+    bool activeQueueCalibrationValid = true;
     for (uint32_t i = 0; i < RangeCount; ++i)
     {
         if (!frame.Ranges[i].Active)
             continue;
         timestampsValid = true;
+        const auto& queue = queues[ToIndex(frame.Ranges[i].Queue)];
+        activeQueueCalibrationValid = activeQueueCalibrationValid &&
+            queue.CalibrationValid && queue.CalibrationMonotonic && queue.Frequency > 0;
         firstStart = std::min(firstStart, timings[i].StartQpc);
         finalEnd = std::max(finalEnd, timings[i].EndQpc);
         gpuWorkSum += timings[i].Ms;
     }
+    timestampsValid = timestampsValid && activeQueueCalibrationValid;
 
     if (frame.Ranges[ToIndex(RangeId::FinalResolveUi)].Active)
         finalEnd = finalResolveUi.EndQpc;
@@ -498,6 +568,13 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     };
 
     csv << frame.Metadata.FrameIndex << ','
+        << EscapeCsv(currentSuiteName) << ','
+        << EscapeCsv(currentRunId) << ','
+        << EscapeCsv(currentConfigId) << ','
+        << EscapeCsv(currentPairId) << ','
+        << currentRepetition << ','
+        << currentOrderIndex << ','
+        << currentRandomizationSeed << ','
         << EscapeCsv(frame.Metadata.ProfileName) << ','
         << EscapeCsv(frame.Metadata.ScenePreset) << ','
         << EscapeCsv(frame.Metadata.RequestedMode) << ','
@@ -549,7 +626,17 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << EscapeCsv(frame.Metadata.OperatingSystem) << ','
         << EscapeCsv(frame.Metadata.BuildConfiguration) << ','
         << EscapeCsv(frame.Metadata.GitCommit) << ','
-        << BoolText(frame.Metadata.D3D12DebugLayerEnabled) << ','
+        << BoolText(frame.Metadata.D3D12DebugLayerEnabled) << ',';
+    for (const auto& queue : queues)
+    {
+        WriteQueueCalibrationValues(csv, queue.Frequency,
+                                    queue.CalibrationHResult,
+                                    queue.CalibrationCpuQpc,
+                                    queue.CalibrationGpuTimestamp,
+                                    queue.CalibrationValid,
+                                    queue.CalibrationMonotonic);
+    }
+    csv
         << std::fixed << std::setprecision(6)
         << frame.Metadata.CpuWaitMs << ','
         << frame.CpuFrameMs << ','
@@ -585,6 +672,8 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.SecondaryLod2Count << ','
         << BoolText(frame.Metadata.VisualValidationHasResult) << ','
         << BoolText(frame.Metadata.VisualValidationPassed) << ','
+        << EscapeCsv(frame.Metadata.VisualValidationRunId) << ','
+        << EscapeCsv(Hex64(frame.Metadata.VisualValidationSnapshotHash)) << ','
         << frame.Metadata.VisualValidationColorMAE << ','
         << frame.Metadata.VisualValidationColorRMSE << ','
         << frame.Metadata.VisualValidationPSNR << ','
@@ -669,12 +758,38 @@ void VoxelBenchmarkProfiler::CalibrateQueues()
         if (!queue.Valid || !queue.Queue)
             continue;
 
+        UINT64 frequency = 0;
+        HRESULT hr = queue.Queue->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency);
+        queue.CalibrationHResult = hr;
+        if (SUCCEEDED(hr) && frequency > 0)
+        {
+            queue.Frequency = frequency;
+        }
+        else
+        {
+            queue.CalibrationValid = false;
+            queue.CalibrationMonotonic = false;
+            continue;
+        }
+
+        const auto previousGpu = queue.CalibrationGpuTimestamp;
+        const auto previousCpu = queue.CalibrationCpuQpc;
         uint64_t gpuTimestamp = 0;
         uint64_t cpuTimestamp = 0;
-        if (SUCCEEDED(queue.Queue->GetD3D12CommandQueue()->GetClockCalibration(&gpuTimestamp, &cpuTimestamp)))
+        hr = queue.Queue->GetD3D12CommandQueue()->GetClockCalibration(&gpuTimestamp, &cpuTimestamp);
+        queue.CalibrationHResult = hr;
+        if (SUCCEEDED(hr))
         {
             queue.CalibrationGpuTimestamp = gpuTimestamp;
             queue.CalibrationCpuQpc = cpuTimestamp;
+            queue.CalibrationMonotonic =
+                previousGpu == 0 || (gpuTimestamp >= previousGpu && cpuTimestamp >= previousCpu);
+            queue.CalibrationValid = queue.Frequency > 0 && queue.CalibrationMonotonic;
+        }
+        else
+        {
+            queue.CalibrationValid = false;
+            queue.CalibrationMonotonic = false;
         }
     }
 }
@@ -711,7 +826,7 @@ void VoxelBenchmarkProfiler::ResetSamples()
 
 void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
 {
-    if (completedSummaryReady || rowsWritten < RecordedFrameCount || cpuFrameMsSamples.empty())
+    if (completedSummaryReady || rowsWritten < recordedFrameCount || cpuFrameMsSamples.empty())
         return;
 
     FrameRecord* lastWritten = nullptr;
@@ -737,6 +852,7 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.BenchmarkConfigClass = lastWritten ? lastWritten->Metadata.BenchmarkConfigClass : "";
     completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
     completedSummary.SpatialLodPolicy = lastWritten ? lastWritten->Metadata.SpatialLodPolicy : "";
+    completedSummary.PairId = currentPairId;
     completedSummary.PrimaryAdapterName = lastWritten ? lastWritten->Metadata.PrimaryAdapterName : L"";
     completedSummary.SecondaryAdapterName = lastWritten ? lastWritten->Metadata.SecondaryAdapterName : L"";
     completedSummary.TotalVoxelCount = lastWritten ? lastWritten->Metadata.TotalVoxelCount : 0;
@@ -748,6 +864,11 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.Repetition = currentRepetition;
     completedSummary.RepetitionCount = 1;
     completedSummary.MeasuredFrameCount = static_cast<uint32_t>(cpuFrameMsSamples.size());
+    completedSummary.InvalidFrameCount = static_cast<uint32_t>(invalidReasons.size());
+    completedSummary.ValidFrameCount =
+        completedSummary.MeasuredFrameCount >= completedSummary.InvalidFrameCount
+            ? completedSummary.MeasuredFrameCount - completedSummary.InvalidFrameCount
+            : 0;
     completedSummary.Valid = invalidReasons.empty();
     completedSummary.ValidityReason = invalidReasons.empty() ? "" : invalidReasons.front();
     completedSummary.AverageCpuFrameMs = Average(cpuFrameMsSamples);
@@ -755,11 +876,8 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.P95CpuFrameMs = Percentile(cpuFrameMsSamples, 0.95);
     completedSummary.P99CpuFrameMs = Percentile(cpuFrameMsSamples, 0.99);
     completedSummary.StdDevCpuFrameMs = StdDev(cpuFrameMsSamples);
-    completedSummary.CpuFrameCi95HalfWidthMs =
-        cpuFrameMsSamples.size() > 1
-            ? 1.96 * completedSummary.StdDevCpuFrameMs /
-              std::sqrt(static_cast<double>(cpuFrameMsSamples.size()))
-            : 0.0;
+    completedSummary.CpuFrameCi95HalfWidthMs = 0.0;
+    completedSummary.SpeedupStatistic = "descriptive_frame_distribution_only";
     completedSummary.CriticalPathGpuMs = Average(criticalPathGpuMsSamples);
     completedSummary.GpuWorkSumMs = Average(gpuWorkSumMsSamples);
     completedSummary.PrimaryComputeMs = Average(primaryComputeMsSamples);

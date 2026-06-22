@@ -1,6 +1,7 @@
 #include "VoxelWaterfallApp.h"
 #include <array>
 #include <filesystem>
+#include <string>
 
 using namespace Common;
 
@@ -34,6 +35,57 @@ namespace
         }
     }
 
+    bool HasCommandLineFlag(const char* commandLine, const char* flag)
+    {
+        if (!commandLine || !flag)
+            return false;
+        const std::string text(commandLine);
+        return text.find(flag) != std::string::npos;
+    }
+
+    uint32_t ReadCommandLineUint(const char* commandLine, const char* key, const uint32_t fallback)
+    {
+        if (!commandLine || !key)
+            return fallback;
+        const std::string text(commandLine);
+        const std::string token(key);
+        const auto pos = text.find(token);
+        if (pos == std::string::npos)
+            return fallback;
+        const auto start = pos + token.size();
+        const auto end = text.find_first_of(" \t\r\n", start);
+        const auto value = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        try
+        {
+            return static_cast<uint32_t>(std::stoul(value, nullptr, 0));
+        }
+        catch (...)
+        {
+            return fallback;
+        }
+    }
+
+    std::filesystem::path ReadCommandLinePath(const char* commandLine, const char* key)
+    {
+        if (!commandLine || !key)
+            return {};
+        const std::string text(commandLine);
+        const std::string token(key);
+        const auto pos = text.find(token);
+        if (pos == std::string::npos)
+            return {};
+        const auto start = pos + token.size();
+        if (start >= text.size())
+            return {};
+        if (text[start] == '"')
+        {
+            const auto endQuote = text.find('"', start + 1);
+            return text.substr(start + 1, endQuote == std::string::npos ? std::string::npos : endQuote - start - 1);
+        }
+        const auto end = text.find_first_of(" \t\r\n", start);
+        return text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+
 }
 
 int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -54,7 +106,22 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
             if (!theApp.Initialize())
                 return 0;
 
-            result = theApp.Run();
+            if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
+                result = theApp.RunValidationSuiteOnce();
+            else if (HasCommandLineFlag(cmdLine, "--verify-two-adapter"))
+                result = theApp.RunTwoAdapterVerificationOnce();
+            else if (HasCommandLineFlag(cmdLine, "--benchmark-smoke"))
+                result = theApp.RunAutomaticBenchmarkSuiteOnce(
+                    BenchmarkSuite::Smoke,
+                    ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
+                    ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--benchmark-full"))
+                result = theApp.RunAutomaticBenchmarkSuiteOnce(
+                    BenchmarkSuite::Full,
+                    ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
+                    ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
+            else
+                result = theApp.Run();
         }
         ExitProcess(static_cast<UINT>(result));
     }

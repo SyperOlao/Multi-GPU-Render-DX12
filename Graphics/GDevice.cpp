@@ -183,7 +183,6 @@ namespace PEPEngine::Graphics
             assert("Cant create device. Null Adapter");
         }
 
-        DXGI_ADAPTER_DESC2 desc;
         ThrowIfFailed(adapter->GetDesc2(&desc));
 
         ThrowIfFailed(D3D12CreateDevice(

@@ -60,6 +60,8 @@ struct VoxelFrameGraphTelemetry
     bool CompositeUsedSecondaryImage = false;
     bool VisualValidationHasResult = false;
     bool VisualValidationPassed = false;
+    std::string VisualValidationRunId;
+    uint64_t VisualValidationSnapshotHash = 0;
     double VisualValidationColorMAE = 0.0;
     double VisualValidationColorRMSE = 0.0;
     double VisualValidationPSNR = 0.0;

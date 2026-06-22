@@ -1,6 +1,7 @@
 #include "Source/Devices/DeviceSelectionPolicy.h"
 
 #include <algorithm>
+#include <array>
 
 using PEPEngine::Graphics::GDevice;
 using PEPEngine::Graphics::GQueueType;
@@ -40,6 +41,35 @@ namespace
             leftDesc.AdapterLuid.LowPart == rightDesc.AdapterLuid.LowPart;
     }
 
+    std::string HighestFeatureLevel(const std::shared_ptr<GDevice>& device)
+    {
+        if (!device)
+            return "unavailable";
+
+        std::array<D3D_FEATURE_LEVEL, 5> levels = {
+            D3D_FEATURE_LEVEL_12_2,
+            D3D_FEATURE_LEVEL_12_1,
+            D3D_FEATURE_LEVEL_12_0,
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0
+        };
+        D3D12_FEATURE_DATA_FEATURE_LEVELS data{};
+        data.NumFeatureLevels = static_cast<UINT>(levels.size());
+        data.pFeatureLevelsRequested = levels.data();
+        if (FAILED(device->GetDXDevice()->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &data, sizeof(data))))
+            return "unknown";
+
+        switch (data.MaxSupportedFeatureLevel)
+        {
+        case D3D_FEATURE_LEVEL_12_2: return "12_2";
+        case D3D_FEATURE_LEVEL_12_1: return "12_1";
+        case D3D_FEATURE_LEVEL_12_0: return "12_0";
+        case D3D_FEATURE_LEVEL_11_1: return "11_1";
+        case D3D_FEATURE_LEVEL_11_0: return "11_0";
+        default: return "unknown";
+        }
+    }
+
     bool CanBePrimary(const std::shared_ptr<GDevice>& device)
     {
         return IsHardwareAdapter(device) && IsFullyQueueCapable(device);
@@ -58,9 +88,10 @@ namespace
             candidate->IsCrossAdapterTextureSupported();
     }
 
-    AdapterSelectionInfo BuildInfo(const std::shared_ptr<GDevice>& device)
+    AdapterSelectionInfo BuildInfo(const std::shared_ptr<GDevice>& device, const uint32_t adapterIndex)
     {
         AdapterSelectionInfo info{};
+        info.AdapterIndex = adapterIndex;
         if (!device)
         {
             info.Name = L"unavailable";
@@ -69,6 +100,17 @@ namespace
         }
 
         info.Name = device->GetName();
+        const auto& desc = device->GetDesc();
+        info.VendorId = desc.VendorId;
+        info.DeviceId = desc.DeviceId;
+        info.SubSysId = desc.SubSysId;
+        info.Revision = desc.Revision;
+        info.DedicatedVideoMemory = desc.DedicatedVideoMemory;
+        info.DedicatedSystemMemory = desc.DedicatedSystemMemory;
+        info.SharedSystemMemory = desc.SharedSystemMemory;
+        info.LuidHighPart = desc.AdapterLuid.HighPart;
+        info.LuidLowPart = desc.AdapterLuid.LowPart;
+        info.FeatureLevel = HighestFeatureLevel(device);
         info.Hardware = IsHardwareAdapter(device);
         info.GraphicsQueue = HasQueue(device, GQueueType::Graphics);
         info.ComputeQueue = HasQueue(device, GQueueType::Compute);
@@ -93,8 +135,8 @@ SelectedDevices DeviceSelectionPolicy::Select(const std::vector<std::shared_ptr<
     SelectedDevices selected{};
     selected.Adapters.reserve(devices.size());
 
-    for (const auto& device : devices)
-        selected.Adapters.push_back(BuildInfo(device));
+    for (uint32_t adapterIndex = 0; adapterIndex < devices.size(); ++adapterIndex)
+        selected.Adapters.push_back(BuildInfo(devices[adapterIndex], adapterIndex));
 
     std::vector<std::shared_ptr<GDevice>> primaryCandidates;
     for (const auto& device : devices)

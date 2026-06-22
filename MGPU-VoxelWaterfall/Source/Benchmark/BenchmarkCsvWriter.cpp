@@ -59,6 +59,7 @@ namespace
         std::string BenchmarkConfigClass;
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
+        std::string PairId;
         uint32_t TotalVoxelCount = 0;
         int SecondarySharePermille = 0;
         uint32_t RenderWidth = 0;
@@ -70,11 +71,11 @@ namespace
         {
             return std::tie(RequestedMode, ActualMode, Preset, ProfileName, PartitionStrategy,
                             LoadBalanceScenario, BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy,
-                            TotalVoxelCount, SecondarySharePermille, RenderWidth, RenderHeight,
+                            PairId, TotalVoxelCount, SecondarySharePermille, RenderWidth, RenderHeight,
                             PrimaryAdapterName, SecondaryAdapterName) <
                 std::tie(other.RequestedMode, other.ActualMode, other.Preset, other.ProfileName,
                          other.PartitionStrategy, other.LoadBalanceScenario, other.BenchmarkConfigClass,
-                         other.TemporalPolicy, other.SpatialLodPolicy, other.TotalVoxelCount,
+                         other.TemporalPolicy, other.SpatialLodPolicy, other.PairId, other.TotalVoxelCount,
                          other.SecondarySharePermille, other.RenderWidth, other.RenderHeight, other.PrimaryAdapterName,
                          other.SecondaryAdapterName);
         }
@@ -92,6 +93,7 @@ namespace
             summary.BenchmarkConfigClass,
             summary.TemporalPolicy,
             summary.SpatialLodPolicy,
+            summary.PairId,
             summary.TotalVoxelCount,
             static_cast<int>(std::round(summary.SecondaryShare * 1000.0f)),
             summary.RenderWidth,
@@ -160,12 +162,34 @@ namespace
         return static_cast<uint64_t>(sum / static_cast<long double>(values.size()));
     }
 
+    double StudentTCritical95TwoSided(const size_t sampleCount)
+    {
+        if (sampleCount < 2)
+            return 0.0;
+        switch (sampleCount - 1)
+        {
+        case 1: return 12.706204736;
+        case 2: return 4.302652730;
+        case 3: return 3.182446305;
+        case 4: return 2.776445105;
+        case 5: return 2.570581836;
+        case 6: return 2.446911851;
+        case 7: return 2.364624252;
+        case 8: return 2.306004135;
+        case 9: return 2.262157163;
+        case 10: return 2.228138852;
+        default: return 1.959963985;
+        }
+    }
+
     Summary Aggregate(const std::vector<Summary>& rows)
     {
         Summary result = rows.front();
         result.Repetition = 0;
         result.RepetitionCount = static_cast<uint32_t>(rows.size());
         result.MeasuredFrameCount = 0;
+        result.ValidFrameCount = 0;
+        result.InvalidFrameCount = 0;
         result.Valid = true;
         result.ValidityReason.clear();
         result.CsvPath.clear();
@@ -200,6 +224,8 @@ namespace
         for (const auto& row : rows)
         {
             result.MeasuredFrameCount += row.MeasuredFrameCount;
+            result.ValidFrameCount += row.ValidFrameCount;
+            result.InvalidFrameCount += row.InvalidFrameCount;
             result.VisualValidationPassed = result.VisualValidationPassed && row.VisualValidationPassed;
             result.Valid = result.Valid && row.Valid && row.SkipReason.empty();
             if ((!row.Valid || !row.SkipReason.empty()) && result.ValidityReason.empty())
@@ -235,9 +261,25 @@ namespace
 
         result.AverageCpuFrameMs = Average(cpuMean);
         result.MedianCpuFrameMs = Median(cpuMedian);
+        result.P95CpuFrameMs = Median([&]
+        {
+            std::vector<double> values;
+            values.reserve(rows.size());
+            for (const auto& row : rows)
+                values.push_back(row.P95CpuFrameMs);
+            return values;
+        }());
+        result.P99CpuFrameMs = Median([&]
+        {
+            std::vector<double> values;
+            values.reserve(rows.size());
+            for (const auto& row : rows)
+                values.push_back(row.P99CpuFrameMs);
+            return values;
+        }());
         result.StdDevCpuFrameMs = StdDev(cpuMean);
         result.CpuFrameCi95HalfWidthMs =
-            cpuMean.size() > 1 ? 1.96 * result.StdDevCpuFrameMs /
+            cpuMean.size() > 1 ? StudentTCritical95TwoSided(cpuMean.size()) * result.StdDevCpuFrameMs /
             std::sqrt(static_cast<double>(cpuMean.size())) : 0.0;
         result.CriticalPathGpuMs = Average(criticalPath);
         result.GpuWorkSumMs = Average(gpuWorkSum);
@@ -264,7 +306,7 @@ namespace
         result.AverageSecondaryLod1Count = Average(secondaryLod1);
         result.AverageSecondaryLod2Count = Average(secondaryLod2);
         result.SkipReason = result.Valid ? "" : result.ValidityReason;
-        result.SpeedupStatistic = "mean_cpu_frame_ms";
+        result.SpeedupStatistic = "run_mean_cpu_frame_ms_student_t_95_ci";
         return result;
     }
 }
@@ -321,17 +363,19 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
     summary.imbue(std::locale::classic());
     summary << "requested_mode,actual_mode,primary_adapter,secondary_adapter,total_voxels,"
         << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
-        << "temporal_policy,spatial_lod_policy,"
+        << "temporal_policy,spatial_lod_policy,pair_id,"
         << "actual_static_voxels,actual_dynamic_voxels,render_width,render_height,"
-        << "repetition_count,measured_frame_count,preset,run_valid,validity_reason,speedup_statistic,"
-        << "average_cpu_frame_ms,median_cpu_frame_ms,stddev_cpu_frame_ms,cpu_frame_ci95_half_width_ms,"
+        << "repetition_count,measured_frame_count,valid_frame_count,invalid_frame_count,"
+        << "preset,run_valid,validity_reason,speedup_statistic,"
+        << "average_cpu_frame_ms,median_cpu_frame_ms,p95_cpu_frame_ms,p99_cpu_frame_ms,"
+        << "stddev_cpu_frame_ms,cpu_frame_ci95_half_width_ms,"
         << "critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,primary_lod_compaction_ms,"
         << "secondary_compute_ms,secondary_lod_compaction_ms,primary_graphics_ms,"
         << "secondary_graphics_ms,transfer_ms,composite_ms,total_transfer_bytes,"
         << "color_transfer_bytes,depth_transfer_bytes,particle_transfer_bytes,render_output_transfer_bytes,"
         << "secondary_draw_calls,primary_submitted_voxels,secondary_submitted_voxels,"
         << "primary_lod0,primary_lod1,primary_lod2,secondary_lod0,secondary_lod1,secondary_lod2,"
-        << "speedup_vs_matching_single_gpu,efficiency,"
+        << "speedup_vs_matching_single_gpu,two_device_nominal_efficiency,"
         << "visual_validation_passed,skip_reason\n";
 
     summary << std::fixed << std::setprecision(6);
@@ -349,18 +393,23 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << EscapeCsv(row.BenchmarkConfigClass) << ','
             << EscapeCsv(row.TemporalPolicy) << ','
             << EscapeCsv(row.SpatialLodPolicy) << ','
+            << EscapeCsv(row.PairId) << ','
             << row.ActualStaticVoxelCount << ','
             << row.ActualDynamicVoxelCount << ','
             << row.RenderWidth << ','
             << row.RenderHeight << ','
             << row.RepetitionCount << ','
             << row.MeasuredFrameCount << ','
+            << row.ValidFrameCount << ','
+            << row.InvalidFrameCount << ','
             << EscapeCsv(row.Preset) << ','
             << (row.Valid ? "true" : "false") << ','
             << EscapeCsv(row.ValidityReason) << ','
             << EscapeCsv(row.SpeedupStatistic) << ','
             << row.AverageCpuFrameMs << ','
             << row.MedianCpuFrameMs << ','
+            << row.P95CpuFrameMs << ','
+            << row.P99CpuFrameMs << ','
             << row.StdDevCpuFrameMs << ','
             << row.CpuFrameCi95HalfWidthMs << ','
             << row.CriticalPathGpuMs << ','

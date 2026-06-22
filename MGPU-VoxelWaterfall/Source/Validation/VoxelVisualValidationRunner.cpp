@@ -1,6 +1,8 @@
 #include "Source/Validation/VoxelVisualValidationRunner.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -13,6 +15,28 @@ namespace
     std::string BoolText(const bool value)
     {
         return value ? "true" : "false";
+    }
+
+    std::string ModeName(const VoxelExecutionMode mode)
+    {
+        switch (mode)
+        {
+        case VoxelExecutionMode::SingleGpuFull:
+            return "SingleGpuFull";
+        case VoxelExecutionMode::MultiGpuFull:
+            return "MultiGpuFull";
+        case VoxelExecutionMode::SingleGpuTemporalDecimation:
+            return "SingleGpuTemporalDecimation";
+        case VoxelExecutionMode::MultiGpuTemporalDecimation:
+            return "MultiGpuTemporalDecimation";
+        default:
+            return "Unknown";
+        }
+    }
+
+    std::string LodName(const VoxelSpatialLodMode mode)
+    {
+        return mode == VoxelSpatialLodMode::ThreeLevel ? "ThreeLevel" : "Off";
     }
 
     std::string EscapeJson(const std::string& value)
@@ -50,33 +74,142 @@ namespace
         escaped += '"';
         return escaped;
     }
+
+    uint64_t Fnv1aAppendBytes(uint64_t hash, const void* data, const size_t byteCount)
+    {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < byteCount; ++i)
+        {
+            hash ^= bytes[i];
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    }
+
+    uint64_t Fnv1aAppendString(uint64_t hash, const std::string& value)
+    {
+        return Fnv1aAppendBytes(hash, value.data(), value.size());
+    }
+
+    template <typename T>
+    uint64_t Fnv1aAppendValue(uint64_t hash, const T& value)
+    {
+        return Fnv1aAppendBytes(hash, &value, sizeof(T));
+    }
+
+    std::string HashHex(const uint64_t hash)
+    {
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return stream.str();
+    }
+
+    std::string MatrixCsv(const float values[16])
+    {
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        stream << std::fixed << std::setprecision(6);
+        for (uint32_t i = 0; i < 16; ++i)
+        {
+            if (i != 0)
+                stream << ';';
+            stream << values[i];
+        }
+        return stream.str();
+    }
+
+    void WriteJsonMatrix(std::ofstream& json, const char* name, const float values[16], const char* suffix)
+    {
+        json << "    \"" << name << "\": [";
+        for (uint32_t i = 0; i < 16; ++i)
+        {
+            if (i != 0)
+                json << ", ";
+            json << values[i];
+        }
+        json << "]" << suffix << "\n";
+    }
 }
 
 std::vector<VoxelVisualValidationCase> VoxelVisualValidationConfig::DefaultCases()
 {
-    std::vector<VoxelVisualValidationCase> cases;
-    constexpr float shares[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
-    constexpr uint32_t intervals[] = {1u, 4u};
-    for (const float share : shares)
-    {
-        for (const bool spatialLodEnabled : {false, true})
+    return {
         {
-            for (const uint32_t interval : intervals)
-            {
-                std::ostringstream name;
-                name << "share_" << share
-                    << "_lod_" << (spatialLodEnabled ? "on" : "off")
-                    << "_temporal_" << interval;
-                cases.push_back({name.str(), share, spatialLodEnabled, interval});
-            }
+            "full_lod_off",
+            VoxelExecutionMode::SingleGpuFull,
+            VoxelExecutionMode::MultiGpuFull,
+            false,
+            1u
+        },
+        {
+            "full_lod_on",
+            VoxelExecutionMode::SingleGpuFull,
+            VoxelExecutionMode::MultiGpuFull,
+            true,
+            1u
+        },
+        {
+            "temporal_lod_off",
+            VoxelExecutionMode::SingleGpuTemporalDecimation,
+            VoxelExecutionMode::MultiGpuTemporalDecimation,
+            false,
+            2u
+        },
+        {
+            "temporal_lod_on",
+            VoxelExecutionMode::SingleGpuTemporalDecimation,
+            VoxelExecutionMode::MultiGpuTemporalDecimation,
+            true,
+            2u
         }
-    }
+    };
+}
 
-    cases.push_back({"resize", 0.5f, false, 1});
-    cases.push_back({"voxels_before_primary_geometry", 0.5f, false, 1});
-    cases.push_back({"voxels_behind_primary_geometry", 0.5f, false, 1});
-    cases.push_back({"intersecting_partitions", 0.5f, true, 4});
-    return cases;
+uint64_t VoxelVisualValidationRunner::ComputeSnapshotHash(const VoxelVisualValidationSnapshot& snapshot)
+{
+    uint64_t hash = 1469598103934665603ull;
+    hash = Fnv1aAppendValue(hash, snapshot.SchemaVersion);
+    hash = Fnv1aAppendString(hash, snapshot.WorkloadProfile);
+    hash = Fnv1aAppendString(hash, snapshot.ScenePreset);
+    hash = Fnv1aAppendValue(hash, snapshot.StaticSeed);
+    hash = Fnv1aAppendValue(hash, snapshot.DynamicSeed);
+    hash = Fnv1aAppendValue(hash, snapshot.RequestedStaticCount);
+    hash = Fnv1aAppendValue(hash, snapshot.ActualStaticCount);
+    hash = Fnv1aAppendValue(hash, snapshot.RequestedDynamicCount);
+    hash = Fnv1aAppendValue(hash, snapshot.ActualDynamicCount);
+    hash = Fnv1aAppendValue(hash, snapshot.TotalVoxelCount);
+    hash = Fnv1aAppendValue(hash, snapshot.StaticVoxelSize);
+    hash = Fnv1aAppendValue(hash, snapshot.DynamicVoxelSize);
+    hash = Fnv1aAppendValue(hash, snapshot.RenderWidth);
+    hash = Fnv1aAppendValue(hash, snapshot.RenderHeight);
+    hash = Fnv1aAppendString(hash, snapshot.ColorFormat);
+    hash = Fnv1aAppendString(hash, snapshot.LinearDepthFormat);
+    hash = Fnv1aAppendValue(hash, snapshot.FixedDeltaTime);
+    hash = Fnv1aAppendValue(hash, snapshot.FixedStepCount);
+    hash = Fnv1aAppendValue(hash, snapshot.WarmupStepCount);
+    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Mode);
+    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Lod0Distance);
+    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Lod1Distance);
+    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Hysteresis);
+    hash = Fnv1aAppendValue(hash, snapshot.TemporalPolicy);
+    hash = Fnv1aAppendValue(hash, snapshot.TemporalInterval);
+    hash = Fnv1aAppendValue(hash, snapshot.SecondaryShare);
+    hash = Fnv1aAppendValue(hash, snapshot.PartitionStrategy);
+    hash = Fnv1aAppendValue(hash, snapshot.LoadBalanceScenario);
+    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Width);
+    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Height);
+    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Depth);
+    hash = Fnv1aAppendValue(hash, snapshot.RequestedExecutionMode);
+    hash = Fnv1aAppendBytes(hash, snapshot.View, sizeof(snapshot.View));
+    hash = Fnv1aAppendBytes(hash, snapshot.Projection, sizeof(snapshot.Projection));
+    hash = Fnv1aAppendValue(hash, snapshot.NearZ);
+    hash = Fnv1aAppendValue(hash, snapshot.FarZ);
+    hash = Fnv1aAppendString(hash, snapshot.LightingPreset);
+    hash = Fnv1aAppendValue(hash, snapshot.DynamicShadowsEnabled);
+    hash = Fnv1aAppendString(hash, snapshot.Background);
+    hash = Fnv1aAppendString(hash, snapshot.BuildHash);
+    hash = Fnv1aAppendString(hash, snapshot.ShaderHash);
+    return hash;
 }
 
 VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
@@ -85,23 +218,56 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
 {
     std::filesystem::create_directories(outputDirectory);
 
+    VoxelVisualValidationConfig resolvedConfig = config;
+    auto& snapshot = resolvedConfig.Snapshot;
+    snapshot.SnapshotHash = snapshot.SnapshotHash != 0
+                                ? snapshot.SnapshotHash
+                                : ComputeSnapshotHash(snapshot);
+    if (snapshot.ValidationRunId.empty())
+        snapshot.ValidationRunId = HashHex(snapshot.SnapshotHash);
+
     VoxelVisualValidationMetrics metrics{};
     metrics.HasResult = true;
     metrics.Passed = false;
+    metrics.Blocked = true;
+    metrics.ValidationRunId = snapshot.ValidationRunId;
+    metrics.SnapshotHash = snapshot.SnapshotHash;
     metrics.FailReason =
-        "Deterministic SingleGpuFull/MultiGpuFull validation textures were not captured; numerical comparison was not executed.";
-    metrics.ColorMAE = 0.0;
-    metrics.ColorRMSE = 0.0;
-    metrics.ColorPSNR = 0.0;
-    metrics.MaxColorError = 0.0;
-    metrics.ColorMismatchPercent = 100.0;
-    metrics.DepthRMSE = 0.0;
-    metrics.DepthMismatchPercent = 100.0;
+        "BLOCKED: GPU frame capture and compare dispatch resources are not connected to VoxelVisualValidationRunner yet.";
     metrics.CsvPath = outputDirectory / "voxel_visual_validation.csv";
     metrics.JsonPath = outputDirectory / "voxel_visual_validation.json";
 
-    ExportCsv(config, metrics, metrics.CsvPath);
-    ExportJson(config, metrics, metrics.JsonPath);
+    const auto cases = resolvedConfig.Cases.empty()
+                           ? VoxelVisualValidationConfig::DefaultCases()
+                           : resolvedConfig.Cases;
+    metrics.CaseResults.reserve(cases.size());
+    for (const auto& validationCase : cases)
+    {
+        VoxelVisualValidationCaseResult result{};
+        result.CaseId = validationCase.CaseId;
+        result.ValidationRunId = snapshot.ValidationRunId;
+        result.SnapshotHash = snapshot.SnapshotHash;
+        result.RequestedSingleMode = validationCase.SingleMode;
+        result.ActualSingleMode = validationCase.SingleMode;
+        result.RequestedMultiMode = validationCase.MultiMode;
+        result.ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+        result.SpatialLodMode = validationCase.SpatialLodEnabled
+                                    ? VoxelSpatialLodMode::ThreeLevel
+                                    : VoxelSpatialLodMode::Off;
+        result.TemporalInterval = validationCase.TemporalInterval;
+        result.TotalVoxelCount = snapshot.TotalVoxelCount;
+        result.ActualStaticCount = snapshot.ActualStaticCount;
+        result.ActualDynamicCount = snapshot.ActualDynamicCount;
+        result.Status = "BLOCKED";
+        result.Blocked = true;
+        result.Passed = false;
+        result.Reason =
+            "GPU color/depth resources were not supplied; deterministic snapshot/export completed but numeric compare did not run.";
+        metrics.CaseResults.push_back(std::move(result));
+    }
+
+    ExportCsv(resolvedConfig, metrics, metrics.CsvPath);
+    ExportJson(resolvedConfig, metrics, metrics.JsonPath);
     return metrics;
 }
 
@@ -114,39 +280,80 @@ void VoxelVisualValidationRunner::ExportCsv(
     if (!csv.is_open())
         throw std::runtime_error("Failed to open visual validation CSV output");
 
+    const auto& snapshot = config.Snapshot;
     csv.imbue(std::locale::classic());
-    csv << "case,secondary_share,spatial_lod,temporal_interval,seed,total_voxels,render_width,render_height,"
-        << "fixed_dt,fixed_step_count,color_tolerance,depth_tolerance,color_mae,color_rmse,psnr,max_error,"
-        << "mismatched_pixel_percent,depth_rmse,depth_mismatched_pixel_percent,secondary_draw_count,"
-        << "pipeline_primitive_count,passed,fail_reason\n";
+    csv << "validation_run_id,snapshot_hash,case_id,status,passed,blocked,requested_single_mode,"
+        << "actual_single_mode,requested_multi_mode,actual_multi_mode,scene_preset,profile,total_voxels,"
+        << "actual_static_voxels,actual_dynamic_voxels,render_width,render_height,color_format,"
+        << "linear_depth_format,fixed_dt,fixed_step_count,warmup_step_count,spatial_lod,lod0_distance,"
+        << "lod1_distance,lod_hysteresis,temporal_interval,secondary_share,color_tolerance,"
+        << "depth_tolerance,max_color_mismatch_percent,max_depth_mismatch_percent,compared_pixel_count,"
+        << "foreground_union_count,foreground_intersection_count,color_mae,color_rmse,psnr,"
+        << "max_color_error,alpha_mae,depth_mae,depth_rmse,depth_relative_mae,max_depth_error,"
+        << "color_mismatch_count,color_mismatch_percent,depth_mismatch_count,depth_mismatch_percent,"
+        << "combined_mismatch_count,combined_mismatch_percent,coverage_mismatch_count,"
+        << "coverage_mismatch_percent,build_hash,shader_hash,view_matrix,projection_matrix,reason\n";
 
-    const auto& cases = config.Cases.empty() ? VoxelVisualValidationConfig::DefaultCases() : config.Cases;
-    for (const auto& validationCase : cases)
+    for (const auto& result : metrics.CaseResults)
     {
-        csv << EscapeCsv(validationCase.Name) << ','
-            << validationCase.SecondaryShare << ','
-            << BoolText(validationCase.SpatialLodEnabled) << ','
-            << validationCase.TemporalInterval << ','
-            << config.Snapshot.Seed << ','
-            << config.Snapshot.TotalVoxelCount << ','
-            << config.Snapshot.RenderWidth << ','
-            << config.Snapshot.RenderHeight << ','
+        csv << EscapeCsv(metrics.ValidationRunId) << ','
+            << HashHex(result.SnapshotHash) << ','
+            << EscapeCsv(result.CaseId) << ','
+            << result.Status << ','
+            << BoolText(result.Passed) << ','
+            << BoolText(result.Blocked) << ','
+            << ModeName(result.RequestedSingleMode) << ','
+            << ModeName(result.ActualSingleMode) << ','
+            << ModeName(result.RequestedMultiMode) << ','
+            << ModeName(result.ActualMultiMode) << ','
+            << EscapeCsv(snapshot.ScenePreset) << ','
+            << EscapeCsv(snapshot.WorkloadProfile) << ','
+            << result.TotalVoxelCount << ','
+            << result.ActualStaticCount << ','
+            << result.ActualDynamicCount << ','
+            << snapshot.RenderWidth << ','
+            << snapshot.RenderHeight << ','
+            << snapshot.ColorFormat << ','
+            << snapshot.LinearDepthFormat << ','
             << std::fixed << std::setprecision(8)
-            << config.Snapshot.FixedDeltaTime << ','
-            << config.Snapshot.FixedStepCount << ','
+            << snapshot.FixedDeltaTime << ','
+            << snapshot.FixedStepCount << ','
+            << snapshot.WarmupStepCount << ','
+            << LodName(result.SpatialLodMode) << ','
+            << snapshot.SpatialLod.Lod0Distance << ','
+            << snapshot.SpatialLod.Lod1Distance << ','
+            << snapshot.SpatialLod.Hysteresis << ','
+            << result.TemporalInterval << ','
+            << snapshot.SecondaryShare << ','
             << config.Tolerances.ColorTolerance << ','
             << config.Tolerances.DepthTolerance << ','
-            << metrics.ColorMAE << ','
-            << metrics.ColorRMSE << ','
-            << metrics.ColorPSNR << ','
-            << metrics.MaxColorError << ','
-            << metrics.ColorMismatchPercent << ','
-            << metrics.DepthRMSE << ','
-            << metrics.DepthMismatchPercent << ','
-            << metrics.ActualSecondaryDrawCount << ','
-            << metrics.PipelinePrimitiveCount << ','
-            << BoolText(metrics.Passed) << ','
-            << EscapeCsv(metrics.FailReason) << '\n';
+            << config.Tolerances.MaxColorMismatchPercent << ','
+            << config.Tolerances.MaxDepthMismatchPercent << ','
+            << result.ComparedPixelCount << ','
+            << result.ForegroundUnionCount << ','
+            << result.ForegroundIntersectionCount << ','
+            << result.ColorMAE << ','
+            << result.ColorRMSE << ','
+            << result.ColorPSNR << ','
+            << result.MaxColorError << ','
+            << result.AlphaMAE << ','
+            << result.DepthMAE << ','
+            << result.DepthRMSE << ','
+            << result.DepthRelativeMAE << ','
+            << result.MaxDepthError << ','
+            << result.ColorMismatchCount << ','
+            << result.ColorMismatchPercent << ','
+            << result.DepthMismatchCount << ','
+            << result.DepthMismatchPercent << ','
+            << result.CombinedMismatchCount << ','
+            << result.CombinedMismatchPercent << ','
+            << result.CoverageMismatchCount << ','
+            << result.CoverageMismatchPercent << ','
+            << EscapeCsv(snapshot.BuildHash) << ','
+            << EscapeCsv(snapshot.ShaderHash) << ','
+            << EscapeCsv(MatrixCsv(snapshot.View)) << ','
+            << EscapeCsv(MatrixCsv(snapshot.Projection)) << ','
+            << EscapeCsv(result.Reason) << '\n';
     }
 }
 
@@ -159,47 +366,76 @@ void VoxelVisualValidationRunner::ExportJson(
     if (!json.is_open())
         throw std::runtime_error("Failed to open visual validation JSON output");
 
+    const auto& snapshot = config.Snapshot;
     json.imbue(std::locale::classic());
+    json << std::fixed << std::setprecision(8);
     json << "{\n";
+    json << "  \"validation_run_id\": \"" << EscapeJson(metrics.ValidationRunId) << "\",\n";
+    json << "  \"aggregate_status\": \"" << (metrics.Passed ? "PASS" : (metrics.Blocked ? "BLOCKED" : "FAIL")) << "\",\n";
+    json << "  \"aggregate_passed\": " << BoolText(metrics.Passed) << ",\n";
+    json << "  \"aggregate_reason\": \"" << EscapeJson(metrics.FailReason) << "\",\n";
     json << "  \"snapshot\": {\n";
-    json << "    \"seed\": " << config.Snapshot.Seed << ",\n";
-    json << "    \"total_voxels\": " << config.Snapshot.TotalVoxelCount << ",\n";
-    json << "    \"render_width\": " << config.Snapshot.RenderWidth << ",\n";
-    json << "    \"render_height\": " << config.Snapshot.RenderHeight << ",\n";
-    json << "    \"fixed_dt\": " << std::fixed << std::setprecision(8)
-        << config.Snapshot.FixedDeltaTime << ",\n";
-    json << "    \"fixed_step_count\": " << config.Snapshot.FixedStepCount << "\n";
+    json << "    \"schema_version\": " << snapshot.SchemaVersion << ",\n";
+    json << "    \"snapshot_hash\": \"" << HashHex(snapshot.SnapshotHash) << "\",\n";
+    json << "    \"profile\": \"" << EscapeJson(snapshot.WorkloadProfile) << "\",\n";
+    json << "    \"scene_preset\": \"" << EscapeJson(snapshot.ScenePreset) << "\",\n";
+    json << "    \"static_seed\": " << snapshot.StaticSeed << ",\n";
+    json << "    \"dynamic_seed\": " << snapshot.DynamicSeed << ",\n";
+    json << "    \"requested_static_count\": " << snapshot.RequestedStaticCount << ",\n";
+    json << "    \"actual_static_count\": " << snapshot.ActualStaticCount << ",\n";
+    json << "    \"requested_dynamic_count\": " << snapshot.RequestedDynamicCount << ",\n";
+    json << "    \"actual_dynamic_count\": " << snapshot.ActualDynamicCount << ",\n";
+    json << "    \"total_voxels\": " << snapshot.TotalVoxelCount << ",\n";
+    json << "    \"render_width\": " << snapshot.RenderWidth << ",\n";
+    json << "    \"render_height\": " << snapshot.RenderHeight << ",\n";
+    json << "    \"color_format\": \"" << EscapeJson(snapshot.ColorFormat) << "\",\n";
+    json << "    \"linear_depth_format\": \"" << EscapeJson(snapshot.LinearDepthFormat) << "\",\n";
+    json << "    \"fixed_dt\": " << snapshot.FixedDeltaTime << ",\n";
+    json << "    \"fixed_step_count\": " << snapshot.FixedStepCount << ",\n";
+    json << "    \"warmup_step_count\": " << snapshot.WarmupStepCount << ",\n";
+    json << "    \"spatial_lod\": \"" << LodName(snapshot.SpatialLod.Mode) << "\",\n";
+    json << "    \"temporal_interval\": " << snapshot.TemporalInterval << ",\n";
+    json << "    \"secondary_share\": " << snapshot.SecondaryShare << ",\n";
+    json << "    \"build_hash\": \"" << EscapeJson(snapshot.BuildHash) << "\",\n";
+    json << "    \"shader_hash\": \"" << EscapeJson(snapshot.ShaderHash) << "\",\n";
+    WriteJsonMatrix(json, "view_matrix", snapshot.View, ",");
+    WriteJsonMatrix(json, "projection_matrix", snapshot.Projection, "");
     json << "  },\n";
     json << "  \"tolerances\": {\n";
     json << "    \"color\": " << config.Tolerances.ColorTolerance << ",\n";
     json << "    \"depth\": " << config.Tolerances.DepthTolerance << ",\n";
     json << "    \"max_color_mismatch_percent\": " << config.Tolerances.MaxColorMismatchPercent << ",\n";
-    json << "    \"max_depth_mismatch_percent\": " << config.Tolerances.MaxDepthMismatchPercent << "\n";
-    json << "  },\n";
-    json << "  \"metrics\": {\n";
-    json << "    \"has_result\": " << BoolText(metrics.HasResult) << ",\n";
-    json << "    \"passed\": " << BoolText(metrics.Passed) << ",\n";
-    json << "    \"color_mae\": " << metrics.ColorMAE << ",\n";
-    json << "    \"color_rmse\": " << metrics.ColorRMSE << ",\n";
-    json << "    \"psnr\": " << metrics.ColorPSNR << ",\n";
-    json << "    \"max_error\": " << metrics.MaxColorError << ",\n";
-    json << "    \"mismatched_pixel_percent\": " << metrics.ColorMismatchPercent << ",\n";
-    json << "    \"depth_rmse\": " << metrics.DepthRMSE << ",\n";
-    json << "    \"depth_mismatched_pixel_percent\": " << metrics.DepthMismatchPercent << ",\n";
-    json << "    \"secondary_draw_count\": " << metrics.ActualSecondaryDrawCount << ",\n";
-    json << "    \"pipeline_primitive_count\": " << metrics.PipelinePrimitiveCount << ",\n";
-    json << "    \"fail_reason\": \"" << EscapeJson(metrics.FailReason) << "\"\n";
+    json << "    \"max_depth_mismatch_percent\": " << config.Tolerances.MaxDepthMismatchPercent << ",\n";
+    json << "    \"max_combined_mismatch_percent\": " << config.Tolerances.MaxCombinedMismatchPercent << ",\n";
+    json << "    \"valid_depth_max\": " << config.Tolerances.ValidDepthMax << "\n";
     json << "  },\n";
     json << "  \"cases\": [\n";
-    const auto& cases = config.Cases.empty() ? VoxelVisualValidationConfig::DefaultCases() : config.Cases;
-    for (size_t i = 0; i < cases.size(); ++i)
+    for (size_t i = 0; i < metrics.CaseResults.size(); ++i)
     {
-        const auto& validationCase = cases[i];
-        json << "    {\"name\": \"" << EscapeJson(validationCase.Name)
-            << "\", \"secondary_share\": " << validationCase.SecondaryShare
-            << ", \"spatial_lod\": " << BoolText(validationCase.SpatialLodEnabled)
-            << ", \"temporal_interval\": " << validationCase.TemporalInterval << "}";
-        json << (i + 1 < cases.size() ? ",\n" : "\n");
+        const auto& result = metrics.CaseResults[i];
+        json << "    {\n";
+        json << "      \"case_id\": \"" << EscapeJson(result.CaseId) << "\",\n";
+        json << "      \"status\": \"" << result.Status << "\",\n";
+        json << "      \"passed\": " << BoolText(result.Passed) << ",\n";
+        json << "      \"blocked\": " << BoolText(result.Blocked) << ",\n";
+        json << "      \"requested_single_mode\": \"" << ModeName(result.RequestedSingleMode) << "\",\n";
+        json << "      \"actual_single_mode\": \"" << ModeName(result.ActualSingleMode) << "\",\n";
+        json << "      \"requested_multi_mode\": \"" << ModeName(result.RequestedMultiMode) << "\",\n";
+        json << "      \"actual_multi_mode\": \"" << ModeName(result.ActualMultiMode) << "\",\n";
+        json << "      \"spatial_lod\": \"" << LodName(result.SpatialLodMode) << "\",\n";
+        json << "      \"temporal_interval\": " << result.TemporalInterval << ",\n";
+        json << "      \"compared_pixel_count\": " << result.ComparedPixelCount << ",\n";
+        json << "      \"foreground_union_count\": " << result.ForegroundUnionCount << ",\n";
+        json << "      \"foreground_intersection_count\": " << result.ForegroundIntersectionCount << ",\n";
+        json << "      \"color_mae\": " << result.ColorMAE << ",\n";
+        json << "      \"color_rmse\": " << result.ColorRMSE << ",\n";
+        json << "      \"psnr\": " << result.ColorPSNR << ",\n";
+        json << "      \"max_color_error\": " << result.MaxColorError << ",\n";
+        json << "      \"depth_rmse\": " << result.DepthRMSE << ",\n";
+        json << "      \"depth_relative_mae\": " << result.DepthRelativeMAE << ",\n";
+        json << "      \"combined_mismatch_percent\": " << result.CombinedMismatchPercent << ",\n";
+        json << "      \"reason\": \"" << EscapeJson(result.Reason) << "\"\n";
+        json << "    }" << (i + 1 < metrics.CaseResults.size() ? "," : "") << "\n";
     }
     json << "  ]\n";
     json << "}\n";
