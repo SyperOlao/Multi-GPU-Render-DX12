@@ -430,7 +430,6 @@ def validate_top_level(artifacts: ArtifactSet) -> tuple[str, str, dict[str, str]
         ("validation_csv", artifacts.validation_csv),
         ("runs", artifacts.runs),
         ("paired_runs", artifacts.paired_runs),
-        ("invalid_records", artifacts.invalid_records),
         ("telemetry", artifacts.telemetry),
     ):
         require(rows, f"{name} must contain at least one data row")
@@ -441,6 +440,15 @@ def validate_top_level(artifacts: ArtifactSet) -> tuple[str, str, dict[str, str]
                 require(row["run_id"] == run_id, f"{name} run_id mismatch")
             if "suite" in row:
                 require(row["suite"] == suite, f"{name} suite mismatch")
+    for row in artifacts.invalid_records:
+        if "schema" in row:
+            validate_schema("invalid_records", row)
+        if "run_id" in row:
+            require(row["run_id"] == run_id, "invalid_records run_id mismatch")
+        if "suite" in row:
+            require(row["suite"] == suite, "invalid_records suite mismatch")
+    if manifest.get("status") == "COMPLETE":
+        require(not artifacts.invalid_records, "COMPLETE suite contains invalid_records rows")
     return run_id, suite, fields
 
 
@@ -478,10 +486,26 @@ def validate_validation_artifacts(artifacts: ArtifactSet, manifest_fields: dict[
                 str(case.get("candidate_config_hash", "")) != "",
                 f"validation case {case_id} lacks reference/candidate config hash")
         by_id[case_id] = case
-    csv_cases = {row.get("case_id", ""): row for row in artifacts.validation_csv}
+    csv_cases: dict[str, dict[str, str]] = {}
+    for row in artifacts.validation_csv:
+        case_id = row.get("case_id", "")
+        require(case_id, "validation CSV case_id missing")
+        require(case_id not in csv_cases, f"duplicate validation CSV case_id {case_id}")
+        csv_cases[case_id] = row
+    require(set(csv_cases) == set(by_id),
+            f"validation CSV/JSON case_id mismatch: csv={sorted(csv_cases)} json={sorted(by_id)}")
     for case_id, row in csv_cases.items():
-        if case_id:
-            require(row.get("status") == "PASS", f"validation CSV case {case_id} is not PASS")
+        case = by_id[case_id]
+        for csv_field, json_field in (
+            ("status", "status"),
+            ("validation_kind", "validation_kind"),
+            ("protocol_hash", "protocol_hash"),
+            ("reference_config_hash", "reference_config_hash"),
+            ("candidate_config_hash", "candidate_config_hash"),
+            ("camera_hash", "camera_hash"),
+        ):
+            require(row.get(csv_field, "") == str(case.get(json_field, "")),
+                    f"validation CSV/JSON mismatch for {case_id}.{csv_field}")
     return by_id
 
 
@@ -529,6 +553,91 @@ def validate_frame_visual_evidence(row: dict[str, str],
     else:
         fail(f"validation case {case_id} kind invalid")
     return case, validation_kind
+
+
+def case_mode_values(case: dict[str, Any], role: str) -> tuple[str, str]:
+    if role == "reference":
+        requested = str(case.get("requested_reference_mode", ""))
+        actual = str(case.get("actual_reference_mode", ""))
+        if requested or actual:
+            return requested, actual
+        single_requested = str(case.get("requested_single_mode", ""))
+        single_actual = str(case.get("actual_single_mode", ""))
+        if single_requested or single_actual:
+            return single_requested, single_actual
+    if role == "candidate":
+        requested = str(case.get("requested_candidate_mode", ""))
+        actual = str(case.get("actual_candidate_mode", ""))
+        if requested or actual:
+            return requested, actual
+        multi_requested = str(case.get("requested_multi_mode", ""))
+        multi_actual = str(case.get("actual_multi_mode", ""))
+        if multi_requested or multi_actual:
+            return multi_requested, multi_actual
+    return "", ""
+
+
+def case_role_matches_run_mode(case: dict[str, Any], role: str, mode: str) -> bool:
+    requested, actual = case_mode_values(case, role)
+    if requested or actual:
+        return requested == mode and actual == mode
+    if role == "reference":
+        candidates = {
+            str(case.get("requested_single_mode", "")),
+            str(case.get("actual_single_mode", "")),
+            str(case.get("requested_reference_mode", "")),
+            str(case.get("actual_reference_mode", "")),
+        }
+    else:
+        candidates = {
+            str(case.get("requested_multi_mode", "")),
+            str(case.get("actual_multi_mode", "")),
+            str(case.get("requested_candidate_mode", "")),
+            str(case.get("actual_candidate_mode", "")),
+        }
+    return mode in candidates or not any(candidates)
+
+
+def case_is_passing_evidence(case: dict[str, Any], manifest_fields: dict[str, str],
+                             protocol_hash: str, camera_hash: str) -> bool:
+    return (
+        case.get("status") == "PASS" and
+        bool_value(case.get("passed", False), f"{case.get('case_id', '')}.passed") and
+        not bool_value(case.get("blocked", False), f"{case.get('case_id', '')}.blocked") and
+        case_modes_match(case) and
+        str(case.get("protocol_hash", "")) == protocol_hash and
+        protocol_hash == manifest_fields["validation.protocol_sha256"] and
+        str(case.get("camera_hash", "")) == camera_hash
+    )
+
+
+def run_validation_evidence(resolved_hash: str, requested_mode: str, protocol_hash: str,
+                            camera_hash: str, manifest_fields: dict[str, str],
+                            validation_cases: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    implementation_ids: list[str] = []
+    fidelity_ids: list[str] = []
+    for case_id, case in validation_cases.items():
+        if not case_is_passing_evidence(case, manifest_fields, protocol_hash, camera_hash):
+            continue
+        kind = str(case.get("validation_kind", ""))
+        reference_hash = str(case.get("reference_config_hash", ""))
+        candidate_hash = str(case.get("candidate_config_hash", ""))
+        if kind == "implementation_equivalence":
+            if resolved_hash == reference_hash and case_role_matches_run_mode(case, "reference", requested_mode):
+                implementation_ids.append(case_id)
+            elif resolved_hash == candidate_hash and case_role_matches_run_mode(case, "candidate", requested_mode):
+                implementation_ids.append(case_id)
+        elif kind == "approximation_fidelity":
+            if resolved_hash == candidate_hash and case_role_matches_run_mode(case, "candidate", requested_mode):
+                fidelity_ids.append(case_id)
+    implementation_ids = sorted(set(implementation_ids))
+    fidelity_ids = sorted(set(fidelity_ids))
+    return {
+        "implementation_equivalence_case_ids": implementation_ids,
+        "approximation_fidelity_case_ids": fidelity_ids,
+        "implementation_equivalence_pass": bool(implementation_ids),
+        "approximation_fidelity_pass": bool(fidelity_ids),
+    }
 
 
 def validate_two_adapter(artifacts: ArtifactSet, manifest_fields: dict[str, str]) -> None:
@@ -660,10 +769,6 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
         row["_matched_validation_case_id"] = str(validation_case.get("case_id", ""))
         row["_matched_validation_kind"] = validation_kind
         row["_matched_validation_camera_hash"] = str(validation_case.get("camera_hash", ""))
-        row["_implementation_equivalence_pass"] = (
-            "true" if validation_kind == "implementation_equivalence" else "false")
-        row["_approximation_fidelity_pass"] = (
-            "true" if validation_kind == "approximation_fidelity" else "false")
         require(bool_value(row.get("visual_validation_has_result", "true"), "visual_validation_has_result"),
                 "visual validation result missing")
         require(bool_value(row.get("visual_validation_passed", "true"), "visual_validation_passed"),
@@ -782,12 +887,13 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             valid_frames, "_matched_validation_kind", required=True)
         matched_validation_camera_hash = constant_frame_value(
             valid_frames, "_matched_validation_camera_hash", default=validation_camera_hash)
-        implementation_equivalence_pass = bool_value(
-            constant_frame_value(valid_frames, "_implementation_equivalence_pass", default="false"),
-            "implementation_equivalence_pass")
-        approximation_fidelity_pass = bool_value(
-            constant_frame_value(valid_frames, "_approximation_fidelity_pass", default="false"),
-            "approximation_fidelity_pass")
+        evidence = run_validation_evidence(
+            resolved_hash,
+            requested_mode,
+            validation_protocol_hash,
+            validation_camera_hash,
+            manifest_fields,
+            validation_cases)
         render_width = int_value({"render_width": constant_frame_value(valid_frames, "render_width", required=True)},
                                  "render_width", minimum=1)
         render_height = int_value({"render_height": constant_frame_value(valid_frames, "render_height", required=True)},
@@ -835,8 +941,10 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "validation_protocol_hash": validation_protocol_hash,
             "validation_config_hash": validation_config_hash,
             "validation_camera_hash": validation_camera_hash,
-            "implementation_equivalence_pass": implementation_equivalence_pass,
-            "approximation_fidelity_pass": approximation_fidelity_pass,
+            "implementation_equivalence_case_ids": evidence["implementation_equivalence_case_ids"],
+            "approximation_fidelity_case_ids": evidence["approximation_fidelity_case_ids"],
+            "implementation_equivalence_pass": evidence["implementation_equivalence_pass"],
+            "approximation_fidelity_pass": evidence["approximation_fidelity_pass"],
             "matched_validation_case_id": matched_validation_case_id,
             "matched_validation_kind": matched_validation_kind,
             "matched_validation_camera_hash": matched_validation_camera_hash,
@@ -1124,8 +1232,7 @@ def submitted_total(run: dict[str, Any]) -> float:
 
 
 def is_approximation_fidelity_pass(run: dict[str, Any]) -> bool:
-    return bool(run.get("approximation_fidelity_pass")) and \
-        str(run.get("matched_validation_kind", "")) == "approximation_fidelity"
+    return bool(run.get("approximation_fidelity_pass")) and bool(run.get("approximation_fidelity_case_ids", True))
 
 
 def build_h1_contrasts(runs: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1598,8 +1705,15 @@ class HostileFixture:
             "provenance": {"schema": "mgpu_research_provenance.v1", "fields": self.fields},
             "cases": cases,
         }), encoding="utf-8")
-        self.write_csv("voxel_visual_validation.csv", ["schema", "run_id", "suite", "case_id", "status"], [
-            ["mgpu_voxel_visual_validation.v2", "run0", "Smoke", "full_lod_off|equivalence|steady_240", "PASS"],
+        self.write_csv("voxel_visual_validation.csv", [
+            "schema", "run_id", "suite", "case_id", "validation_kind", "protocol_hash",
+            "reference_config_hash", "candidate_config_hash", "status", "passed", "blocked", "camera_hash",
+        ], [
+            [
+                "mgpu_voxel_visual_validation.v2", "run0", "Smoke",
+                "full_lod_off|equivalence|steady_240", "implementation_equivalence", "protocol",
+                "single-full-hash", "multi-full-hash", "PASS", "true", "false", "case-camera-full",
+            ],
         ])
         (self.root / "two_adapter_preflight.json").write_text(json.dumps({
             "schema": "mgpu_voxel_two_adapter_preflight.v2",
@@ -1654,9 +1768,7 @@ class HostileFixture:
         self.write_csv("paired_runs.csv", ["schema", "run_id", "suite", "session_id", "pair_id", "block_id", "repetition"], [
             ["mgpu_voxel_paired_runs.v2", "run0", "Smoke", "session0", "pair0", "block0", "0"],
         ])
-        self.write_csv("invalid_records.csv", ["schema", "run_id", "suite", "reason"], [
-            ["mgpu_voxel_invalid_records.v2", "run0", "Smoke", ""],
-        ])
+        self.write_csv("invalid_records.csv", ["schema", "run_id", "suite", "reason"], [])
         self.write_csv("telemetry.csv", ["schema", "run_id", "suite", "config_id"], [
             ["mgpu_voxel_run_telemetry.v2", "run0", "Smoke", "c_single"],
         ])
@@ -1766,6 +1878,23 @@ class AnalysisTests(unittest.TestCase):
             if case["case_id"] == case_id:
                 case.update(updates)
         (root / "voxel_visual_validation.json").write_text(json.dumps(data), encoding="utf-8")
+        self.rewrite_validation_csv_from_json(root)
+
+    def rewrite_validation_csv_from_json(self, root: Path) -> None:
+        data = read_json(root / "voxel_visual_validation.json")
+        rows = []
+        for case in data["cases"]:
+            rows.append([
+                "mgpu_voxel_visual_validation.v2", "run0", "Smoke",
+                case["case_id"], case["validation_kind"], case["protocol_hash"],
+                case.get("reference_config_hash", ""), case.get("candidate_config_hash", ""),
+                case["status"], str(case.get("passed", False)).lower(),
+                str(case.get("blocked", False)).lower(), case.get("camera_hash", ""),
+            ])
+        HostileFixture(root).write_csv("voxel_visual_validation.csv", [
+            "schema", "run_id", "suite", "case_id", "validation_kind", "protocol_hash",
+            "reference_config_hash", "candidate_config_hash", "status", "passed", "blocked", "camera_hash",
+        ], rows)
 
     def test_valid_fixture_passes_and_writes_v2_summary(self) -> None:
         temp, root = self.fixture()
@@ -1782,6 +1911,27 @@ class AnalysisTests(unittest.TestCase):
             path = write_summary(root, result)
             self.assertTrue(path.exists())
             self.assertTrue((root / "analysis_summary.v2.sha256").exists())
+
+    def test_header_only_invalid_records_complete_passes(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            rows = read_csv(root / "invalid_records.csv")
+            self.assertEqual(rows, [])
+            self.assertEqual(validate(root)["status"], "PASS")
+
+    def test_invalid_record_row_in_complete_fails_closed(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            HostileFixture(root).write_csv("invalid_records.csv", ["schema", "run_id", "suite", "reason"], [
+                ["mgpu_voxel_invalid_records.v2", "run0", "Smoke", "real invalid record"],
+            ])
+            self.assert_fails(root, "COMPLETE suite contains invalid_records rows")
+
+    def test_missing_invalid_records_file_fails(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            (root / "invalid_records.csv").unlink()
+            self.assert_fails(root, "missing artifact: invalid_records.csv")
 
     def test_real_producer_raw_csv_columns_are_accepted(self) -> None:
         temp, root = self.fixture()
@@ -1884,6 +2034,96 @@ class AnalysisTests(unittest.TestCase):
                                  visual_validation_camera_hash="wrong-camera")
             self.assert_fails(root, "validation camera hash mismatch|invalid raw frame")
 
+    def test_validation_csv_json_duplicate_and_set_mismatch_fail(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            HostileFixture(root).write_csv("voxel_visual_validation.csv", [
+                "schema", "run_id", "suite", "case_id", "validation_kind", "protocol_hash",
+                "reference_config_hash", "candidate_config_hash", "status", "passed", "blocked", "camera_hash",
+            ], [
+                [
+                    "mgpu_voxel_visual_validation.v2", "run0", "Smoke",
+                    "full_lod_off|equivalence|steady_240", "implementation_equivalence", "protocol",
+                    "single-full-hash", "multi-full-hash", "PASS", "true", "false", "case-camera-full",
+                ],
+                [
+                    "mgpu_voxel_visual_validation.v2", "run0", "Smoke",
+                    "full_lod_off|equivalence|steady_240", "implementation_equivalence", "protocol",
+                    "single-full-hash", "multi-full-hash", "PASS", "true", "false", "case-camera-full",
+                ],
+            ])
+            self.assert_fails(root, "duplicate validation CSV case_id")
+
+    def test_independent_equivalence_and_fidelity_evidence_same_run(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            manifest = read_json(root / "manifest.json")
+            for config in manifest["configs"]:
+                if config["config_id"] in {"c_single", "c_multi"}:
+                    config["spatial_lod"] = "ThreeLevel"
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            visual = read_json(root / "voxel_visual_validation.json")
+            visual["cases"].append({
+                "case_id": "multi_lod_on|fidelity|steady_240",
+                "validation_kind": "approximation_fidelity",
+                "status": "PASS",
+                "passed": True,
+                "blocked": False,
+                "protocol_hash": "protocol",
+                "reference_config_hash": "single-full-hash",
+                "candidate_config_hash": "multi-full-hash",
+                "config_hash": "case-config-set",
+                "camera_hash": "case-camera-full",
+                "requested_reference_mode": "SingleGpuFull",
+                "actual_reference_mode": "SingleGpuFull",
+                "requested_candidate_mode": "MultiGpuFull",
+                "actual_candidate_mode": "MultiGpuFull",
+            })
+            (root / "voxel_visual_validation.json").write_text(json.dumps(visual), encoding="utf-8")
+            self.rewrite_validation_csv_from_json(root)
+            self.update_csv_rows(
+                root, "raw_frames.csv", lambda row: row["config_id"] == "c_multi",
+                visual_validation_case_id="multi_lod_on|fidelity|steady_240")
+            result = validate(root)
+            run = next(run for run in result["recomputed_runs"] if run["config_id"] == "c_multi")
+            self.assertTrue(run["implementation_equivalence_pass"])
+            self.assertTrue(run["approximation_fidelity_pass"])
+            self.assertEqual(run["implementation_equivalence_case_ids"], ["full_lod_off|equivalence|steady_240"])
+            self.assertEqual(run["approximation_fidelity_case_ids"], ["multi_lod_on|fidelity|steady_240"])
+            self.assertIn("multi_lod_on|fidelity|steady_240", run["matched_validation_case_id"])
+
+    def test_validation_case_order_permutation_does_not_change_evidence(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            visual = read_json(root / "voxel_visual_validation.json")
+            visual["cases"].append({
+                "case_id": "multi_lod_on|fidelity|steady_240",
+                "validation_kind": "approximation_fidelity",
+                "status": "PASS",
+                "passed": True,
+                "blocked": False,
+                "protocol_hash": "protocol",
+                "reference_config_hash": "single-full-hash",
+                "candidate_config_hash": "multi-full-hash",
+                "config_hash": "case-config-set",
+                "camera_hash": "case-camera-full",
+                "requested_reference_mode": "SingleGpuFull",
+                "actual_reference_mode": "SingleGpuFull",
+                "requested_candidate_mode": "MultiGpuFull",
+                "actual_candidate_mode": "MultiGpuFull",
+            })
+            (root / "voxel_visual_validation.json").write_text(json.dumps(visual), encoding="utf-8")
+            self.rewrite_validation_csv_from_json(root)
+            first = next(run for run in validate(root)["recomputed_runs"] if run["config_id"] == "c_multi")
+            visual["cases"] = list(reversed(visual["cases"]))
+            (root / "voxel_visual_validation.json").write_text(json.dumps(visual), encoding="utf-8")
+            self.rewrite_validation_csv_from_json(root)
+            second = next(run for run in validate(root)["recomputed_runs"] if run["config_id"] == "c_multi")
+            self.assertEqual(first["implementation_equivalence_case_ids"],
+                             second["implementation_equivalence_case_ids"])
+            self.assertEqual(first["approximation_fidelity_case_ids"],
+                             second["approximation_fidelity_case_ids"])
+
     def sample_pair_run(self, mode: str, config_id: str) -> dict[str, Any]:
         return {
             "run_id": "run0",
@@ -1919,7 +2159,9 @@ class AnalysisTests(unittest.TestCase):
             "validation_config_hash": "single-case" if mode in SINGLE_MODES else "multi-case",
             "resolved_config_hash": "single-full-hash" if mode in SINGLE_MODES else "multi-full-hash",
             "implementation_equivalence_pass": True,
+            "implementation_equivalence_case_ids": ["equivalence_case"],
             "approximation_fidelity_pass": False,
+            "approximation_fidelity_case_ids": [],
             "matched_validation_case_id": "equivalence_case",
             "matched_validation_kind": "implementation_equivalence",
             "matched_validation_camera_hash": "camera",
@@ -1953,6 +2195,11 @@ class AnalysisTests(unittest.TestCase):
                 "Temporal" in run["requested_mode"] or run.get("spatial_lod_enabled"))
         if run["approximation_fidelity_pass"]:
             run["matched_validation_kind"] = "approximation_fidelity"
+            run["approximation_fidelity_case_ids"] = [str(run.get("matched_validation_case_id", "fidelity_case"))]
+        else:
+            run["approximation_fidelity_case_ids"] = []
+        if run.get("implementation_equivalence_pass"):
+            run["implementation_equivalence_case_ids"] = [str(run.get("matched_validation_case_id", "equivalence_case"))]
         if "matched_validation_case_id" not in updates:
             run["matched_validation_case_id"] = run["validation_case_id"]
         run["matched_validation_camera_hash"] = run["validation_camera_hash"]

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import unittest
+from pathlib import Path
 
 
 def canonical_json(value: dict) -> str:
@@ -102,6 +103,18 @@ def covered(protocol: dict, rows: list[dict], configs: list[dict]) -> tuple[bool
         ):
             return False, f"missing fidelity case for {cfg['config_id']}"
     return True, ""
+
+
+def modeled_validation_config_hash(mode: str, side: str, lod_enabled: bool, temporal_interval: int) -> str:
+    if side == "Reference":
+        lod_enabled = False
+        temporal_interval = 1
+    payload = {
+        "mode": mode,
+        "spatial_lod_enabled": lod_enabled,
+        "temporal_interval": temporal_interval,
+    }
+    return protocol_hash(payload)
 
 
 class VisualValidationProtocolTests(unittest.TestCase):
@@ -277,6 +290,39 @@ class VisualValidationProtocolTests(unittest.TestCase):
         ]
         self.assertEqual(covered(protocol, rows, configs), (True, ""))
         self.assertNotEqual(rows[0]["color_mae"], rows[1]["color_mae"])
+
+    def test_cpp_validation_uses_explicit_reference_candidate_side(self):
+        source = Path(__file__).resolve().parents[1] / "VoxelWaterfallApp.cpp"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("enum class ValidationSide", text)
+        self.assertIn("side == ValidationSide::Candidate && validationCase.SpatialLodEnabled", text)
+        self.assertIn("side == ValidationSide::Reference ? 1u : validationCase.TemporalInterval", text)
+        self.assertIn("capturePath(ValidationSide::Reference", text)
+        self.assertIn("capturePath(ValidationSide::Candidate", text)
+        self.assertNotIn("mode == validationCase.ReferenceMode\n                    ? validationCase.ReferenceConfigHash",
+                         text)
+
+    def test_reference_candidate_lod_fidelity_contract(self):
+        source = Path(__file__).resolve().parents[1] / "VoxelWaterfallApp.cpp"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("validationCase.ReferenceConfigHash == validationCase.CandidateConfigHash", text)
+        self.assertIn("referenceConfig.SpatialLodEnabled || referenceConfig.TemporalInterval != 1u", text)
+        self.assertIn("candidateConfig.SpatialLodEnabled != validationCase.SpatialLodEnabled", text)
+
+    def test_same_mode_lod_and_temporal_fidelity_side_hashes(self):
+        single_reference = modeled_validation_config_hash("SingleGpuFull", "Reference", True, 1)
+        single_candidate = modeled_validation_config_hash("SingleGpuFull", "Candidate", True, 1)
+        multi_reference = modeled_validation_config_hash("MultiGpuFull", "Reference", True, 1)
+        multi_candidate = modeled_validation_config_hash("MultiGpuFull", "Candidate", True, 1)
+        temporal_reference = modeled_validation_config_hash("MultiGpuTemporalDecimation", "Reference", False, 4)
+        temporal_candidate = modeled_validation_config_hash("MultiGpuTemporalDecimation", "Candidate", False, 4)
+
+        self.assertNotEqual(single_reference, single_candidate)
+        self.assertNotEqual(multi_reference, multi_candidate)
+        self.assertNotEqual(temporal_reference, temporal_candidate)
+        self.assertEqual(single_reference, modeled_validation_config_hash("SingleGpuFull", "Reference", False, 1))
+        self.assertEqual(temporal_reference,
+                         modeled_validation_config_hash("MultiGpuTemporalDecimation", "Reference", False, 1))
 
 
 if __name__ == "__main__":

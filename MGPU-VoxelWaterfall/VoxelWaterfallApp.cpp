@@ -946,9 +946,16 @@ namespace
         return VoxelResearchCameraMode::FixedOverview;
     }
 
+    enum class ValidationSide
+    {
+        Reference,
+        Candidate
+    };
+
     AutomaticBenchmarkConfig ConfigForValidationMode(
         const VoxelVisualValidationCase& validationCase,
-        const VoxelExecutionMode mode)
+        const VoxelExecutionMode mode,
+        const ValidationSide side)
     {
         AutomaticBenchmarkConfig config{};
         config.Suite = validationCase.Suite == "Smoke" ? BenchmarkSuite::Smoke : BenchmarkSuite::Full;
@@ -962,11 +969,11 @@ namespace
         config.SecondaryShare = validationCase.SecondaryShare;
         config.SpatialLodEnabled =
             validationCase.ValidationKind == "approximation_fidelity"
-                ? (mode == validationCase.CandidateMode && validationCase.SpatialLodEnabled)
+                ? (side == ValidationSide::Candidate && validationCase.SpatialLodEnabled)
                 : validationCase.SpatialLodEnabled;
         config.TemporalInterval =
-            validationCase.ValidationKind == "approximation_fidelity" && mode == validationCase.ReferenceMode
-                ? 1u
+            validationCase.ValidationKind == "approximation_fidelity"
+                ? (side == ValidationSide::Reference ? 1u : validationCase.TemporalInterval)
                 : validationCase.TemporalInterval;
         config.RandomizationSeed = validationCase.RandomizationSeed;
         config.ConfigId = validationCase.ConfigKey + "|" + ExecutionModeNameLiteral(mode);
@@ -2221,7 +2228,8 @@ VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationC
         return copy;
     };
 
-    const auto capturePath = [&](const VoxelExecutionMode mode,
+    const auto capturePath = [&](const ValidationSide side,
+                                 const VoxelExecutionMode mode,
                                  const bool multiPath,
                                  const wchar_t* label) -> ValidationCapturedPath
     {
@@ -2235,7 +2243,7 @@ VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationC
             ApplyResearchLightingPreset(VoxelResearchLightingPreset::BenchmarkNeutral);
             voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
             const auto resolved = ApplyBenchmarkConfigurationAtomic(
-                ConfigForValidationMode(validationCase, mode));
+                ConfigForValidationMode(validationCase, mode, side));
             if (!resolved.Passed)
             {
                 capture.BlockedReason = "deterministic validation could not apply resolved benchmark config: " +
@@ -2243,7 +2251,7 @@ VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationC
                 return capture;
             }
             const std::string expectedHash =
-                mode == validationCase.ReferenceMode
+                side == ValidationSide::Reference
                     ? validationCase.ReferenceConfigHash
                     : validationCase.CandidateConfigHash;
             if (resolved.ResolvedConfigHash != expectedHash)
@@ -2402,7 +2410,8 @@ VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationC
         return capture;
     };
 
-    auto single = capturePath(validationCase.ReferenceMode,
+    auto single = capturePath(ValidationSide::Reference,
+                              validationCase.ReferenceMode,
                               validationCase.ReferenceMode == VoxelExecutionMode::MultiGpuFull ||
                                   validationCase.ReferenceMode == VoxelExecutionMode::MultiGpuTemporalDecimation,
                               L"Reference");
@@ -2417,7 +2426,8 @@ VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationC
         return input;
     }
 
-    auto multi = capturePath(validationCase.CandidateMode,
+    auto multi = capturePath(ValidationSide::Candidate,
+                             validationCase.CandidateMode,
                              validationCase.CandidateMode == VoxelExecutionMode::MultiGpuFull ||
                                  validationCase.CandidateMode == VoxelExecutionMode::MultiGpuTemporalDecimation,
                              L"Candidate");
@@ -2716,18 +2726,47 @@ void VoxelWaterfallApp::RunVisualValidation(const std::filesystem::path& request
         ApplyRenderResolutionPreset(VoxelRenderResolutionPreset::R1920x1080);
         ApplyResearchLightingPreset(VoxelResearchLightingPreset::BenchmarkNeutral);
         ApplyResearchCameraMode(CameraModeFromName(validationCase.CameraMode));
-        auto referenceConfig = ConfigForValidationMode(validationCase, validationCase.ReferenceMode);
+        auto referenceConfig = ConfigForValidationMode(
+            validationCase,
+            validationCase.ReferenceMode,
+            ValidationSide::Reference);
         const auto referenceResolved = ApplyBenchmarkConfigurationAtomic(referenceConfig);
         if (!referenceResolved.Passed)
             validationCase.ReferenceConfigHash = "blocked:" + referenceResolved.Reason;
         else
             validationCase.ReferenceConfigHash = referenceResolved.ResolvedConfigHash;
 
-        auto candidateConfig = ConfigForValidationMode(validationCase, validationCase.CandidateMode);
+        auto candidateConfig = ConfigForValidationMode(
+            validationCase,
+            validationCase.CandidateMode,
+            ValidationSide::Candidate);
         const auto candidateResolved = ApplyBenchmarkConfigurationAtomic(candidateConfig);
         validationCase.CandidateConfigHash =
             candidateResolved.Passed ? candidateResolved.ResolvedConfigHash : "blocked:" + candidateResolved.Reason;
         validationCase.ConfigHash = validationCase.CandidateConfigHash;
+        if (validationCase.ValidationKind == "approximation_fidelity" &&
+            (validationCase.SpatialLodEnabled || validationCase.TemporalInterval > 1u))
+        {
+            if (referenceResolved.Passed && candidateResolved.Passed &&
+                validationCase.ReferenceConfigHash == validationCase.CandidateConfigHash)
+            {
+                validationCase.CandidateConfigHash =
+                    "blocked: approximation fidelity reference/candidate resolved hashes are identical";
+                validationCase.ConfigHash = validationCase.CandidateConfigHash;
+            }
+            if (referenceConfig.SpatialLodEnabled || referenceConfig.TemporalInterval != 1u)
+            {
+                validationCase.ReferenceConfigHash =
+                    "blocked: approximation fidelity reference is not LOD-off temporal interval 1";
+            }
+            if (candidateConfig.SpatialLodEnabled != validationCase.SpatialLodEnabled ||
+                candidateConfig.TemporalInterval != validationCase.TemporalInterval)
+            {
+                validationCase.CandidateConfigHash =
+                    "blocked: approximation fidelity candidate does not contain requested approximation policy";
+                validationCase.ConfigHash = validationCase.CandidateConfigHash;
+            }
+        }
         validationCase.ActualStaticCount = candidateResolved.ActualStaticCount;
         validationCase.ActualDynamicCount = candidateResolved.ActualDynamicCount;
         validationCase.ActualTotalCount = candidateResolved.ActualTotalCount;
