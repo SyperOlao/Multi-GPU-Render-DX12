@@ -9,7 +9,9 @@
 #include "imgui_impl_win32.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace
@@ -117,6 +119,21 @@ namespace
         if (workload.SpatialLod.FreezeCamera)
             return "ThreeLevel frozen";
         return "ThreeLevel";
+    }
+
+    const char* ResearchSuiteName(const ResearchRunnerSuite suite)
+    {
+        switch (suite)
+        {
+        case ResearchRunnerSuite::Validation: return "Validation";
+        case ResearchRunnerSuite::TwoGpuVerify: return "Two-GPU Verify";
+        case ResearchRunnerSuite::Smoke: return "Smoke";
+        case ResearchRunnerSuite::Full: return "Full";
+        case ResearchRunnerSuite::ProfileSweep: return "Profile Sweep";
+        case ResearchRunnerSuite::MemorySoak: return "Memory Soak";
+        case ResearchRunnerSuite::RebuildStress: return "Rebuild Stress";
+        default: return "Unknown";
+        }
     }
 
     bool UsesTemporalExecution(const VoxelExecutionMode mode)
@@ -552,6 +569,77 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         ImGui::Text("Rows: %u/%u",
                     context.BenchmarkProfiler.GetRowsWritten(),
                     context.BenchmarkProfiler.GetRecordedFrameCount());
+    }
+
+    if (ImGui::CollapsingHeader("Research Runner", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static int selectedSuite = static_cast<int>(ResearchRunnerSuite::Smoke);
+        static int seed = 0;
+        static int warmupFrames = 30;
+        static int measuredFrames = 120;
+        static int repetitions = 1;
+        static std::array<char, 260> outputDirectory = {"VoxelResearchRuns"};
+
+        const char* suiteNames[] = {
+            "Validation",
+            "Two-GPU Verify",
+            "Smoke",
+            "Full",
+            "Profile Sweep",
+            "Memory Soak",
+            "Rebuild Stress"
+        };
+        ImGui::Combo("Suite", &selectedSuite, suiteNames, IM_ARRAYSIZE(suiteNames));
+        ImGui::InputInt("Seed", &seed);
+        ImGui::InputText("Output directory", outputDirectory.data(), outputDirectory.size());
+        ImGui::InputInt("Warmup frames", &warmupFrames);
+        ImGui::InputInt("Measured frames", &measuredFrames);
+        ImGui::InputInt("Repetitions", &repetitions);
+        warmupFrames = std::max(0, warmupFrames);
+        measuredFrames = std::max(1, measuredFrames);
+        repetitions = std::max(1, repetitions);
+
+        const auto buildRequest = [&](const bool prerequisites)
+        {
+            ResearchRunnerRequest request{};
+            request.Suite = static_cast<ResearchRunnerSuite>(
+                std::clamp(selectedSuite, 0, static_cast<int>(ResearchRunnerSuite::RebuildStress)));
+            request.Seed = static_cast<uint32_t>(std::max(0, seed));
+            request.WarmupFrames = static_cast<uint32_t>(warmupFrames);
+            request.MeasuredFrames = static_cast<uint32_t>(measuredFrames);
+            request.Repetitions = static_cast<uint32_t>(repetitions);
+            request.OutputDirectory = outputDirectory.data();
+            request.RunPrerequisites = prerequisites;
+            return request;
+        };
+
+        const bool canSubmit = !context.ResearchRunnerActive && context.RequestResearchRunner;
+        if (!canSubmit)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Run prerequisites"))
+            context.RequestResearchRunner(buildRequest(true));
+        ImGui::SameLine();
+        if (ImGui::Button("Run selected suite"))
+            context.RequestResearchRunner(buildRequest(false));
+        if (!canSubmit)
+            ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (!context.ResearchRunnerActive)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Cancel") && context.CancelResearchRunner)
+            context.CancelResearchRunner();
+        if (!context.ResearchRunnerActive)
+            ImGui::EndDisabled();
+
+        DrawMetric("selected", ResearchSuiteName(static_cast<ResearchRunnerSuite>(
+                       std::clamp(selectedSuite, 0, static_cast<int>(ResearchRunnerSuite::RebuildStress)))));
+        DrawMetric("phase", context.ResearchRunnerPhase.empty() ? "Idle" : context.ResearchRunnerPhase.c_str());
+        ImGui::Text("config %u / %u", context.ResearchRunnerConfigIndex, context.ResearchRunnerConfigTotal);
+        if (!context.ResearchRunnerReason.empty())
+            ImGui::TextWrapped("Reason: %s", context.ResearchRunnerReason.c_str());
+        if (!context.ResearchRunnerOutputPath.empty())
+            ImGui::TextWrapped("Output: %s", context.ResearchRunnerOutputPath.string().c_str());
     }
 
     ImGui::End();

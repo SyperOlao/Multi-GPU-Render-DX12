@@ -121,6 +121,7 @@
     <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelCompositePass.h"><Filter>Header Files\Rendering</Filter></ClInclude>
     <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Research\ResearchRunnerTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"><Filter>Header Files\Scene</Filter></ClInclude>
     <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>

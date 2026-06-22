@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <locale>
 #include <optional>
 #include <sstream>
@@ -331,6 +332,23 @@ namespace
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
+    const char* ExecutionModeNameLiteral(const VoxelExecutionMode mode)
+    {
+        switch (mode)
+        {
+        case VoxelExecutionMode::SingleGpuFull:
+            return "SingleGpuFull";
+        case VoxelExecutionMode::MultiGpuFull:
+            return "MultiGpuFull";
+        case VoxelExecutionMode::SingleGpuTemporalDecimation:
+            return "SingleGpuTemporalDecimation";
+        case VoxelExecutionMode::MultiGpuTemporalDecimation:
+            return "MultiGpuTemporalDecimation";
+        default:
+            return "Unknown";
+        }
+    }
+
     const char* ProfileName(const VoxelResearchWorkloadProfile profile)
     {
         switch (profile)
@@ -347,6 +365,29 @@ namespace
             return "SpatialLodDemonstration";
         case VoxelResearchWorkloadProfile::DemoMixed:
             return "DemoMixed";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* ResearchRunnerSuiteName(const ResearchRunnerSuite suite)
+    {
+        switch (suite)
+        {
+        case ResearchRunnerSuite::Validation:
+            return "Validation";
+        case ResearchRunnerSuite::TwoGpuVerify:
+            return "TwoGpuVerify";
+        case ResearchRunnerSuite::Smoke:
+            return "Smoke";
+        case ResearchRunnerSuite::Full:
+            return "Full";
+        case ResearchRunnerSuite::ProfileSweep:
+            return "ProfileSweep";
+        case ResearchRunnerSuite::MemorySoak:
+            return "MemorySoak";
+        case ResearchRunnerSuite::RebuildStress:
+            return "RebuildStress";
         default:
             return "Unknown";
         }
@@ -745,20 +786,14 @@ VoxelWaterfallApp::~VoxelWaterfallApp()
 
 void VoxelWaterfallApp::Update(const GameTimer& gt)
 {
+    UpdateAfterFrameResourceAcquire(gt);
+}
+
+void VoxelWaterfallApp::UpdateAfterFrameResourceAcquire(const GameTimer& gt)
+{
     cpuFrameStart = std::chrono::steady_clock::now();
-    currentPrimaryWaitMs = 0.0;
-    currentFrameResourceReady = true;
-
-    const auto commandQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
-
-    currentFrameResource = frameResources[currentFrameResourceIndex];
-
-    if (currentFrameResource->PrimeRenderFenceValue != 0 && !commandQueue->IsFinish(
-        currentFrameResource->PrimeRenderFenceValue))
-    {
-        currentFrameResourceReady = false;
-        return;
-    }
+    assert(currentFrameResourceReady && currentFrameResource &&
+           "UpdateAfterFrameResourceAcquire requires a ready frame resource");
 
     if (researchCameraController)
     {
@@ -784,8 +819,14 @@ void VoxelWaterfallApp::Update(const GameTimer& gt)
 
 void VoxelWaterfallApp::Draw(const GameTimer& gt)
 {
-    if (isResizing) return;
-    if (!currentFrameResourceReady) return;
+    (void)DrawFrame(gt);
+}
+
+bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
+{
+    if (isResizing) return false;
+    assert(currentFrameResourceReady && currentFrameResource &&
+           "DrawFrame requires a ready frame resource");
 
     ApplyPendingVoxelSettings();
     if (benchmarkController.IsAutomaticActive())
@@ -833,6 +874,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         secondaryComputeWaitQueue->Wait(secondaryFenceQueue->GetFence(), lastSecondaryPartitionGraphicsFenceValue);
     }
 
+    const double wallDeltaSeconds = std::max(0.0, static_cast<double>(gt.DeltaTime()));
     VoxelSimulationSchedulerContext schedulerContext{
         voxelWorkload,
         executionMode,
@@ -842,7 +884,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         multiGpuAvailable,
         simulationFrameIndex,
         timestampHeapIndex,
-        gt.DeltaTime(),
+        wallDeltaSeconds,
         voxelSimulationAccumulator,
         voxelSimulationTime,
         voxelSimulationStepsThisFrame,
@@ -863,6 +905,10 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
 
     frameGraphTelemetry = {};
     frameGraphTelemetry.FrameResourceIndex = currentFrameResourceIndex;
+    frameGraphTelemetry.WallDeltaMs = wallDeltaSeconds * 1000.0;
+    frameGraphTelemetry.FrameResourceBackpressurePollCount = currentFrameResourceBackpressurePollCount;
+    frameGraphTelemetry.FrameResourceBackpressureMs = currentPrimaryWaitMs;
+    frameGraphTelemetry.DrainedMessageCount = currentFrameDrainedMessageCount;
     frameGraphTelemetry.RequestedMode = requestedExecutionMode;
     frameGraphTelemetry.ActualMode = simulationResult.UsedMultiGpuMode
                                           ? executionMode
@@ -889,6 +935,15 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
     frameGraphTelemetry.ExecutedFixedSteps = simulationResult.ExecutedFixedSteps;
     frameGraphTelemetry.DroppedSimulationSteps = simulationResult.DroppedStepCount;
     frameGraphTelemetry.DroppedSimulationTime = simulationResult.DroppedSimulationTime;
+    const double droppedSeconds = std::max(0.0, simulationResult.DroppedSimulationTime);
+    frameGraphTelemetry.AcceptedSimulationDeltaMs =
+        (benchmarkWasActive
+             ? static_cast<double>(simulationResult.ExecutedFixedSteps) * (1000.0 / 60.0)
+             : std::max(0.0, wallDeltaSeconds - droppedSeconds) * 1000.0);
+    frameGraphTelemetry.SimulationStepsPerWallSecond =
+        wallDeltaSeconds > 0.0
+            ? static_cast<double>(simulationResult.ExecutedFixedSteps) / wallDeltaSeconds
+            : 0.0;
     frameGraphTelemetry.SimulationDispatchCount = simulationResult.SimulationDispatchCount;
     frameGraphTelemetry.LogicalUpdatedVoxelCount = simulationResult.LogicalUpdatedVoxelCount;
     frameGraphTelemetry.PrimaryComputeFenceValue = simulationResult.PrimaryComputeFenceValue;
@@ -1152,6 +1207,8 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
 
     currentFrameResourceIndex = MainWindow->Present();
     ++successfulPresentCount;
+    ++totalSuccessfulPresentCount;
+    frameGraphTelemetry.SuccessfulPresentCount = totalSuccessfulPresentCount;
     if (benchmarkProfiler.IsActive() && benchmarkFrameMetadata)
     {
         RefreshBenchmarkFrameTelemetry(*benchmarkFrameMetadata);
@@ -1164,6 +1221,7 @@ void VoxelWaterfallApp::Draw(const GameTimer& gt)
         auto benchmarkContext = BuildBenchmarkControllerContext();
         benchmarkController.RestoreVSyncAfterManualCompletion(benchmarkContext, benchmarkWasActive);
     }
+    return true;
 }
 
 bool VoxelWaterfallApp::Initialize()
@@ -1377,6 +1435,12 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         gGitProcessSpawnCount,
         slowFrameValidationCount,
         benchmarkMetadataBuildCount,
+        researchRunnerActive,
+        researchRunnerPhase,
+        researchRunnerBlockedReason,
+        researchRunnerOutputPath,
+        researchRunnerConfigIndex,
+        researchRunnerConfigTotal,
         [this](const VoxelResearchWorkloadProfile profile) { ApplyResearchWorkloadProfile(profile); },
         [this](const VoxelResearchCameraMode mode) { ApplyResearchCameraMode(mode); },
         [this](const VoxelResearchLightingPreset preset) { ApplyResearchLightingPreset(preset); },
@@ -1387,7 +1451,9 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         [this] { RunVisualValidation(); },
         [this] { StartAutomaticBenchmark(); },
         [this] { StopAutomaticBenchmark(); },
-        [this] { RequestApplyVoxelWorkloadSettings(); }
+        [this] { RequestApplyVoxelWorkloadSettings(); },
+        [this](const ResearchRunnerRequest& request) { RequestResearchRunner(request); },
+        [this] { CancelResearchRunner(); }
     };
     debugPanel.Draw(context);
 }
@@ -1518,12 +1584,11 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce()
 
     auto* timerPtr = GetTimer();
     timerPtr->Reset();
-    for (uint32_t frame = 0; frame < 12; ++frame)
+    pumpFrameQuitRequested = false;
+    const auto targetPresentCount = totalSuccessfulPresentCount + 12u;
+    while (totalSuccessfulPresentCount < targetPresentCount && !pumpFrameQuitRequested)
     {
-        Sleep(17);
-        timerPtr->Tick();
-        Update(*timerPtr);
-        Draw(*timerPtr);
+        PumpOneFrame();
     }
     Flush();
 
@@ -1634,8 +1699,8 @@ int VoxelWaterfallApp::RunAutomaticBenchmarkSuiteOnce(
     if (!outputDirectory.empty())
         benchmarkController.SetBenchmarkDirectory(outputDirectory);
 
-    RunVisualValidation();
     RunTwoAdapterVerificationOnce();
+    RunVisualValidation();
     if (!outputDirectory.empty())
     {
         std::filesystem::create_directories(outputDirectory);
@@ -1678,15 +1743,345 @@ int VoxelWaterfallApp::RunAutomaticBenchmarkSuiteOnce(
 
     auto* timerPtr = GetTimer();
     timerPtr->Reset();
+    pumpFrameQuitRequested = false;
     while (benchmarkController.IsAutomaticActive())
     {
-        Sleep(1);
-        timerPtr->Tick();
-        Update(*timerPtr);
-        Draw(*timerPtr);
+        PumpOneFrame();
     }
 
     return 0;
+}
+
+void VoxelWaterfallApp::RequestResearchRunner(const ResearchRunnerRequest& request)
+{
+    if (researchRunnerActive)
+        return;
+
+    researchRunnerRequest = request;
+    if (researchRunnerRequest.OutputDirectory.empty())
+    {
+        researchRunnerRequest.OutputDirectory =
+            std::filesystem::path(L"VoxelResearchRuns") / ResearchRunnerSuiteName(request.Suite);
+    }
+
+    researchRunnerActive = true;
+    researchRunnerCancelRequested = false;
+    researchRunnerHasRequest = true;
+    researchRunnerPhase = "Queued";
+    researchRunnerBlockedReason.clear();
+    researchRunnerOutputPath = researchRunnerRequest.OutputDirectory;
+    researchRunnerConfigIndex = 0;
+    researchRunnerConfigTotal = 0;
+    profileSweepProfileIndex = 0;
+    profileSweepModeIndex = 0;
+    profileSweepFrameIndex = std::numeric_limits<uint32_t>::max();
+    profileSweepRepetition = 0;
+    profileSweepStartSimulationFrameIndex = 0;
+    if (profileSweepCsvOpen)
+    {
+        profileSweepCsv.close();
+        profileSweepCsvOpen = false;
+    }
+}
+
+void VoxelWaterfallApp::CancelResearchRunner()
+{
+    if (!researchRunnerActive)
+        return;
+    researchRunnerCancelRequested = true;
+    if (benchmarkController.IsAutomaticActive() || benchmarkProfiler.IsActive())
+        StopAutomaticBenchmark();
+}
+
+void VoxelWaterfallApp::AdvanceResearchRunner(const bool presentedFrame)
+{
+    if (!researchRunnerActive || !researchRunnerHasRequest)
+        return;
+
+    if (researchRunnerCancelRequested)
+    {
+        if (profileSweepCsvOpen)
+        {
+            profileSweepCsv.close();
+            profileSweepCsvOpen = false;
+        }
+        researchRunnerPhase = "CANCELLED";
+        researchRunnerActive = false;
+        return;
+    }
+
+    const auto finishWithStatus = [this](const char* phase, const std::string& reason = std::string{})
+    {
+        researchRunnerPhase = phase;
+        researchRunnerBlockedReason = reason;
+        researchRunnerActive = false;
+        researchRunnerHasRequest = false;
+    };
+
+    const auto startBenchmark = [this, &finishWithStatus](const BenchmarkSuite suite)
+    {
+        std::filesystem::create_directories(researchRunnerRequest.OutputDirectory);
+        benchmarkController.SetBenchmarkDirectory(researchRunnerRequest.OutputDirectory);
+        const bool started = benchmarkController.StartAutomatic(
+            BuildBenchmarkControllerContext(),
+            suite,
+            researchRunnerRequest.Seed);
+        researchRunnerOutputPath = benchmarkController.GetSuiteStatusPath();
+        researchRunnerConfigIndex = static_cast<uint32_t>(benchmarkController.GetAutomaticIndex());
+        researchRunnerConfigTotal = static_cast<uint32_t>(benchmarkController.GetAutomaticCount());
+        if (!started)
+        {
+            finishWithStatus("BLOCKED", "Benchmark gates rejected the request; see status JSON");
+            return false;
+        }
+        researchRunnerPhase = "Benchmark running";
+        return true;
+    };
+
+    if (researchRunnerPhase == "Benchmark running")
+    {
+        researchRunnerConfigIndex = static_cast<uint32_t>(benchmarkController.GetAutomaticIndex());
+        researchRunnerConfigTotal = static_cast<uint32_t>(benchmarkController.GetAutomaticCount());
+        researchRunnerOutputPath = benchmarkController.GetAutomaticSummaryPath();
+        if (!benchmarkController.IsAutomaticActive())
+            finishWithStatus("COMPLETE");
+        return;
+    }
+
+    if (researchRunnerRequest.Suite == ResearchRunnerSuite::ProfileSweep)
+    {
+        const std::array<VoxelResearchWorkloadProfile, 6> profiles =
+        {
+            VoxelResearchWorkloadProfile::StaticRenderOnly,
+            VoxelResearchWorkloadProfile::DynamicSimulationAndRender,
+            VoxelResearchWorkloadProfile::MixedStaticAndDynamic,
+            VoxelResearchWorkloadProfile::OcclusionValidation,
+            VoxelResearchWorkloadProfile::SpatialLodDemonstration,
+            VoxelResearchWorkloadProfile::DemoMixed
+        };
+        const std::array<VoxelExecutionMode, 4> modes =
+        {
+            VoxelExecutionMode::SingleGpuFull,
+            VoxelExecutionMode::MultiGpuFull,
+            VoxelExecutionMode::SingleGpuTemporalDecimation,
+            VoxelExecutionMode::MultiGpuTemporalDecimation
+        };
+
+        if (!profileSweepCsvOpen)
+        {
+            std::filesystem::create_directories(researchRunnerRequest.OutputDirectory);
+            researchRunnerOutputPath = researchRunnerRequest.OutputDirectory / L"profile_sweep.csv";
+            profileSweepCsv.open(researchRunnerOutputPath, std::ios::out | std::ios::trunc);
+            profileSweepCsv
+                << "suite,seed,profile,requested_mode,actual_mode,repetition,warmup_frames,"
+                << "measured_frames,frame_count,simulation_steps,actual_static_count,"
+                << "actual_dynamic_count,actual_total_count,fallback_reason,validation_status,"
+                << "validation_run_id,output_dir\n";
+            profileSweepCsvOpen = true;
+            profileSweepRepetition = 0;
+            profileSweepProfileIndex = 0;
+            profileSweepModeIndex = 0;
+            profileSweepFrameIndex = std::numeric_limits<uint32_t>::max();
+            researchRunnerConfigTotal = static_cast<uint32_t>(
+                profiles.size() * modes.size() * std::max(1u, researchRunnerRequest.Repetitions));
+            researchRunnerConfigIndex = 0;
+            researchRunnerPhase = "Profile Sweep";
+        }
+
+        if (profileSweepRepetition >= std::max(1u, researchRunnerRequest.Repetitions))
+        {
+            profileSweepCsv.close();
+            profileSweepCsvOpen = false;
+            finishWithStatus("COMPLETE");
+            return;
+        }
+
+        if (profileSweepFrameIndex == std::numeric_limits<uint32_t>::max())
+        {
+            const auto profile = profiles[profileSweepProfileIndex];
+            const auto mode = modes[profileSweepModeIndex];
+            ApplyResearchWorkloadProfile(profile);
+            ApplyResearchLightingPreset(VoxelResearchLightingPreset::BenchmarkNeutral);
+            AutomaticBenchmarkConfig config{};
+            config.Mode = mode;
+            config.ModeName = ExecutionModeNameLiteral(mode);
+            config.TotalCount = voxelWorkload.TotalVoxelCount;
+            config.SecondaryShare = UsesMultiGpuExecution(mode) ? 0.5f : 0.0f;
+            config.SpatialLodEnabled = false;
+            config.TemporalInterval = UsesTemporalExecution(mode) ? 2u : 1u;
+            const auto applyResult = ApplyBenchmarkConfigurationAtomic(config);
+            researchRunnerBlockedReason = applyResult.Passed ? "" : applyResult.Reason;
+            profileSweepStartSimulationFrameIndex = simulationFrameIndex;
+            profileSweepFrameIndex = 0;
+            return;
+        }
+
+        if (!presentedFrame)
+            return;
+
+        ++profileSweepFrameIndex;
+        const uint32_t targetFrameCount =
+            researchRunnerRequest.WarmupFrames + std::max(1u, researchRunnerRequest.MeasuredFrames);
+        if (profileSweepFrameIndex < targetFrameCount)
+            return;
+
+        const auto profile = profiles[profileSweepProfileIndex];
+        const auto requestedMode = modes[profileSweepModeIndex];
+        const uint64_t simulationSteps =
+            simulationFrameIndex >= profileSweepStartSimulationFrameIndex
+                ? simulationFrameIndex - profileSweepStartSimulationFrameIndex
+                : 0;
+        const std::string requestedModeName = GetExecutionModeName(requestedMode);
+        const std::string actualModeName = GetExecutionModeName(executionMode);
+        const std::string fallbackReason =
+            researchRunnerBlockedReason.empty()
+                ? (requestedMode == executionMode ? "" : "requested mode resolved to a different actual mode")
+                : researchRunnerBlockedReason;
+        const std::string validationStatus =
+            !visualValidationMetrics.HasResult ? "NOT_RUN" :
+            (visualValidationMetrics.Passed ? "PASS" : "FAIL");
+
+        profileSweepCsv
+            << "ProfileSweep,"
+            << researchRunnerRequest.Seed << ','
+            << ProfileName(profile) << ','
+            << requestedModeName << ','
+            << actualModeName << ','
+            << profileSweepRepetition << ','
+            << researchRunnerRequest.WarmupFrames << ','
+            << researchRunnerRequest.MeasuredFrames << ','
+            << profileSweepFrameIndex << ','
+            << simulationSteps << ','
+            << voxelWorkload.ActualStaticVoxelCount << ','
+            << voxelWorkload.ActualDynamicVoxelCount << ','
+            << voxelWorkload.TotalVoxelCount << ','
+            << '"' << EscapeJsonString(fallbackReason) << '"' << ','
+            << validationStatus << ','
+            << visualValidationMetrics.ValidationRunId << ','
+            << '"' << EscapeJsonString(researchRunnerRequest.OutputDirectory.string()) << '"'
+            << "\n";
+        profileSweepCsv.flush();
+
+        ++researchRunnerConfigIndex;
+        ++profileSweepModeIndex;
+        if (profileSweepModeIndex >= modes.size())
+        {
+            profileSweepModeIndex = 0;
+            ++profileSweepProfileIndex;
+        }
+        if (profileSweepProfileIndex >= profiles.size())
+        {
+            profileSweepProfileIndex = 0;
+            ++profileSweepRepetition;
+        }
+        profileSweepFrameIndex = std::numeric_limits<uint32_t>::max();
+        return;
+    }
+
+    if (researchRunnerPhase != "Queued")
+        return;
+
+    std::filesystem::create_directories(researchRunnerRequest.OutputDirectory);
+    switch (researchRunnerRequest.Suite)
+    {
+    case ResearchRunnerSuite::Validation:
+        researchRunnerPhase = "Validation";
+        RunVisualValidation();
+        researchRunnerOutputPath = visualValidationMetrics.CsvPath;
+        finishWithStatus(visualValidationMetrics.Passed ? "COMPLETE" : "INVALID",
+                         visualValidationMetrics.Passed ? "" : visualValidationMetrics.FailReason);
+        return;
+    case ResearchRunnerSuite::TwoGpuVerify:
+    {
+        researchRunnerPhase = "Two-GPU Verify";
+        const int result = RunTwoAdapterVerificationOnce();
+        researchRunnerOutputPath = GetExecutableDirectory() / L"TwoAdapterVerification";
+        finishWithStatus(result == 0 ? "COMPLETE" : "BLOCKED",
+                         result == 0 ? "" : "Two-adapter verification did not pass");
+        return;
+    }
+    case ResearchRunnerSuite::Smoke:
+    case ResearchRunnerSuite::Full:
+    {
+        if (researchRunnerRequest.RunPrerequisites)
+        {
+            researchRunnerPhase = "Two-GPU Verify";
+            const int twoGpuResult = RunTwoAdapterVerificationOnce();
+            if (twoGpuResult != 0)
+            {
+                finishWithStatus("BLOCKED", "Two-adapter verification did not pass");
+                return;
+            }
+            researchRunnerPhase = "Validation";
+            RunVisualValidation();
+            if (!visualValidationMetrics.HasResult || !visualValidationMetrics.Passed)
+            {
+                finishWithStatus("BLOCKED", visualValidationMetrics.FailReason.empty()
+                                                ? "Visual validation did not pass"
+                                                : visualValidationMetrics.FailReason);
+                return;
+            }
+        }
+        startBenchmark(researchRunnerRequest.Suite == ResearchRunnerSuite::Smoke
+                           ? BenchmarkSuite::Smoke
+                           : BenchmarkSuite::Full);
+        return;
+    }
+    case ResearchRunnerSuite::MemorySoak:
+    {
+        researchRunnerPhase = "Memory Soak";
+        const uint32_t durationSeconds = std::max(1u, researchRunnerRequest.MeasuredFrames);
+        const int result = RunMemorySoakTestOnce(durationSeconds, researchRunnerRequest.OutputDirectory);
+        researchRunnerOutputPath = researchRunnerRequest.OutputDirectory / L"leak_report.json";
+        finishWithStatus(result == 0 ? "COMPLETE" : "INVALID",
+                         result == 0 ? "" : "Memory soak did not pass; see leak_report.json");
+        return;
+    }
+    case ResearchRunnerSuite::RebuildStress:
+    {
+        researchRunnerPhase = "Rebuild Stress";
+        const uint32_t cycles = std::max(1u, researchRunnerRequest.Repetitions);
+        const uint32_t stableSeconds = std::max(1u, researchRunnerRequest.MeasuredFrames);
+        const int result = RunMemoryRebuildStressTestOnce(cycles, stableSeconds, researchRunnerRequest.OutputDirectory);
+        researchRunnerOutputPath = researchRunnerRequest.OutputDirectory / L"leak_report.json";
+        finishWithStatus(result == 0 ? "COMPLETE" : "INVALID",
+                         result == 0 ? "" : "Rebuild stress did not pass; see leak_report.json");
+        return;
+    }
+    default:
+        finishWithStatus("INVALID", "Unknown research runner suite");
+        return;
+    }
+}
+
+int VoxelWaterfallApp::RunProfileSweepOnce(
+    const uint32_t seedOverride,
+    const uint32_t warmupFrames,
+    const uint32_t measuredFrames,
+    const uint32_t repetitions,
+    const std::filesystem::path& outputDirectory)
+{
+    ResearchRunnerRequest request{};
+    request.Suite = ResearchRunnerSuite::ProfileSweep;
+    request.Seed = seedOverride;
+    request.WarmupFrames = warmupFrames;
+    request.MeasuredFrames = measuredFrames;
+    request.Repetitions = repetitions;
+    request.OutputDirectory = outputDirectory.empty()
+                                  ? std::filesystem::path(L"Artifacts") / L"profile_sweep"
+                                  : outputDirectory;
+    request.RunPrerequisites = false;
+    RequestResearchRunner(request);
+
+    auto* timerPtr = GetTimer();
+    timerPtr->Reset();
+    pumpFrameQuitRequested = false;
+    while (researchRunnerActive && !pumpFrameQuitRequested)
+    {
+        PumpOneFrame();
+    }
+
+    return researchRunnerPhase == "COMPLETE" ? 0 : 2;
 }
 
 void VoxelWaterfallApp::RequestApplyVoxelWorkloadSettings()
@@ -1961,6 +2356,12 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.DroppedSteps = frameGraphTelemetry.DroppedSimulationSteps;
     metadata.DroppedSimulationTime = frameGraphTelemetry.DroppedSimulationTime;
     metadata.LogicalUpdatedVoxelCount = frameGraphTelemetry.LogicalUpdatedVoxelCount;
+    metadata.WallDeltaMs = frameGraphTelemetry.WallDeltaMs;
+    metadata.AcceptedSimulationDeltaMs = frameGraphTelemetry.AcceptedSimulationDeltaMs;
+    metadata.FrameResourceBackpressurePollCount = frameGraphTelemetry.FrameResourceBackpressurePollCount;
+    metadata.DrainedMessageCount = frameGraphTelemetry.DrainedMessageCount;
+    metadata.SuccessfulPresentCount = frameGraphTelemetry.SuccessfulPresentCount;
+    metadata.SimulationStepsPerWallSecond = frameGraphTelemetry.SimulationStepsPerWallSecond;
     metadata.CpuWaitMs = currentPrimaryWaitMs;
     metadata.TotalCrossAdapterBytes = frameGraphTelemetry.TotalCrossAdapterBytes;
     metadata.ColorTransferBytes = frameGraphTelemetry.ColorBytesTransferred;
@@ -3228,41 +3629,106 @@ void VoxelWaterfallApp::LogWriting()
 
 int VoxelWaterfallApp::Run()
 {
-    MSG msg{};
-
     timer.Reset();
+    pumpFrameQuitRequested = false;
 
-    while (msg.message != WM_QUIT)
+    while (!pumpFrameQuitRequested)
     {
-        // If there are Window messages then process them.
-        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        // Otherwise, do animation/game stuff.
-        else
-        {
-            if (isStopRequested)
-            {
-                MainWindow->SetWindowTitle(MainWindow->GetWindowName() + L" Finished. Wait...");
-                LogWriting();
-                Quit();
-                break;
-            }
-
-            timer.Tick();
-
-            CalculateFrameStats();
-            Update(timer);
-            Draw(timer);
-            ++frameSerial;
-            ServiceDeferredResourceLifetime();
-        }
+        PumpOneFrame();
     }
 
     benchmarkController.Shutdown(BuildBenchmarkControllerContext());
     return 0;
+}
+
+uint32_t VoxelWaterfallApp::DrainPendingWin32Messages()
+{
+    MSG msg{};
+    uint32_t drained = 0;
+    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+    {
+        ++drained;
+        if (msg.message == WM_QUIT)
+        {
+            pumpFrameQuitRequested = true;
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return drained;
+}
+
+bool VoxelWaterfallApp::TryAcquireCurrentFrameResource()
+{
+    currentFrameResourceReady = false;
+    currentFrameResource = frameResources[currentFrameResourceIndex];
+
+    const auto commandQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
+    if (currentFrameResource->PrimeRenderFenceValue != 0 &&
+        !commandQueue->IsFinish(currentFrameResource->PrimeRenderFenceValue))
+    {
+        if (!frameResourceBackpressureActive)
+        {
+            frameResourceBackpressureActive = true;
+            frameResourceBackpressureStart = std::chrono::steady_clock::now();
+        }
+        ++totalFrameResourceBackpressurePollCount;
+        ++currentFrameResourceBackpressurePollCount;
+        return false;
+    }
+
+    if (frameResourceBackpressureActive)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        currentPrimaryWaitMs =
+            std::chrono::duration<double, std::milli>(now - frameResourceBackpressureStart).count();
+        frameResourceBackpressureActive = false;
+    }
+    else
+    {
+        currentPrimaryWaitMs = 0.0;
+    }
+
+    currentFrameResourceReady = true;
+    return true;
+}
+
+bool VoxelWaterfallApp::PumpOneFrame()
+{
+    currentFrameDrainedMessageCount = DrainPendingWin32Messages();
+    if (pumpFrameQuitRequested)
+        return false;
+
+    AdvanceResearchRunner(false);
+
+    if (isStopRequested)
+    {
+        MainWindow->SetWindowTitle(MainWindow->GetWindowName() + L" Finished. Wait...");
+        LogWriting();
+        Quit();
+        pumpFrameQuitRequested = true;
+        return false;
+    }
+
+    if (!TryAcquireCurrentFrameResource())
+    {
+        std::this_thread::yield();
+        return false;
+    }
+
+    timer.Tick();
+    CalculateFrameStats();
+    UpdateAfterFrameResourceAcquire(timer);
+    const bool presented = DrawFrame(timer);
+    if (presented)
+    {
+        ++frameSerial;
+        currentFrameResourceBackpressurePollCount = 0;
+        ServiceDeferredResourceLifetime();
+        AdvanceResearchRunner(true);
+    }
+    return presented;
 }
 
 void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
@@ -3275,26 +3741,7 @@ void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
 
 void VoxelWaterfallApp::PumpOneMemoryAuditFrame()
 {
-    MSG msg{};
-    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
-    {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-
-    timer.Tick();
-    CalculateFrameStats();
-    Update(timer);
-    if (currentFrameResourceReady)
-    {
-        Draw(timer);
-        ++frameSerial;
-    }
-    else
-    {
-        std::this_thread::yield();
-    }
-    ServiceDeferredResourceLifetime();
+    PumpOneFrame();
 }
 
 int VoxelWaterfallApp::RunMemorySoakTestOnce(

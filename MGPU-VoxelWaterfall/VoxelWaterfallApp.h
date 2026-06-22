@@ -18,6 +18,7 @@
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 #include "Source/Rendering/VoxelCompositePass.h"
 #include "Source/Rendering/VoxelRenderPasses.h"
+#include "Source/Research/ResearchRunnerTypes.h"
 #include "Source/Scene/VoxelResearchCameraController.h"
 #include "Source/Scene/VoxelResearchSceneManager.h"
 #include "Source/UI/VoxelWaterfallDebugPanel.h"
@@ -27,6 +28,7 @@
 
 #include <array>
 #include <chrono>
+#include <fstream>
 #include <vector>
 
 class VoxelWaterfallApp :
@@ -49,10 +51,20 @@ public:
     int RunMemoryRebuildStressTestOnce(uint32_t rebuildCycles = 100,
                                        uint32_t stableSeconds = 60,
                                        const std::filesystem::path& outputDirectory = {});
+    int RunProfileSweepOnce(uint32_t seedOverride = 0,
+                            uint32_t warmupFrames = 30,
+                            uint32_t measuredFrames = 120,
+                            uint32_t repetitions = 1,
+                            const std::filesystem::path& outputDirectory = {});
 
 protected:
     void Update(const GameTimer& gt) override;
     void Draw(const GameTimer& gt) override;
+    void UpdateAfterFrameResourceAcquire(const GameTimer& gt);
+    bool DrawFrame(const GameTimer& gt);
+    bool TryAcquireCurrentFrameResource();
+    bool PumpOneFrame();
+    uint32_t DrainPendingWin32Messages();
 
     void InitDevices();
     void InitUserInterface();
@@ -60,6 +72,9 @@ protected:
     void StartManualBenchmark();
     void StopManualBenchmark();
     void RunVisualValidation();
+    void RequestResearchRunner(const ResearchRunnerRequest& request);
+    void CancelResearchRunner();
+    void AdvanceResearchRunner(bool presentedFrame);
     void RequestApplyVoxelWorkloadSettings();
     void ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile profile);
     void ApplyResearchCameraMode(VoxelResearchCameraMode mode);
@@ -223,12 +238,35 @@ protected:
     std::string visualValidationShaderHash;
     std::string visualValidationAdapterPairIdentity;
     std::chrono::steady_clock::time_point cpuFrameStart{};
+    std::chrono::steady_clock::time_point frameResourceBackpressureStart{};
     uint64_t frameSerial = 0;
     uint64_t mainLoopIterationCount = 0;
     uint64_t successfulPresentCount = 0;
+    uint64_t totalSuccessfulPresentCount = 0;
     uint32_t interactiveMaxCatchUpSteps = 3;
     double currentPrimaryWaitMs = 0.0;
     bool currentFrameResourceReady = true;
+    bool frameResourceBackpressureActive = false;
+    bool pumpFrameQuitRequested = false;
+    uint64_t totalFrameResourceBackpressurePollCount = 0;
+    uint64_t currentFrameResourceBackpressurePollCount = 0;
+    uint32_t currentFrameDrainedMessageCount = 0;
+    bool researchRunnerActive = false;
+    bool researchRunnerCancelRequested = false;
+    bool researchRunnerHasRequest = false;
+    ResearchRunnerRequest researchRunnerRequest{};
+    std::string researchRunnerPhase = "Idle";
+    std::string researchRunnerBlockedReason;
+    std::filesystem::path researchRunnerOutputPath;
+    uint32_t researchRunnerConfigIndex = 0;
+    uint32_t researchRunnerConfigTotal = 0;
+    uint32_t profileSweepProfileIndex = 0;
+    uint32_t profileSweepModeIndex = 0;
+    uint32_t profileSweepFrameIndex = 0;
+    uint32_t profileSweepRepetition = 0;
+    uint64_t profileSweepStartSimulationFrameIndex = 0;
+    bool profileSweepCsvOpen = false;
+    std::ofstream profileSweepCsv;
     VoxelCompositeDebugView voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
     Vector3 spatialLodCameraPosition = Vector3::Zero;
     bool spatialLodCameraInitialized = false;

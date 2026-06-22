@@ -84,6 +84,12 @@ public:
         uint32_t DroppedSteps = 0;
         double DroppedSimulationTime = 0.0;
         uint32_t LogicalUpdatedVoxelCount = 0;
+        double WallDeltaMs = 0.0;
+        double AcceptedSimulationDeltaMs = 0.0;
+        uint64_t FrameResourceBackpressurePollCount = 0;
+        uint32_t DrainedMessageCount = 0;
+        uint64_t SuccessfulPresentCount = 0;
+        double SimulationStepsPerWallSecond = 0.0;
         uint32_t Seed = 0;
         float SecondaryShare = 0.0f;
         uint32_t TemporalDecimationInterval = 1;

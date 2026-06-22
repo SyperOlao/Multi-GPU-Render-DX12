@@ -2,6 +2,7 @@
 
 #include "Source/Voxels/VoxelTypes.h"
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
+#include "Source/Research/ResearchRunnerTypes.h"
 
 #include <filesystem>
 #include <functional>
@@ -52,6 +53,12 @@ struct VoxelWaterfallDebugPanelContext
     uint64_t GitProcessSpawnCount = 0;
     uint64_t SlowFrameValidationCount = 0;
     uint64_t BenchmarkMetadataBuildCount = 0;
+    bool ResearchRunnerActive = false;
+    std::string ResearchRunnerPhase;
+    std::string ResearchRunnerReason;
+    std::filesystem::path ResearchRunnerOutputPath;
+    uint32_t ResearchRunnerConfigIndex = 0;
+    uint32_t ResearchRunnerConfigTotal = 0;
 
     std::function<void(VoxelResearchWorkloadProfile)> ApplyWorkloadProfile;
     std::function<void(VoxelResearchCameraMode)> ApplyCameraMode;
@@ -64,6 +71,8 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void()> StartAutomaticBenchmark;
     std::function<void()> StopAutomaticBenchmark;
     std::function<void()> RequestApplyWorkloadSettings;
+    std::function<void(const ResearchRunnerRequest&)> RequestResearchRunner;
+    std::function<void()> CancelResearchRunner;
 };
 
 class VoxelWaterfallDebugPanel

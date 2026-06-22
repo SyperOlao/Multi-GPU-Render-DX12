@@ -231,6 +231,7 @@
         <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"/>
         <ClInclude Include="Source\Rendering\VoxelCompositePass.h"/>
         <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"/>
+        <ClInclude Include="Source\Research\ResearchRunnerTypes.h"/>
         <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"/>
         <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"/>
         <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"/>

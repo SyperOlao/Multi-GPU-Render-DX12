@@ -92,6 +92,24 @@ void RunVoxelSimulationSchedulerReferenceTests()
         assert(NearlyEqual(plan.InterpolationAlpha, 0.0));
     }
 
+    {
+        double wallTimeBetweenSuccessfulFrames = 0.0;
+        for (uint32_t poll = 0; poll < 30; ++poll)
+            wallTimeBetweenSuccessfulFrames += 0.001;
+        wallTimeBetweenSuccessfulFrames += 6.0 * FixedStep;
+
+        const auto plan = VoxelSimulationScheduler::BuildStepPlan(
+            VoxelSimulationSchedulerMode::Interactive,
+            wallTimeBetweenSuccessfulFrames,
+            0.0,
+            16,
+            1);
+        assert(plan.RequestedFixedSteps == 7);
+        assert(plan.ExecutedFixedSteps == 7);
+        assert(plan.DroppedStepCount == 0);
+        assert(plan.OutputAccumulator > 0.013 && plan.OutputAccumulator < 0.014);
+    }
+
     assert(CountTemporalDispatches(8, 1) == 8);
     assert(CountTemporalDispatches(8, 2) == 4);
     assert(CountTemporalDispatches(8, 4) == 2);

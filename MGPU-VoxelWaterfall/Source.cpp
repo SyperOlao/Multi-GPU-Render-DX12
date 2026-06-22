@@ -120,6 +120,14 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                     BenchmarkSuite::Full,
                     ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--profile-sweep"))
+                result = theApp.RunProfileSweepOnce(
+                    ReadCommandLineUint(cmdLine, "--profile-sweep-seed=",
+                                        ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0)),
+                    ReadCommandLineUint(cmdLine, "--profile-sweep-warmup-frames=", 30),
+                    ReadCommandLineUint(cmdLine, "--profile-sweep-measured-frames=", 120),
+                    ReadCommandLineUint(cmdLine, "--profile-sweep-repetitions=", 1),
+                    ReadCommandLinePath(cmdLine, "--profile-sweep-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--memory-soak"))
                 result = theApp.RunMemorySoakTestOnce(
                     ReadCommandLineUint(cmdLine, "--memory-duration-seconds=", 600),

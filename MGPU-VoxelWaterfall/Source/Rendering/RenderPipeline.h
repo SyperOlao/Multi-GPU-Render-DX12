@@ -42,6 +42,13 @@ struct VoxelFrameGraphTelemetry
     double DroppedSimulationTime = 0.0;
     uint32_t SimulationDispatchCount = 0;
     uint32_t LogicalUpdatedVoxelCount = 0;
+    double WallDeltaMs = 0.0;
+    double AcceptedSimulationDeltaMs = 0.0;
+    uint64_t FrameResourceBackpressurePollCount = 0;
+    double FrameResourceBackpressureMs = 0.0;
+    uint32_t DrainedMessageCount = 0;
+    uint64_t SuccessfulPresentCount = 0;
+    double SimulationStepsPerWallSecond = 0.0;
     bool SecondaryRenderSubmitted = false;
     uint32_t SecondaryDrawCalls = 0;
     uint32_t SecondaryRenderedVoxelCount = 0;
