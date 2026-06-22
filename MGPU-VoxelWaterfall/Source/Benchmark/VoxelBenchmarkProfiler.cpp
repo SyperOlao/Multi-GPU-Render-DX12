@@ -199,8 +199,9 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     WriteQueueCalibrationHeader(csv, "secondary_graphics_queue");
     WriteQueueCalibrationHeader(csv, "secondary_copy_queue");
     WriteQueueCalibrationHeader(csv, "primary_copy_queue");
-    csv << "cpu_wait_ms,"
-        << "cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
+    csv << "frame_resource_backpressure_ms,"
+        << "cpu_submission_ms,cpu_total_frame_ms,present_to_present_ms,"
+        << "critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
         << "primary_lod_compaction_ms,primary_base_graphics_ms,secondary_compute_ms,"
         << "secondary_lod_compaction_ms,secondary_graphics_ms,"
         << "secondary_local_to_shared_copy_ms,primary_shared_to_local_copy_ms,transfer_ms,"
@@ -212,6 +213,8 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "lod_hash_load_factor,lod_duplicate_count,lod_probe_overflow_count,lod_max_probe_count,"
         << "lod_average_probe_count,"
         << "visual_validation_has_result,visual_validation_passed,visual_validation_run_id,"
+        << "visual_validation_case_id,visual_validation_protocol_hash,visual_validation_config_hash,"
+        << "visual_validation_camera_hash,"
         << "visual_validation_snapshot_hash,visual_color_mae,visual_color_rmse,"
         << "visual_psnr,visual_max_error,visual_mismatched_pixel_percent,visual_depth_rmse,"
         << "visual_depth_mismatched_pixel_percent,visual_pipeline_primitive_count,visual_fail_reason,"
@@ -273,7 +276,7 @@ void VoxelBenchmarkProfiler::EndFrameCpu()
         return;
 
     const auto now = std::chrono::steady_clock::now();
-    currentFrame->CpuFrameMs = std::chrono::duration<double, std::milli>(
+    currentFrame->CpuSubmissionMs = std::chrono::duration<double, std::milli>(
         now - currentFrame->Metadata.CpuFrameStart).count();
 }
 
@@ -537,7 +540,10 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     const double presentReadyGpuMs = criticalPathGpuMs;
     const std::string invalidReason = ValidateFrameRecord(frame, timestampsValid);
 
-    cpuFrameMsSamples.push_back(frame.CpuFrameMs);
+    const double cpuTotalFrameMs = frame.Metadata.CpuWaitMs + frame.CpuSubmissionMs;
+    presentToPresentMsSamples.push_back(frame.Metadata.PresentToPresentMs);
+    cpuSubmissionMsSamples.push_back(frame.CpuSubmissionMs);
+    cpuTotalFrameMsSamples.push_back(cpuTotalFrameMs);
     criticalPathGpuMsSamples.push_back(criticalPathGpuMs);
     gpuWorkSumMsSamples.push_back(gpuWorkSum);
     primaryComputeMsSamples.push_back(primaryCompute.Ms);
@@ -675,7 +681,9 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     csv
         << std::fixed << std::setprecision(6)
         << frame.Metadata.CpuWaitMs << ','
-        << frame.CpuFrameMs << ','
+        << frame.CpuSubmissionMs << ','
+        << cpuTotalFrameMs << ','
+        << frame.Metadata.PresentToPresentMs << ','
         << criticalPathGpuMs << ','
         << gpuWorkSum << ','
         << primaryCompute.Ms << ','
@@ -717,6 +725,10 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << BoolText(frame.Metadata.VisualValidationHasResult) << ','
         << BoolText(frame.Metadata.VisualValidationPassed) << ','
         << EscapeCsv(frame.Metadata.VisualValidationRunId) << ','
+        << EscapeCsv(frame.Metadata.VisualValidationCaseId) << ','
+        << EscapeCsv(frame.Metadata.VisualValidationProtocolHash) << ','
+        << EscapeCsv(frame.Metadata.VisualValidationConfigHash) << ','
+        << EscapeCsv(frame.Metadata.VisualValidationCameraHash) << ','
         << EscapeCsv(Hex64(frame.Metadata.VisualValidationSnapshotHash)) << ','
         << frame.Metadata.VisualValidationColorMAE << ','
         << frame.Metadata.VisualValidationColorRMSE << ','
@@ -800,6 +812,13 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
         return metadata.VisualValidationFailReason.empty()
                    ? "visual validation failed"
                    : metadata.VisualValidationFailReason;
+    if (metadata.VisualValidationCaseId.empty() ||
+        metadata.VisualValidationProtocolHash.empty() ||
+        metadata.VisualValidationConfigHash.empty() ||
+        metadata.VisualValidationCameraHash.empty())
+    {
+        return "visual validation case/protocol/config/camera identity is incomplete";
+    }
     return {};
 }
 
@@ -848,7 +867,9 @@ void VoxelBenchmarkProfiler::CalibrateQueues()
 
 void VoxelBenchmarkProfiler::ResetSamples()
 {
-    cpuFrameMsSamples.clear();
+    presentToPresentMsSamples.clear();
+    cpuSubmissionMsSamples.clear();
+    cpuTotalFrameMsSamples.clear();
     criticalPathGpuMsSamples.clear();
     gpuWorkSumMsSamples.clear();
     primaryComputeMsSamples.clear();
@@ -880,7 +901,7 @@ void VoxelBenchmarkProfiler::ResetSamples()
 
 void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
 {
-    if (completedSummaryReady || rowsWritten < recordedFrameCount || cpuFrameMsSamples.empty())
+    if (completedSummaryReady || rowsWritten < recordedFrameCount || presentToPresentMsSamples.empty())
         return;
 
     FrameRecord* lastWritten = nullptr;
@@ -919,7 +940,7 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary.RenderHeight = lastWritten ? lastWritten->Metadata.RenderHeight : 0;
     completedSummary.Repetition = currentRepetition;
     completedSummary.RepetitionCount = 1;
-    completedSummary.MeasuredFrameCount = static_cast<uint32_t>(cpuFrameMsSamples.size());
+    completedSummary.MeasuredFrameCount = static_cast<uint32_t>(presentToPresentMsSamples.size());
     completedSummary.InvalidFrameCount = static_cast<uint32_t>(invalidReasons.size());
     completedSummary.ValidFrameCount =
         completedSummary.MeasuredFrameCount >= completedSummary.InvalidFrameCount
@@ -927,11 +948,25 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
             : 0;
     completedSummary.Valid = invalidReasons.empty();
     completedSummary.ValidityReason = invalidReasons.empty() ? "" : invalidReasons.front();
-    completedSummary.AverageCpuFrameMs = Average(cpuFrameMsSamples);
-    completedSummary.MedianCpuFrameMs = Percentile(cpuFrameMsSamples, 0.50);
-    completedSummary.P95CpuFrameMs = Percentile(cpuFrameMsSamples, 0.95);
-    completedSummary.P99CpuFrameMs = Percentile(cpuFrameMsSamples, 0.99);
-    completedSummary.StdDevCpuFrameMs = StdDev(cpuFrameMsSamples);
+    completedSummary.AveragePresentToPresentMs = Average(presentToPresentMsSamples);
+    completedSummary.MedianPresentToPresentMs = Percentile(presentToPresentMsSamples, 0.50);
+    completedSummary.P95PresentToPresentMs = Percentile(presentToPresentMsSamples, 0.95);
+    completedSummary.P99PresentToPresentMs = Percentile(presentToPresentMsSamples, 0.99);
+    completedSummary.StdDevPresentToPresentMs = StdDev(presentToPresentMsSamples);
+    completedSummary.PresentToPresentCi95HalfWidthMs = 0.0;
+    completedSummary.AverageCpuSubmissionMs = Average(cpuSubmissionMsSamples);
+    completedSummary.MedianCpuSubmissionMs = Percentile(cpuSubmissionMsSamples, 0.50);
+    completedSummary.P95CpuSubmissionMs = Percentile(cpuSubmissionMsSamples, 0.95);
+    completedSummary.P99CpuSubmissionMs = Percentile(cpuSubmissionMsSamples, 0.99);
+    completedSummary.StdDevCpuSubmissionMs = StdDev(cpuSubmissionMsSamples);
+    completedSummary.AverageCpuTotalFrameMs = Average(cpuTotalFrameMsSamples);
+    completedSummary.MedianCpuTotalFrameMs = Percentile(cpuTotalFrameMsSamples, 0.50);
+    completedSummary.StdDevCpuTotalFrameMs = StdDev(cpuTotalFrameMsSamples);
+    completedSummary.AverageCpuFrameMs = completedSummary.AveragePresentToPresentMs;
+    completedSummary.MedianCpuFrameMs = completedSummary.MedianPresentToPresentMs;
+    completedSummary.P95CpuFrameMs = completedSummary.P95PresentToPresentMs;
+    completedSummary.P99CpuFrameMs = completedSummary.P99PresentToPresentMs;
+    completedSummary.StdDevCpuFrameMs = completedSummary.StdDevPresentToPresentMs;
     completedSummary.CpuFrameCi95HalfWidthMs = 0.0;
     completedSummary.SpeedupStatistic = "descriptive_frame_distribution_only";
     completedSummary.CriticalPathGpuMs = Average(criticalPathGpuMsSamples);
@@ -968,6 +1003,13 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
         logicalUpdatedVoxelSamples.begin(), logicalUpdatedVoxelSamples.end(), uint64_t{0});
     completedSummary.VisualValidationPassed =
         lastWritten ? lastWritten->Metadata.VisualValidationPassed : false;
+    if (lastWritten)
+    {
+        completedSummary.VisualValidationCaseId = lastWritten->Metadata.VisualValidationCaseId;
+        completedSummary.VisualValidationProtocolHash = lastWritten->Metadata.VisualValidationProtocolHash;
+        completedSummary.VisualValidationConfigHash = lastWritten->Metadata.VisualValidationConfigHash;
+        completedSummary.VisualValidationCameraHash = lastWritten->Metadata.VisualValidationCameraHash;
+    }
     completedSummary.CsvPath = csvPath;
     completedSummaryReady = true;
 }

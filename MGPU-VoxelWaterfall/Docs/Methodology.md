@@ -1,71 +1,127 @@
-# MGPU Voxel Waterfall Research Methodology
+# MGPU Voxel Waterfall Methodology
 
-## Research Questions
+Schema family: `mgpu_voxel_* v2` for benchmark manifests, execution manifests, raw frame rows, run rows, paired rows, invalid records, telemetry, visual validation, two-adapter preflight, and hostile analysis summary. Older producer v1 artifacts are legacy inputs only when explicitly accepted by `Tools/analyze_benchmark.py`.
 
-- Does explicit two-hardware-adapter rendering reduce run-level CPU frame time and calibrated GPU critical-path time for the deterministic synthetic voxel waterfall workload?
-- How do temporal decimation and spatial density LOD change the paired Single/Multi result?
-- When does cross-adapter color/depth transfer dominate the secondary adapter contribution?
+## Research Questions And Hypotheses
 
-## Hypotheses
+- H1: Does validated explicit two-hardware-adapter rendering reduce paired run-level end-to-end `present_to_present_ms` for `SingleGpuFull` versus `MultiGpuFull`?
+- H2: Does temporal decimation change secondary compute work while exact logical work equality and approximation-fidelity validation still pass?
+- H3: Does Spatial Density LOD monotonically reduce submitted counts without changing simulation counts and while approximation-fidelity validation still passes?
+- RQ3: Are cross-adapter transfer and composite costs transfer-dominated under the predeclared `transfer_ms / critical_path_gpu_ms >= 0.5` criterion?
 
-- H1: Validated `MultiGpuFull` can reduce run-mean CPU frame time versus the matched `SingleGpuFull` block when the secondary partition is non-empty and render-output transfer is active.
-- H2: Temporal decimation changes secondary simulation cadence without changing the declared benchmark logical work for a matched pair.
-- H3: Spatial density LOD reduces submitted voxel counts while preserving deterministic validation metrics within tolerance.
+No document may state H1/H2/H3 support until a strict `PASS` analysis archive exists with the corresponding confidence interval and complete validation evidence.
 
-## Workload
+## Workload Terminology
 
-The workload is a deterministic synthetic voxel waterfall scene containing static canyon/basin geometry and dynamic voxel particles. It is a graphics and scheduling workload. It is not a physically correct fluid simulation.
+Preset labels such as `static_budget_100k` identify requested static voxel budget. Dynamic voxels are configured separately and are added on top. The artifact fields `actual_static_count`, `actual_dynamic_count`, and `actual_total_count` are the only total-count evidence.
 
-## Experimental Unit
+The workload is a deterministic synthetic voxel waterfall scene with static canyon/basin geometry and dynamic voxel particles. It is a graphics and scheduling workload, not a physically correct fluid simulation.
 
-The experimental unit for inference is one independent benchmark run/repetition. Individual frames inside a run are descriptive samples used to compute per-run mean, median, P95, and P99 latency. They are not treated as independent replicates for confidence intervals.
+## Experimental Unit And Pairing
 
-## Pairing
+The inference unit is one independent run/repetition. Frames are descriptive samples used to recompute a run mean and validity; frames are not independent observations for confidence intervals.
 
-Each comparative block has one Single execution and one matching Multi execution with the same:
+Pairing uses explicit fields, not encoded `pair_id` semantics. A valid pair must match:
 
-- seed and reset state;
-- resolved static/dynamic/total voxel counts;
-- camera, resolution, and presentation mode;
-- temporal policy and interval;
-- spatial LOD policy;
-- secondary share key.
+- `session_id`, `pair_id`, `block_id`, and `repetition`;
+- resolved config hash, camera hash, validation protocol/config hash, render resolution/formats/sample count;
+- randomization seed, static workload seed, dynamic workload seed where exported;
+- requested and actual workload counts, temporal policy/interval, LOD state, secondary share, partition/chunk settings, and logical work.
 
-The runner records `session_id`, `block_id`, `pair_id`, `repetition`, block order, and pair member order. Paired differences and log-speedups are computed only within matching block/repetition values.
+`pair_id` is an identifier only. It does not itself contain seed, resolution, or resolved-count evidence.
 
-## Randomization
+## Endpoints
 
-The benchmark uses a randomized complete block design. For each repetition, pair blocks are shuffled with the logged deterministic seed. Within each block, Single-first versus Multi-first order is selected by the same deterministic random stream. Matching executions therefore remain close in time while still controlling order bias.
+Primary endpoint: paired run-level mean `present_to_present_ms`, measured as the interval between successful `Present()` calls. This is the endpoint used for rendering speed claims.
 
-## Primary Endpoint
+Secondary endpoints:
 
-The primary endpoint is paired run-level mean CPU frame time.
+- `cpu_submission_ms`: time from after frame-resource acquire to `EndFrameCpu`;
+- `frame_resource_backpressure_ms`: wait before CPU submission caused by frame-resource availability;
+- `cpu_total_frame_ms`: backpressure plus submission;
+- `critical_path_gpu_ms`, `gpu_work_sum_ms`, compute/graphics/copy/composite timings, transfer bytes, submitted counts, and validation metrics.
 
-## Secondary Metrics
+`cpu_submission_ms` must not be described as full CPU frame time.
 
-Secondary metrics include calibrated critical-path GPU time, GPU work sum, compute/graphics/copy/composite times, transfer bytes, voxel counts, LOD counts, scheduler dropped steps, hash probe statistics, memory counters, validation metrics, and invalid-frame counts.
+## Validation Matrix
 
-## Statistical Method
+Visual validation protocol v2 is resolved after the actual benchmark configuration is applied and GPU resources are rebuilt. Hashes are canonical JSON/SHA-256, not raw C++ struct bytes.
 
-For each valid paired block, the analysis computes:
+Smoke validation matrix:
 
-- paired difference: `single_run_mean_ms - multi_run_mean_ms`;
-- log speedup: `log(single_run_mean_ms / multi_run_mean_ms)`.
+- static budget label `100k`, requested dynamic budget from the Smoke config;
+- secondary share `0.50`;
+- LOD off/on;
+- mode families Full and Temporal;
+- Temporal interval `2`;
+- each case includes deterministic checkpoints required by the protocol.
 
-Aggregate speedup is `exp(mean(log_speedup))`. Confidence intervals use a two-sided Student-t interval over run-level paired values. With three repetitions this uses `df=2`, not a normal 1.96 approximation.
+Full validation matrix:
 
-`TwoDeviceNominalEfficiency = observed_speedup / 2` is reported only as a nominal metric. For heterogeneous adapters, normalized efficiency must use standalone adapter throughput calibration:
+- static budget labels `100k`, `250k`, `500k`, `1m`;
+- secondary shares `0.25`, `0.50`, `0.75`;
+- LOD off/on;
+- mode families Full and Temporal;
+- Temporal interval `4`;
+- no repetition/order dimension in validation coverage.
+
+Two validation kinds are distinct:
+
+- implementation equivalence: Single versus Multi for the same policy;
+- approximation fidelity: Temporal/LOD variant versus Full + LOD-off reference.
+
+H2/H3 cannot be supported by implementation equivalence alone.
+
+PASS criteria are the exported threshold fields for color/depth/combined mismatch percentages and coverage mismatch. MAE, RMSE, PSNR, and max error are descriptive unless named as threshold fields in the validation artifact.
+
+## Benchmark Gate
+
+The benchmark gate compares compatible provenance records across suite manifest, visual validation, two-adapter preflight, and execution manifests. Required fields include:
+
+- `build.executable_sha256`;
+- `build.shader_bytecode_set_sha256`;
+- `adapter.luid_pair`;
+- `adapter.primary_driver_version`;
+- `adapter.secondary_driver_version`;
+- `validation.protocol_sha256`;
+- `validation.case_config_sha256`;
+- `validation.camera_sha256`;
+- `render.resolution`, `render.color_format`, `render.depth_format`, `render.sample_count`;
+- `workload.static_seed`, `workload.dynamic_seed`;
+- requested and actual static/dynamic counts;
+- `workload.temporal_interval`, `workload.spatial_lod`, `workload.partition_strategy`, `workload.chunk_size`;
+- `runtime.toolchain`.
+
+Stale camera/config/protocol/build/shader/adapter evidence blocks the suite. Missing visual validation or missing two-adapter preflight blocks the suite. Placeholder evidence is invalid.
+
+## State And Status Semantics
+
+Producer suite/execution statuses:
 
 ```text
-heterogeneous_ideal_speedup = 1 + secondary_throughput / primary_throughput
-normalized_heterogeneous_efficiency = observed_speedup / heterogeneous_ideal_speedup
+PENDING -> RUNNING -> COMPLETE
+PENDING/RUNNING -> BLOCKED | INVALID | CANCELLED | INTERRUPTED
 ```
 
-If calibration is unavailable, heterogeneous normalized efficiency is `NOT_MEASURED`.
+`COMPLETE` is allowed only when every manifest config has exactly one execution manifest, every execution is `COMPLETE`, warmup/measured frame counts match exactly, required pairs/repetitions are valid, and no unfinished manifests remain.
 
-## Exclusion Rules
+`PASS` is not a suite status. `PASS` is used for visual validation, two-adapter verification, and hostile analysis summaries.
 
-Rows are invalid when visual validation is missing or failed, two-GPU verification is missing for requested Multi, requested mode differs from actual mode, timestamp calibration is invalid, particle transfer bytes are nonzero, Multi render-output transfer bytes are zero, scheduler dropped steps occur in benchmark mode, or no matching valid paired block exists.
+## Statistical Decision Rules
 
-Outliers are not removed silently. Every exclusion is written to `invalid_records.csv`.
+For valid pairs:
 
+- paired difference: `single_run_mean_ms - multi_run_mean_ms`;
+- log speedup: `log(single_run_mean_ms / multi_run_mean_ms)`;
+- aggregate speedup: `exp(mean(log_speedup))`.
+
+Confidence intervals use two-sided Student-t over paired run-level values. For `n < 2`, CI fields are `null`/`NOT_MEASURED`, never zero-width.
+
+Decision rules:
+
+- H1 `SUPPORT` requires strict analysis `PASS`, complete validation, and a primary endpoint CI whose lower bound is above zero.
+- H2 `SUPPORT` requires strict analysis `PASS`, exact logical-work equality, approximation-fidelity PASS, and measured secondary work statistics.
+- H3 `SUPPORT` requires strict analysis `PASS`, monotonic/non-increasing submitted counts, unchanged simulation counts, and approximation-fidelity PASS.
+- RQ3 reports transfer dominance only when the lower CI bound for `transfer_ms / critical_path_gpu_ms` is at least `0.5`.
+
+The Full suite default `n=3` is preliminary. Publication runs must predeclare repetition count using `Tools/plan_benchmark_power.py` from pilot SD and target MDE or desired CI width. Per-config contrasts beyond the primary contrast are exploratory and require multiplicity control.

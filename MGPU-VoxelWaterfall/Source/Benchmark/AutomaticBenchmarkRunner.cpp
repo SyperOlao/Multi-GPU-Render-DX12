@@ -48,7 +48,8 @@ namespace
                            const uint32_t dynamicBudget)
     {
         std::ostringstream stream;
-        stream << "label" << labelCount << ":static" << staticBudget << ":dynamic" << dynamicBudget;
+        stream << "static_budget_label" << labelCount << ":static" << staticBudget
+               << ":dynamic" << dynamicBudget;
         return stream.str();
     }
 
@@ -204,7 +205,8 @@ const char* AutomaticBenchmarkRunner::SuiteName(const BenchmarkSuite suite)
 
 std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildConfigs(
     const BenchmarkSuite suite,
-    const uint32_t seedOverride)
+    const uint32_t seedOverride,
+    const uint32_t repetitionOverride)
 {
     constexpr ModeSpec smokeModes[] = {
         {VoxelExecutionMode::SingleGpuFull, "SingleGpuFull", "Full", 2},
@@ -228,13 +230,17 @@ std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildConfigs(
         constexpr uint32_t total = 100000;
         constexpr float share = 0.50f;
         constexpr bool lodModes[] = {false, true};
+        const uint32_t repetitions = repetitionOverride > 0 ? repetitionOverride : 1;
         blocks.reserve(4);
         for (const bool lod : lodModes)
         {
-            AppendPairedBlock(blocks, suite, "LowCanonical", total, share, lod, 0, 1,
-                              30, 120, seed, sessionId, smokeModes[0], smokeModes[1]);
-            AppendPairedBlock(blocks, suite, "LowCanonical", total, share, lod, 0, 1,
-                              30, 120, seed, sessionId, smokeModes[2], smokeModes[3]);
+            for (uint32_t repetition = 0; repetition < repetitions; ++repetition)
+            {
+                AppendPairedBlock(blocks, suite, "LowCanonical", total, share, lod, repetition, repetitions,
+                                  30, 120, seed, sessionId, smokeModes[0], smokeModes[1]);
+                AppendPairedBlock(blocks, suite, "LowCanonical", total, share, lod, repetition, repetitions,
+                                  30, 120, seed, sessionId, smokeModes[2], smokeModes[3]);
+            }
         }
     }
     else
@@ -254,7 +260,7 @@ std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildConfigs(
         };
         constexpr float shares[] = {0.25f, 0.50f, 0.75f};
         constexpr bool lodModes[] = {false, true};
-        constexpr uint32_t repetitions = 3;
+        const uint32_t repetitions = repetitionOverride > 0 ? repetitionOverride : 3;
         blocks.reserve(std::size(presets) * 2 * std::size(shares) *
                        std::size(lodModes) * repetitions);
         for (uint32_t family = 0; family < std::size(fullModes); family += 2)

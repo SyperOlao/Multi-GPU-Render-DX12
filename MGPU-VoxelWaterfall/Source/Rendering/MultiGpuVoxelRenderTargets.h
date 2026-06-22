@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <wrl.h>
 
 struct MultiGpuVoxelRenderTargetDesc
 {
@@ -41,6 +42,8 @@ struct MultiGpuVoxelFrameRenderTargets
     PEPEngine::Graphics::GTexture PrimaryReceivedSecondaryColor;
     PEPEngine::Graphics::GTexture PrimaryReceivedSecondaryLinearDepth;
     PEPEngine::Graphics::GTexture PrimaryCompositeColor;
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> SecondaryPipelineStatsQueryHeap;
+    PEPEngine::Graphics::GResource SecondaryPipelineStatsReadback;
 
     PEPEngine::Graphics::GDescriptor SecondaryRtvDescriptors;
     PEPEngine::Graphics::GDescriptor SecondaryDsvDescriptor;
@@ -50,6 +53,10 @@ struct MultiGpuVoxelFrameRenderTargets
 
     UINT64 ColorTransferBytes = 0;
     UINT64 LinearDepthTransferBytes = 0;
+    UINT64 ExpectedLocalToSharedColorBytes = 0;
+    UINT64 ExpectedLocalToSharedDepthBytes = 0;
+    UINT64 ExpectedSharedToLocalColorBytes = 0;
+    UINT64 ExpectedSharedToLocalDepthBytes = 0;
     bool HasReceivedImage = false;
 };
 

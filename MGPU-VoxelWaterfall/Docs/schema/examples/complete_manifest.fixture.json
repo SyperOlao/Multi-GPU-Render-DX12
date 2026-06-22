@@ -1,0 +1,53 @@
+{
+  "schema": "mgpu_voxel_benchmark_manifest.v2",
+  "fixture_only": true,
+  "note": "Fixture/test only. Numeric counts are schema examples, not performance results.",
+  "suite": "Smoke",
+  "run_id": "fixture_complete_run",
+  "status": "COMPLETE",
+  "reason": "",
+  "created_utc": "2026-06-22T00:00:00Z",
+  "start_utc": "2026-06-22T00:00:01Z",
+  "end_utc": "2026-06-22T00:00:02Z",
+  "primary_endpoint": "present_to_present_ms",
+  "provenance": {
+    "schema": "mgpu_research_provenance.v1",
+    "fields": {
+      "build.executable_sha256": "fixture_sha256",
+      "build.shader_bytecode_set_sha256": "fixture_shader_set_sha256",
+      "adapter.luid_pair": "fixture_primary->fixture_secondary",
+      "adapter.primary_driver_version": "fixture_driver_primary",
+      "adapter.secondary_driver_version": "fixture_driver_secondary",
+      "validation.protocol_sha256": "fixture_protocol_sha256",
+      "validation.case_config_sha256": "fixture_case_config_sha256",
+      "validation.camera_sha256": "fixture_camera_sha256",
+      "render.resolution": "1920x1080",
+      "render.color_format": "R8G8B8A8_UNORM",
+      "render.depth_format": "R32_FLOAT",
+      "render.sample_count": "1",
+      "workload.static_seed": "fixture_static_seed",
+      "workload.dynamic_seed": "fixture_dynamic_seed",
+      "runtime.toolchain": "fixture_toolchain"
+    }
+  },
+  "configs": [
+    {
+      "config_id": "fixture_single_full_lod_off",
+      "session_id": "session_000",
+      "pair_id": "pair_000",
+      "block_id": "block_000",
+      "mode": "SingleGpuFull",
+      "preset": "static_budget_100k",
+      "requested_static_budget_label": 100000,
+      "requested_static_budget": 100000,
+      "requested_dynamic_budget": 25000,
+      "secondary_share": 0.5,
+      "spatial_lod": "Off",
+      "temporal_interval": 1,
+      "repetition": 0,
+      "order_index": 0,
+      "block_order_index": 0,
+      "pair_member_order": 0
+    }
+  ]
+}

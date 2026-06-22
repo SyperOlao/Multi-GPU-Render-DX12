@@ -60,6 +60,8 @@ public:
     static constexpr uint32_t FullSeed = 0x5eed2026u;
 
     static const char* SuiteName(BenchmarkSuite suite);
-    static std::vector<AutomaticBenchmarkConfig> BuildConfigs(BenchmarkSuite suite, uint32_t seedOverride = 0);
+    static std::vector<AutomaticBenchmarkConfig> BuildConfigs(BenchmarkSuite suite,
+                                                              uint32_t seedOverride = 0,
+                                                              uint32_t repetitionOverride = 0);
     static std::vector<AutomaticBenchmarkConfig> BuildDefaultConfigs();
 };

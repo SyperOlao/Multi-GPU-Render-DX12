@@ -217,6 +217,8 @@ namespace
 
         std::vector<double> cpuMean;
         std::vector<double> cpuMedian;
+        std::vector<double> cpuSubmissionMean;
+        std::vector<double> cpuTotalMean;
         std::vector<double> criticalPath;
         std::vector<double> gpuWorkSum;
         std::vector<double> primaryCompute;
@@ -254,6 +256,8 @@ namespace
 
             cpuMean.push_back(row.AverageCpuFrameMs);
             cpuMedian.push_back(row.MedianCpuFrameMs);
+            cpuSubmissionMean.push_back(row.AverageCpuSubmissionMs);
+            cpuTotalMean.push_back(row.AverageCpuTotalFrameMs);
             criticalPath.push_back(row.CriticalPathGpuMs);
             gpuWorkSum.push_back(row.GpuWorkSumMs);
             primaryCompute.push_back(row.PrimaryComputeMs);
@@ -282,6 +286,8 @@ namespace
 
         result.AverageCpuFrameMs = Average(cpuMean);
         result.MedianCpuFrameMs = Median(cpuMedian);
+        result.AveragePresentToPresentMs = result.AverageCpuFrameMs;
+        result.MedianPresentToPresentMs = result.MedianCpuFrameMs;
         result.P95CpuFrameMs = Median([&]
         {
             std::vector<double> values;
@@ -302,6 +308,10 @@ namespace
         result.CpuFrameCi95HalfWidthMs =
             cpuMean.size() > 1 ? StudentTCritical95TwoSided(cpuMean.size()) * result.StdDevCpuFrameMs /
             std::sqrt(static_cast<double>(cpuMean.size())) : 0.0;
+        result.StdDevPresentToPresentMs = result.StdDevCpuFrameMs;
+        result.PresentToPresentCi95HalfWidthMs = result.CpuFrameCi95HalfWidthMs;
+        result.AverageCpuSubmissionMs = Average(cpuSubmissionMean);
+        result.AverageCpuTotalFrameMs = Average(cpuTotalMean);
         result.CriticalPathGpuMs = Average(criticalPath);
         result.GpuWorkSumMs = Average(gpuWorkSum);
         result.PrimaryComputeMs = Average(primaryCompute);
@@ -326,13 +336,15 @@ namespace
         result.AverageSecondaryLod0Count = Average(secondaryLod0);
         result.AverageSecondaryLod1Count = Average(secondaryLod1);
         result.AverageSecondaryLod2Count = Average(secondaryLod2);
+        result.TotalExecutedFixedSteps = 0;
+        result.TotalLogicalUpdatedVoxelCount = 0;
         for (const auto& row : rows)
         {
             result.TotalExecutedFixedSteps += row.TotalExecutedFixedSteps;
             result.TotalLogicalUpdatedVoxelCount += row.TotalLogicalUpdatedVoxelCount;
         }
         result.SkipReason = result.Valid ? "" : result.ValidityReason;
-        result.SpeedupStatistic = "run_mean_cpu_frame_ms_student_t_95_ci";
+        result.SpeedupStatistic = "run_mean_present_to_present_ms_student_t_95_ci";
         return result;
     }
 }
@@ -429,7 +441,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
 
         row.SpeedupVsMatchingSingleGpu = std::exp(Average(pairedIt->second));
         row.Efficiency = row.SpeedupVsMatchingSingleGpu / 2.0;
-        row.SpeedupStatistic = "paired_run_log_speedup_student_t_95_ci";
+        row.SpeedupStatistic = "paired_run_log_speedup_present_to_present_student_t_95_ci";
     }
 
     std::filesystem::create_directories(outputPath.parent_path());
@@ -439,7 +451,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
 
     summary.imbue(std::locale::classic());
     summary << "requested_mode,actual_mode,primary_adapter,secondary_adapter,total_voxels,"
-        << "requested_label_count,requested_static_budget,requested_dynamic_budget,"
+        << "requested_static_budget_label,requested_static_budget,requested_dynamic_budget,"
         << "actual_total_count,"
         << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
         << "temporal_policy,spatial_lod_policy,pair_id,"
@@ -447,8 +459,9 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
         << "resolved_config_hash,render_width,render_height,"
         << "repetition_count,measured_frame_count,valid_frame_count,invalid_frame_count,"
         << "preset,run_valid,validity_reason,speedup_statistic,"
-        << "average_cpu_frame_ms,median_cpu_frame_ms,p95_cpu_frame_ms,p99_cpu_frame_ms,"
-        << "stddev_cpu_frame_ms,cpu_frame_ci95_half_width_ms,"
+        << "mean_present_to_present_ms,median_present_to_present_ms,p95_present_to_present_ms,p99_present_to_present_ms,"
+        << "stddev_present_to_present_ms,present_to_present_ci95_half_width_ms,"
+        << "mean_cpu_submission_ms,mean_cpu_total_frame_ms,"
         << "critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,primary_lod_compaction_ms,"
         << "secondary_compute_ms,secondary_lod_compaction_ms,primary_graphics_ms,"
         << "secondary_graphics_ms,transfer_ms,composite_ms,total_transfer_bytes,"
@@ -500,6 +513,8 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << row.P99CpuFrameMs << ','
             << row.StdDevCpuFrameMs << ','
             << row.CpuFrameCi95HalfWidthMs << ','
+            << row.AverageCpuSubmissionMs << ','
+            << row.AverageCpuTotalFrameMs << ','
             << row.CriticalPathGpuMs << ','
             << row.GpuWorkSumMs << ','
             << row.PrimaryComputeMs << ','

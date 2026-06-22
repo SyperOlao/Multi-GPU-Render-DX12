@@ -6,8 +6,42 @@
 #include "Source/Voxels/VoxelGpuPartition.h"
 
 #include <cfloat>
+#include <cstring>
+#include <sstream>
 
 using namespace PEPEngine::Graphics;
+
+namespace
+{
+    std::string Narrow(const std::wstring& value)
+    {
+        std::string result;
+        result.reserve(value.size());
+        for (const wchar_t ch : value)
+            result.push_back(ch >= 0 && ch <= 0x7f ? static_cast<char>(ch) : '?');
+        return result;
+    }
+
+    std::string ResourceIdentity(const GResource& resource)
+    {
+        const auto desc = resource.GetD3D12ResourceDesc();
+        std::ostringstream stream;
+        stream << Narrow(resource.GetName()) << "@"
+               << static_cast<const void*>(resource.GetD3D12Resource().Get())
+               << ":" << desc.Width << "x" << desc.Height
+               << ":fmt" << static_cast<uint32_t>(desc.Format);
+        return stream.str();
+    }
+
+    UINT64 ExpectedCopyableBytes(GResource& resource)
+    {
+        const auto desc = resource.GetD3D12ResourceDesc();
+        UINT64 totalBytes = 0;
+        resource.GetDevice()->GetDXDevice()->GetCopyableFootprints(
+            &desc, 0, 1, 0, nullptr, nullptr, nullptr, &totalBytes);
+        return totalBytes;
+    }
+}
 
 void RenderPipeline::SubmitPrimaryBasePass(const PrimaryBasePassContext& context) const
 {
@@ -53,6 +87,13 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
     cmdList->EndQuery(context.TimestampHeapIndex);
     context.BenchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
                                          VoxelBenchmarkProfiler::RangeId::SecondaryGraphics);
+    if (targets.SecondaryPipelineStatsQueryHeap)
+    {
+        cmdList->GetGraphicsCommandList()->BeginQuery(
+            targets.SecondaryPipelineStatsQueryHeap.Get(),
+            D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+            0);
+    }
     cmdList->SetViewports(&context.Viewport, 1);
     cmdList->SetScissorRects(&context.ScissorRect, 1);
 
@@ -104,6 +145,20 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
 
     context.BenchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
                                        VoxelBenchmarkProfiler::RangeId::SecondaryGraphics);
+    if (targets.SecondaryPipelineStatsQueryHeap)
+    {
+        cmdList->GetGraphicsCommandList()->EndQuery(
+            targets.SecondaryPipelineStatsQueryHeap.Get(),
+            D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+            0);
+        cmdList->GetGraphicsCommandList()->ResolveQueryData(
+            targets.SecondaryPipelineStatsQueryHeap.Get(),
+            D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+            0,
+            1,
+            targets.SecondaryPipelineStatsReadback.GetD3D12Resource().Get(),
+            0);
+    }
     context.BenchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
                                            VoxelBenchmarkProfiler::RangeId::SecondaryGraphics);
     cmdList->EndQuery(context.TimestampHeapIndex + 1);
@@ -114,12 +169,14 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
 
     context.CurrentFrameResource.SecondaryRenderFenceValue =
         context.SecondaryGraphicsQueue->ExecuteCommandList(cmdList);
+    context.SecondaryGraphicsQueue->WaitForFenceValue(context.CurrentFrameResource.SecondaryRenderFenceValue);
     context.BenchmarkProfiler.SetQueueFence(VoxelBenchmarkProfiler::QueueId::SecondaryGraphics,
                                             context.CurrentFrameResource.SecondaryRenderFenceValue);
 
     if (context.Telemetry)
     {
         context.Telemetry->SecondaryGraphicsSubmitted = true;
+        context.Telemetry->SecondaryGraphicsCommandListSubmissionCount += 1;
         context.Telemetry->SecondaryRenderSubmitted = true;
         context.Telemetry->SecondaryGraphicsFenceValue =
             context.CurrentFrameResource.SecondaryRenderFenceValue;
@@ -127,6 +184,28 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
         context.Telemetry->SecondaryRenderedVoxelCount = submittedVoxelCount;
         context.Telemetry->SecondarySpatialLodStats = lodStats;
         context.Telemetry->SecondaryIndirectDrawCalls = indirectDrawCalls;
+        context.Telemetry->SecondaryGraphicsTimestampBeginQuery = context.TimestampHeapIndex;
+        context.Telemetry->SecondaryGraphicsTimestampEndQuery = context.TimestampHeapIndex + 1;
+        context.Telemetry->SecondaryIndirectArgumentMaxCommandCount = indirectDrawCalls > 0 ? 1u : 0u;
+        context.Telemetry->SecondaryIndirectArgumentResolvedDrawCount = indirectDrawCalls;
+        if (targets.SecondaryPipelineStatsReadback.IsValid())
+        {
+            D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
+            void* mapped = nullptr;
+            const D3D12_RANGE readRange{0, sizeof(stats)};
+            if (SUCCEEDED(targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Map(0, &readRange, &mapped)) &&
+                mapped)
+            {
+                std::memcpy(&stats, mapped, sizeof(stats));
+                const D3D12_RANGE emptyRange{0, 0};
+                targets.SecondaryPipelineStatsReadback.GetD3D12Resource()->Unmap(0, &emptyRange);
+                context.Telemetry->SecondaryPipelineIAPrimitives = stats.IAPrimitives;
+                context.Telemetry->SecondaryPipelineVSInvocations = stats.VSInvocations;
+                context.Telemetry->SecondaryPipelinePSInvocations = stats.PSInvocations;
+                context.Telemetry->SecondaryPipelineCInvocations = stats.CInvocations;
+                context.Telemetry->SecondaryPipelineCPrimitives = stats.CPrimitives;
+            }
+        }
     }
 }
 
@@ -175,16 +254,31 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
 
     if (context.Telemetry)
     {
+        const UINT64 expectedColorBytes = ExpectedCopyableBytes(targets.SecondaryLocalColor);
+        const UINT64 expectedDepthBytes = ExpectedCopyableBytes(targets.SecondaryLocalLinearDepth);
+        context.Telemetry->LocalToSharedCommandListSubmissionCount += 1;
         context.Telemetry->SecondaryLocalToSharedCopyFenceValue =
             context.CurrentFrameResource.SecondaryLocalToSharedCopyFenceValue;
         context.Telemetry->CrossAdapterRenderReadyFenceValue =
             context.CurrentFrameResource.CrossAdapterRenderReadyFenceValue;
-        context.Telemetry->ColorBytesTransferred = targets.ColorTransferBytes;
-        context.Telemetry->DepthBytesTransferred = targets.LinearDepthTransferBytes;
+        context.Telemetry->ExpectedLocalToSharedColorBytes = expectedColorBytes;
+        context.Telemetry->ExpectedLocalToSharedDepthBytes = expectedDepthBytes;
+        context.Telemetry->LocalToSharedColorBytes = expectedColorBytes;
+        context.Telemetry->LocalToSharedDepthBytes = expectedDepthBytes;
+        context.Telemetry->LocalToSharedColorSource = ResourceIdentity(targets.SecondaryLocalColor);
+        context.Telemetry->LocalToSharedColorDestination = ResourceIdentity(sharedColor);
+        context.Telemetry->LocalToSharedDepthSource = ResourceIdentity(targets.SecondaryLocalLinearDepth);
+        context.Telemetry->LocalToSharedDepthDestination = ResourceIdentity(sharedDepth);
+        context.Telemetry->LocalToSharedTimestampBeginQuery = context.TimestampHeapIndex;
+        context.Telemetry->LocalToSharedTimestampEndQuery = context.TimestampHeapIndex + 1;
+        context.Telemetry->ColorBytesTransferred += expectedColorBytes;
+        context.Telemetry->DepthBytesTransferred += expectedDepthBytes;
         context.Telemetry->TotalCrossAdapterBytes =
-            targets.ColorTransferBytes + targets.LinearDepthTransferBytes;
+            context.Telemetry->ColorBytesTransferred + context.Telemetry->DepthBytesTransferred;
         context.Telemetry->ParticleTransferBytes = 0;
-        context.Telemetry->RenderOutputTransferBytes = context.Telemetry->TotalCrossAdapterBytes;
+        context.Telemetry->RenderOutputTransferBytes =
+            context.Telemetry->LocalToSharedColorBytes + context.Telemetry->LocalToSharedDepthBytes +
+            context.Telemetry->SharedToLocalColorBytes + context.Telemetry->SharedToLocalDepthBytes;
     }
 }
 
@@ -232,10 +326,30 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
 
     if (context.Telemetry)
     {
+        const UINT64 expectedColorBytes = ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryColor);
+        const UINT64 expectedDepthBytes = ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryLinearDepth);
+        context.Telemetry->SharedToLocalCommandListSubmissionCount += 1;
         context.Telemetry->PrimarySharedToLocalCopyFenceValue =
             context.CurrentFrameResource.PrimarySharedToLocalCopyFenceValue;
         context.Telemetry->PrimarySecondaryImageReadyFenceValue =
             context.CurrentFrameResource.PrimarySecondaryImageReadyFenceValue;
+        context.Telemetry->ExpectedSharedToLocalColorBytes = expectedColorBytes;
+        context.Telemetry->ExpectedSharedToLocalDepthBytes = expectedDepthBytes;
+        context.Telemetry->SharedToLocalColorBytes = expectedColorBytes;
+        context.Telemetry->SharedToLocalDepthBytes = expectedDepthBytes;
+        context.Telemetry->SharedToLocalColorSource = ResourceIdentity(primeColor);
+        context.Telemetry->SharedToLocalColorDestination = ResourceIdentity(targets.PrimaryReceivedSecondaryColor);
+        context.Telemetry->SharedToLocalDepthSource = ResourceIdentity(primeDepth);
+        context.Telemetry->SharedToLocalDepthDestination = ResourceIdentity(targets.PrimaryReceivedSecondaryLinearDepth);
+        context.Telemetry->SharedToLocalTimestampBeginQuery = context.TimestampHeapIndex;
+        context.Telemetry->SharedToLocalTimestampEndQuery = context.TimestampHeapIndex + 1;
+        context.Telemetry->ColorBytesTransferred += expectedColorBytes;
+        context.Telemetry->DepthBytesTransferred += expectedDepthBytes;
+        context.Telemetry->TotalCrossAdapterBytes =
+            context.Telemetry->ColorBytesTransferred + context.Telemetry->DepthBytesTransferred;
+        context.Telemetry->RenderOutputTransferBytes =
+            context.Telemetry->LocalToSharedColorBytes + context.Telemetry->LocalToSharedDepthBytes +
+            context.Telemetry->SharedToLocalColorBytes + context.Telemetry->SharedToLocalDepthBytes;
     }
 }
 

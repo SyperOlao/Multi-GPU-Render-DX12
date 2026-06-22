@@ -41,10 +41,11 @@ public:
     bool Initialize() override;
 
     int Run() override;
-    int RunValidationSuiteOnce();
-    int RunTwoAdapterVerificationOnce();
+    int RunValidationSuiteOnce(const std::filesystem::path& outputDirectory = {});
+    int RunTwoAdapterVerificationOnce(const std::filesystem::path& outputDirectory = {});
     int RunAutomaticBenchmarkSuiteOnce(BenchmarkSuite suite,
                                        uint32_t seedOverride = 0,
+                                       uint32_t repetitionOverride = 0,
                                        const std::filesystem::path& outputDirectory = {});
     int RunMemorySoakTestOnce(uint32_t durationSeconds = 600,
                               const std::filesystem::path& outputDirectory = {});
@@ -71,7 +72,9 @@ protected:
     void DrawUserInterface(const std::shared_ptr<GCommandList>& cmdList);
     void StartManualBenchmark();
     void StopManualBenchmark();
-    void RunVisualValidation();
+    void RunVisualValidation(const std::filesystem::path& outputDirectory = {},
+                             BenchmarkSuite suite = BenchmarkSuite::Smoke,
+                             uint32_t seedOverride = 0);
     VoxelVisualValidationComparisonInput CaptureVisualValidationCase(
         const VoxelVisualValidationConfig& config,
         const VoxelVisualValidationCase& validationCase,
@@ -105,7 +108,8 @@ protected:
     void PumpOneMemoryAuditFrame();
     void ServiceDeferredResourceLifetime();
     void StartAutomaticBenchmark();
-    void StartAutomaticBenchmark(BenchmarkSuite suite, uint32_t seedOverride = 0);
+    void StartAutomaticBenchmark(BenchmarkSuite suite, uint32_t seedOverride = 0,
+                                 uint32_t repetitionOverride = 0);
     void StopAutomaticBenchmark();
     BenchmarkConfigurationApplyResult ApplyBenchmarkConfigurationAtomic(const AutomaticBenchmarkConfig& config);
     void ApplyBenchmarkVoxelCount(int totalCount);
@@ -242,8 +246,18 @@ protected:
     std::string visualValidationBuildHash;
     std::string visualValidationShaderHash;
     std::string visualValidationAdapterPairIdentity;
+    std::string visualValidationProtocolHash;
+    std::string visualValidationCaseConfigHash;
+    std::string visualValidationCameraHash;
+    std::string currentBenchmarkResolvedConfigHash;
+    std::filesystem::path visualValidationJsonPath;
+    std::filesystem::path visualValidationCsvPath;
+    std::filesystem::path twoAdapterVerificationJsonPath;
     std::chrono::steady_clock::time_point cpuFrameStart{};
     std::chrono::steady_clock::time_point frameResourceBackpressureStart{};
+    std::chrono::steady_clock::time_point lastSuccessfulPresentTime{};
+    double currentPresentToPresentMs = 0.0;
+    bool hasSuccessfulPresentTime = false;
     uint64_t frameSerial = 0;
     uint64_t mainLoopIterationCount = 0;
     uint64_t successfulPresentCount = 0;

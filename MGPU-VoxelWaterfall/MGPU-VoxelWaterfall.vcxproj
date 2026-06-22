@@ -24,7 +24,7 @@
         <ProjectGuid>{f5020190-6b44-4ad4-b985-1beb0f646afb}</ProjectGuid>
         <RootNamespace>MGPUVoxelWaterfall</RootNamespace>
         <ProjectName>MGPU-VoxelWaterfall</ProjectName>
-        <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+        <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
     </PropertyGroup>
     <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props"/>
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -168,6 +168,7 @@
         <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"/>
         <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"/>
         <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"/>
+        <ClCompile Include="Source\Benchmark\ResearchProvenance.cpp"/>
         <ClCompile Include="Source\Benchmark\ResearchArtifactWriter.cpp"/>
         <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"/>
         <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"/>
@@ -223,6 +224,7 @@
         <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"/>
         <ClInclude Include="Source\Benchmark\BenchmarkController.h"/>
         <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"/>
+        <ClInclude Include="Source\Benchmark\ResearchProvenance.h"/>
         <ClInclude Include="Source\Benchmark\ResearchArtifactWriter.h"/>
         <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"/>
         <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"/>

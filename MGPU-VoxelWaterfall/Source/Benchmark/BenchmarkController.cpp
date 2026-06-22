@@ -3,6 +3,7 @@
 #include "Source/Benchmark/BenchmarkCsvWriter.h"
 #include "Source/Benchmark/ResearchArtifactWriter.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -79,6 +80,33 @@ namespace
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
+    bool IsTemporalMode(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::SingleGpuTemporalDecimation ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
+    std::string ValidationModeFamily(const VoxelExecutionMode mode)
+    {
+        return IsTemporalMode(mode) ? "Temporal" : "Full";
+    }
+
+    std::string ValidationConfigKey(const AutomaticBenchmarkConfig& config)
+    {
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        stream << AutomaticBenchmarkRunner::SuiteName(config.Suite)
+               << "|family=" << ValidationModeFamily(config.Mode)
+               << "|preset=" << config.Preset
+               << "|static_budget_label=" << config.RequestedLabelCount
+               << "|static=" << config.RequestedStaticBudget
+               << "|dynamic=" << config.RequestedDynamicBudget
+               << "|share=" << std::fixed << std::setprecision(2) << config.SecondaryShare
+               << "|lod=" << (config.SpatialLodEnabled ? "on" : "off")
+               << "|interval=" << config.TemporalInterval;
+        return stream.str();
+    }
+
     std::filesystem::path ExecutionManifestPath(const std::filesystem::path& benchmarkDirectory,
                                                 const AutomaticBenchmarkConfig& config)
     {
@@ -87,8 +115,40 @@ namespace
              SanitizeFileToken(config.ConfigId) + "_manifest.json");
     }
 
-    std::string BuildGateFailureReason(const BenchmarkControllerContext& context)
+    std::string BuildGateFailureReason(const BenchmarkControllerContext& context,
+                                       const std::vector<AutomaticBenchmarkConfig>& configs)
     {
+        const std::vector<std::string> requiredProvenanceFields = {
+            "build.executable_sha256",
+            "build.shader_bytecode_set_sha256",
+            "adapter.luid_pair",
+            "adapter.primary_driver_version",
+            "adapter.secondary_driver_version",
+            "validation.protocol_sha256",
+            "validation.case_config_sha256",
+            "validation.camera_sha256",
+            "render.resolution",
+            "render.color_format",
+            "render.depth_format",
+            "render.sample_count",
+            "workload.static_seed",
+            "workload.dynamic_seed",
+            "workload.requested_static_count",
+            "workload.requested_dynamic_count",
+            "workload.actual_static_count",
+            "workload.actual_dynamic_count",
+            "workload.temporal_interval",
+            "workload.spatial_lod",
+            "workload.partition_strategy",
+            "workload.chunk_size",
+            "runtime.toolchain"
+        };
+        if (context.ValidationJsonPath.empty() || !std::filesystem::exists(context.ValidationJsonPath))
+            return "missing validation evidence file: voxel_visual_validation.json";
+        if (context.ValidationCsvPath.empty() || !std::filesystem::exists(context.ValidationCsvPath))
+            return "missing validation evidence file: voxel_visual_validation.csv";
+        if (context.TwoAdapterJsonPath.empty() || !std::filesystem::exists(context.TwoAdapterJsonPath))
+            return "missing two-adapter preflight evidence file: two_adapter_preflight.json";
         if (!context.VisualValidationPassed)
         {
             return context.VisualValidationReason.empty()
@@ -123,6 +183,78 @@ namespace
         {
             return "visual validation adapter pair does not match two-adapter verification pair";
         }
+        if (!context.ValidationProtocolHash.empty())
+        {
+            const auto it = context.ValidationProvenance.Fields.find("validation.protocol_sha256");
+            if (it == context.ValidationProvenance.Fields.end() || it->second != context.ValidationProtocolHash)
+                return "visual validation protocol hash does not match benchmark protocol";
+        }
+        if (!context.ValidationCaseConfigHash.empty())
+        {
+            const auto it = context.ValidationProvenance.Fields.find("validation.case_config_sha256");
+            if (it == context.ValidationProvenance.Fields.end() || it->second != context.ValidationCaseConfigHash)
+                return "visual validation case/config hash does not match benchmark config";
+        }
+        if (!context.ValidationCameraHash.empty())
+        {
+            const auto it = context.ValidationProvenance.Fields.find("validation.camera_sha256");
+            if (it == context.ValidationProvenance.Fields.end() || it->second != context.ValidationCameraHash)
+                return "visual validation camera hash does not match benchmark camera";
+        }
+        if (const auto mismatch = ResearchProvenance::CompareCompatible(
+                context.CurrentProvenance, context.ValidationProvenance, requiredProvenanceFields);
+            !mismatch.empty())
+        {
+            return "visual validation " + mismatch;
+        }
+        if (const auto mismatch = ResearchProvenance::CompareCompatible(
+                context.CurrentProvenance, context.TwoAdapterProvenance,
+                {"build.executable_sha256", "adapter.luid_pair",
+                 "adapter.primary_driver_version", "adapter.secondary_driver_version",
+                 "render.color_format", "render.depth_format", "runtime.toolchain"});
+            !mismatch.empty())
+        {
+            return "two-adapter verification " + mismatch;
+        }
+        for (const auto& config : configs)
+        {
+            const auto key = ValidationConfigKey(config);
+            const auto it = std::find_if(
+                context.ValidationCoverage.begin(),
+                context.ValidationCoverage.end(),
+                [&](const BenchmarkValidationCoverage& coverage)
+                {
+                    return coverage.Passed &&
+                        coverage.ConfigKey == key &&
+                        coverage.ModeName == config.ModeName &&
+                        coverage.ProtocolHash == context.ValidationProtocolHash &&
+                        !coverage.ConfigHash.empty() &&
+                        !coverage.CameraHash.empty();
+                });
+            if (it == context.ValidationCoverage.end())
+            {
+                return "missing matching PASS visual validation case for benchmark config: " +
+                    config.ConfigId;
+            }
+            if (config.TemporalInterval > 1 || config.SpatialLodEnabled)
+            {
+                const auto fidelityIt = std::find_if(
+                    context.ValidationCoverage.begin(),
+                    context.ValidationCoverage.end(),
+                    [&](const BenchmarkValidationCoverage& coverage)
+                    {
+                        return coverage.Passed &&
+                            coverage.ModeName == config.ModeName &&
+                            coverage.ProtocolHash == context.ValidationProtocolHash &&
+                            coverage.CaseId.find("|fidelity|") != std::string::npos;
+                    });
+                if (fidelityIt == context.ValidationCoverage.end())
+                {
+                    return "missing approximation-fidelity PASS visual validation case for benchmark config: " +
+                        config.ConfigId;
+                }
+            }
+        }
         return {};
     }
 
@@ -138,7 +270,10 @@ namespace
         const std::filesystem::path& statusPath,
         const std::filesystem::path& summaryPath,
         const std::string& gateStatus,
-        const std::string& gateReason)
+        const std::string& gateReason,
+        const std::string& createdUtc,
+        const std::string& startUtc,
+        const std::string& endUtc)
     {
         BenchmarkResearchArtifactContext artifact{};
         artifact.Suite = suite;
@@ -155,6 +290,10 @@ namespace
         artifact.TwoGpuAdapterPairIdentity = context.TwoAdapterAdapterPairIdentity;
         artifact.GateStatus = gateStatus;
         artifact.GateReason = gateReason;
+        artifact.CreatedUtc = createdUtc;
+        artifact.StartUtc = startUtc;
+        artifact.EndUtc = endUtc;
+        artifact.Provenance = context.CurrentProvenance;
         artifact.OutputDirectory = outputDirectory;
         artifact.StatusPath = statusPath;
         artifact.SummaryPath = summaryPath;
@@ -170,10 +309,13 @@ namespace
                           const size_t executionCount,
                           const char* status,
                           const std::string& reason,
-                          const BenchmarkControllerContext& context)
+                          const BenchmarkControllerContext& context,
+                          const std::string& createdUtc,
+                          const std::string& startUtc,
+                          const std::string& endUtc)
     {
         std::filesystem::create_directories(path.parent_path());
-        std::ofstream json(path, std::ios::out | std::ios::trunc);
+        std::ostringstream json;
         json << "{\n"
              << "  \"suite\":\"" << AutomaticBenchmarkRunner::SuiteName(suite) << "\",\n"
              << "  \"run_id\":\"" << EscapeJson(runId) << "\",\n"
@@ -183,6 +325,9 @@ namespace
              << "  \"warmup_frames\":" << warmupFrames << ",\n"
              << "  \"measured_frames\":" << measuredFrames << ",\n"
              << "  \"execution_count\":" << executionCount << ",\n"
+             << "  \"created_utc\":\"" << EscapeJson(createdUtc) << "\",\n"
+             << "  \"start_utc\":\"" << EscapeJson(startUtc) << "\",\n"
+             << "  \"end_utc\":\"" << EscapeJson(endUtc) << "\",\n"
              << "  \"visual_validation_run_id\":\"" << EscapeJson(context.VisualValidationRunId) << "\",\n"
              << "  \"two_gpu_verification_run_id\":\"" << EscapeJson(context.TwoAdapterVerificationRunId) << "\",\n"
              << "  \"current_build_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
@@ -192,8 +337,10 @@ namespace
              << "  \"validation_shader_set_hash\":\"" << EscapeJson(context.ValidationShaderHash) << "\",\n"
              << "  \"validation_shader_hash\":\"" << EscapeJson(context.ValidationShaderHash) << "\",\n"
              << "  \"validation_adapter_pair\":\"" << EscapeJson(context.ValidationAdapterPairIdentity) << "\",\n"
-             << "  \"two_gpu_adapter_pair\":\"" << EscapeJson(context.TwoAdapterAdapterPairIdentity) << "\"\n"
+             << "  \"two_gpu_adapter_pair\":\"" << EscapeJson(context.TwoAdapterAdapterPairIdentity) << "\",\n"
+             << ResearchProvenance::ToJson(context.CurrentProvenance, 2) << "\n"
              << "}\n";
+        ResearchProvenance::WriteTextFileAtomic(path, json.str());
     }
 
     void WriteExecutionManifest(const std::filesystem::path& path,
@@ -202,10 +349,12 @@ namespace
                                 const BenchmarkConfigurationApplyResult& resolved,
                                 const BenchmarkControllerContext& context,
                                 const char* status,
-                                const std::string& reason)
+                                const std::string& reason,
+                                const std::string& startUtc,
+                                const std::string& endUtc)
     {
         std::filesystem::create_directories(path.parent_path());
-        std::ofstream json(path, std::ios::out | std::ios::trunc);
+        std::ostringstream json;
         json << "{\n"
              << "  \"suite\":\"" << AutomaticBenchmarkRunner::SuiteName(config.Suite) << "\",\n"
              << "  \"run_id\":\"" << EscapeJson(runId) << "\",\n"
@@ -223,7 +372,7 @@ namespace
              << "  \"requested_mode\":\"" << config.ModeName << "\",\n"
              << "  \"actual_mode\":\"" << EscapeJson(resolved.ActualMode) << "\",\n"
              << "  \"requested_total_count\":" << config.TotalCount << ",\n"
-             << "  \"requested_label_count\":" << config.RequestedLabelCount << ",\n"
+             << "  \"requested_static_budget_label\":" << config.RequestedLabelCount << ",\n"
              << "  \"requested_static_budget\":" << config.RequestedStaticBudget << ",\n"
              << "  \"requested_dynamic_budget\":" << config.RequestedDynamicBudget << ",\n"
              << "  \"resolved_requested_label_count\":" << resolved.RequestedLabelCount << ",\n"
@@ -241,11 +390,13 @@ namespace
              << "  \"build_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
              << "  \"shader_set_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
              << "  \"shader_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
-             << "  \"start_utc\":\"" << UtcTimestamp() << "\",\n"
-             << "  \"end_utc\":\"\",\n"
+             << "  \"start_utc\":\"" << EscapeJson(startUtc) << "\",\n"
+             << "  \"end_utc\":\"" << EscapeJson(endUtc) << "\",\n"
              << "  \"status\":\"" << status << "\",\n"
-             << "  \"reason\":\"" << EscapeJson(reason) << "\"\n"
+             << "  \"reason\":\"" << EscapeJson(reason) << "\",\n"
+             << ResearchProvenance::ToJson(context.CurrentProvenance, 2) << "\n"
              << "}\n";
+        ResearchProvenance::WriteTextFileAtomic(path, json.str());
     }
 
     void ApplyResolvedCountsToSummary(VoxelBenchmarkProfiler::BenchmarkSummary& summary,
@@ -304,8 +455,9 @@ void BenchmarkController::StopManual(const BenchmarkControllerContext& context)
 }
 
 bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& context,
-                                         const BenchmarkSuite suite,
-                                         const uint32_t seedOverride)
+                                          const BenchmarkSuite suite,
+                                          const uint32_t seedOverride,
+                                          const uint32_t repetitionOverride)
 {
     StopAutomatic(context);
 
@@ -314,10 +466,13 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
     executionManifestStates.clear();
     automaticBenchmarkIndex = 0;
     automaticBenchmarkStopRequested = false;
+    automaticBenchmarkTerminalStatus = ResearchRunStatus::Invalid;
     activeSuite = suite;
-    automaticBenchmarkConfigs = AutomaticBenchmarkRunner::BuildConfigs(suite, seedOverride);
+    automaticBenchmarkConfigs = AutomaticBenchmarkRunner::BuildConfigs(suite, seedOverride, repetitionOverride);
     activeSuiteSeed = automaticBenchmarkConfigs.empty() ? seedOverride : automaticBenchmarkConfigs.front().RandomizationSeed;
     activeSuiteRunId = MakeRunId(suite, activeSuiteSeed);
+    activeSuiteCreatedUtc = UtcTimestamp();
+    activeSuiteStartUtc.clear();
     automaticBenchmarkSummaryPath = benchmarkDirectory /
         "paired_summary.csv";
     automaticBenchmarkStatusPath = benchmarkDirectory /
@@ -329,7 +484,7 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
     const uint32_t measuredFrames = automaticBenchmarkConfigs.empty()
                                         ? 0
                                         : automaticBenchmarkConfigs.front().MeasuredFrameCount;
-    const auto gateFailure = BuildGateFailureReason(context);
+    const auto gateFailure = BuildGateFailureReason(context, automaticBenchmarkConfigs);
     auto artifactContext = BuildArtifactContext(context, suite, activeSuiteRunId, activeSuiteSeed,
                                                 warmupFrames, measuredFrames,
                                                 automaticBenchmarkConfigs.size(),
@@ -337,7 +492,10 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
                                                 automaticBenchmarkStatusPath,
                                                 automaticBenchmarkSummaryPath,
                                                 gateFailure.empty() ? "PENDING" : "BLOCKED",
-                                                gateFailure);
+                                                gateFailure,
+                                                activeSuiteCreatedUtc,
+                                                gateFailure.empty() ? "" : activeSuiteCreatedUtc,
+                                                gateFailure.empty() ? "" : activeSuiteCreatedUtc);
     ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
     ResearchArtifactWriter::WriteEnvironment(artifactContext, context.BuildMetadata());
     ResearchArtifactWriter::WriteReproductionReadme(artifactContext);
@@ -345,7 +503,8 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
     {
         WriteSuiteStatus(automaticBenchmarkStatusPath, suite, activeSuiteRunId, activeSuiteSeed,
                          warmupFrames, measuredFrames, automaticBenchmarkConfigs.size(),
-                         "BLOCKED", gateFailure, context);
+                         "BLOCKED", gateFailure, context,
+                         activeSuiteCreatedUtc, activeSuiteCreatedUtc, activeSuiteCreatedUtc);
         artifactContext.GateStatus = "BLOCKED";
         artifactContext.GateReason = gateFailure;
         ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
@@ -355,6 +514,7 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
         ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
         BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries);
+        automaticBenchmarkTerminalStatus = ResearchRunStatus::Blocked;
         context.Log(L"\nAutomatic voxel benchmark blocked: " + ToWide(gateFailure.c_str()));
         return false;
     }
@@ -364,11 +524,15 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
         context.SetVSync(false);
 
     automaticBenchmarkActive = true;
+    activeSuiteStartUtc = activeSuiteStartUtc.empty() ? UtcTimestamp() : activeSuiteStartUtc;
     WriteSuiteStatus(automaticBenchmarkStatusPath, suite, activeSuiteRunId, activeSuiteSeed,
                      warmupFrames, measuredFrames, automaticBenchmarkConfigs.size(),
-                     "RUNNING", "", context);
+                     "RUNNING", "", context,
+                     activeSuiteCreatedUtc, activeSuiteStartUtc, "");
     artifactContext.GateStatus = "RUNNING";
     artifactContext.GateReason.clear();
+    artifactContext.StartUtc = activeSuiteStartUtc;
+    artifactContext.EndUtc.clear();
     ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
     context.Log(L"\nAutomatic voxel benchmark started");
     return true;
@@ -433,9 +597,12 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
                 {
                     state.Status = finalStatus;
                     state.Reason = finalReason;
+                    if (state.EndUtc.empty())
+                        state.EndUtc = UtcTimestamp();
                     WriteExecutionManifest(state.Path, state.Config, activeSuiteRunId,
                                            state.Resolved, context,
-                                           state.Status.c_str(), state.Reason);
+                                           state.Status.c_str(), state.Reason,
+                                           state.StartUtc, state.EndUtc);
                     break;
                 }
             }
@@ -453,7 +620,7 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
         automaticBenchmarkActive = false;
         automaticBenchmarkStopRequested = false;
         context.SetVSync(benchmarkVSyncWasEnabled);
-        FinalizeAutomaticArtifacts(context, "COMPLETE", "");
+        FinalizeAutomaticArtifacts(context, ResearchRunStatus::Complete, "");
         context.Log(L"\nAutomatic voxel benchmark finished");
         return;
     }
@@ -488,9 +655,11 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         resolved.ActualMode = "Skipped";
         resolved.Reason = "secondary hardware adapter unavailable";
         const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
+        const auto timestamp = UtcTimestamp();
         WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
-                               "INVALID", resolved.Reason);
-        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
+                               "INVALID", resolved.Reason, timestamp, timestamp);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason,
+                                           timestamp, timestamp});
         context.Log(L"\nSkipped benchmark " + ToWide(config.ModeName) +
             L" / " + ToWide(config.Preset) +
             L": secondary hardware adapter unavailable");
@@ -522,9 +691,11 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         resolved.ActualMode = "Skipped";
         resolved.Reason = reason;
         const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
+        const auto timestamp = UtcTimestamp();
         WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
-                               "INVALID", resolved.Reason);
-        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
+                               "INVALID", resolved.Reason, timestamp, timestamp);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason,
+                                           timestamp, timestamp});
         context.Log(L"\nSkipped benchmark " + ToWide(config.ModeName) +
             L" / " + ToWide(config.Preset) +
             L": " + ToWide(reason.c_str()));
@@ -575,9 +746,11 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
     const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
     if (!resolved.Passed)
     {
+        const auto timestamp = UtcTimestamp();
         WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
-                               "INVALID", resolved.Reason);
-        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
+                               "INVALID", resolved.Reason, timestamp, timestamp);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason,
+                                           timestamp, timestamp});
         VoxelBenchmarkProfiler::BenchmarkSummary skipped{};
         skipped.RequestedMode = config.ModeName;
         skipped.ActualMode = resolved.ActualMode.empty() ? "Invalid" : resolved.ActualMode;
@@ -597,11 +770,54 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         ++automaticBenchmarkIndex;
         return;
     }
-    WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "RUNNING", "");
-    executionManifestStates.push_back({manifestPath, config, resolved, "RUNNING", ""});
+    const auto coverageIt = std::find_if(
+        context.ValidationCoverage.begin(),
+        context.ValidationCoverage.end(),
+        [&](const BenchmarkValidationCoverage& coverage)
+        {
+            return coverage.Passed &&
+                coverage.ModeName == config.ModeName &&
+                coverage.ConfigHash == resolved.ResolvedConfigHash &&
+                coverage.ProtocolHash == context.ValidationProtocolHash &&
+                (!(config.TemporalInterval > 1 || config.SpatialLodEnabled) ||
+                 coverage.CaseId.find("|fidelity|") != std::string::npos);
+        });
+    if (coverageIt == context.ValidationCoverage.end())
+    {
+        const std::string reason =
+            "resolved benchmark config lacks exact matching PASS visual validation case";
+        const auto timestamp = UtcTimestamp();
+        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
+                               "INVALID", reason, timestamp, timestamp);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", reason,
+                                           timestamp, timestamp});
+        VoxelBenchmarkProfiler::BenchmarkSummary skipped{};
+        skipped.RequestedMode = config.ModeName;
+        skipped.ActualMode = resolved.ActualMode.empty() ? "Invalid" : resolved.ActualMode;
+        skipped.Preset = config.Preset;
+        ApplyResolvedCountsToSummary(skipped, config, resolved);
+        skipped.SecondaryShare = config.SecondaryShare;
+        skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
+        skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
+        skipped.PairId = config.PairId;
+        skipped.SessionId = config.SessionId;
+        skipped.BlockId = config.BlockId;
+        skipped.Repetition = config.Repetition;
+        skipped.RepetitionCount = config.RepetitionCount;
+        skipped.Valid = false;
+        skipped.SkipReason = reason;
+        automaticBenchmarkSummaries.push_back(skipped);
+        ++automaticBenchmarkIndex;
+        return;
+    }
+    const auto executionStartUtc = UtcTimestamp();
+    WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "RUNNING", "",
+                           executionStartUtc, "");
+    executionManifestStates.push_back({manifestPath, config, resolved, "RUNNING", "",
+                                       executionStartUtc, ""});
 
     const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +
-        config.Preset + "_label" + std::to_string(config.RequestedLabelCount) +
+        config.Preset + "_static_budget_label" + std::to_string(config.RequestedLabelCount) +
         "_static" + std::to_string(config.RequestedStaticBudget) +
         "_dynamic" + std::to_string(config.RequestedDynamicBudget) +
         "_share" + std::to_string(static_cast<int>(config.SecondaryShare * 100.0f)) +
@@ -623,7 +839,9 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
                                 config.RandomizationSeed))
     {
         const std::string reason = "profiler failed to start benchmark execution";
-        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "INVALID", reason);
+        const auto timestamp = UtcTimestamp();
+        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "INVALID", reason,
+                               executionStartUtc, timestamp);
         if (!executionManifestStates.empty())
         {
             auto& state = executionManifestStates.back();
@@ -631,6 +849,7 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
             {
                 state.Status = "INVALID";
                 state.Reason = reason;
+                state.EndUtc = timestamp;
             }
         }
         context.Log(L"\nFailed to start benchmark " + ToWide(config.ModeName));
@@ -666,6 +885,9 @@ void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext
                                                 automaticBenchmarkStatusPath,
                                                 automaticBenchmarkSummaryPath,
                                                 automaticBenchmarkActive ? "RUNNING" : "COMPLETE",
+                                                "",
+                                                activeSuiteCreatedUtc,
+                                                activeSuiteStartUtc,
                                                 "");
     ResearchArtifactWriter::WriteRunsCsv(artifactContext, automaticBenchmarkSummaries);
     ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
@@ -681,7 +903,7 @@ void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext
 }
 
 void BenchmarkController::FinalizeAutomaticArtifacts(const BenchmarkControllerContext& context,
-                                                     const char* status,
+                                                     const ResearchRunStatus requestedStatus,
                                                      const std::string& reason)
 {
     const uint32_t warmupFrames = automaticBenchmarkConfigs.empty()
@@ -691,9 +913,55 @@ void BenchmarkController::FinalizeAutomaticArtifacts(const BenchmarkControllerCo
                                         ? 0
                                         : automaticBenchmarkConfigs.front().MeasuredFrameCount;
 
+    ResearchRunStatus finalStatus = requestedStatus;
+    std::string finalReason = reason;
+
+    const auto endUtc = UtcTimestamp();
+
+    for (auto& state : executionManifestStates)
+    {
+        if (state.Status == "RUNNING")
+        {
+            state.Status = "INTERRUPTED";
+            state.Reason = "execution did not complete before suite finalization";
+            finalStatus = ResearchRunStatus::Interrupted;
+        }
+        if (state.EndUtc.empty() && state.Status != "RUNNING" && state.Status != "PENDING")
+            state.EndUtc = endUtc;
+        WriteExecutionManifest(state.Path, state.Config, activeSuiteRunId, state.Resolved, context,
+                               state.Status.c_str(), state.Reason,
+                               state.StartUtc, state.EndUtc);
+    }
+
+    if (requestedStatus == ResearchRunStatus::Complete)
+    {
+        ResearchStateValidationInput validation{};
+        validation.Suite = activeSuite;
+        validation.Configs = automaticBenchmarkConfigs;
+        validation.Summaries = automaticBenchmarkSummaries;
+        for (const auto& state : executionManifestStates)
+        {
+            validation.ExecutionConfigIds.push_back(state.Config.ConfigId);
+            validation.ExecutionStatuses.push_back(state.Status);
+            validation.ExecutionWarmupFrames.push_back(state.Config.WarmupFrameCount);
+            validation.ExecutionMeasuredFrames.push_back(state.Config.MeasuredFrameCount);
+            validation.ExecutionRepetitions.push_back(state.Config.Repetition);
+        }
+        const auto validationResult = ResearchProvenance::ValidateCompleteSuite(
+            validation, warmupFrames, measuredFrames);
+        finalStatus = validationResult.Status;
+        if (!validationResult.Reason.empty())
+            finalReason = validationResult.Reason;
+    }
+
+    automaticBenchmarkTerminalStatus = finalStatus;
+
     WriteSuiteStatus(automaticBenchmarkStatusPath, activeSuite, activeSuiteRunId, activeSuiteSeed,
                      warmupFrames, measuredFrames, automaticBenchmarkConfigs.size(),
-                     status, reason, context);
+                     ResearchProvenance::StatusName(finalStatus).c_str(), finalReason, context,
+                     activeSuiteCreatedUtc,
+                     activeSuiteStartUtc.empty() ? activeSuiteCreatedUtc : activeSuiteStartUtc,
+                     endUtc);
 
     auto artifactContext = BuildArtifactContext(context, activeSuite, activeSuiteRunId, activeSuiteSeed,
                                                 warmupFrames, measuredFrames,
@@ -701,19 +969,11 @@ void BenchmarkController::FinalizeAutomaticArtifacts(const BenchmarkControllerCo
                                                 benchmarkDirectory,
                                                 automaticBenchmarkStatusPath,
                                                 automaticBenchmarkSummaryPath,
-                                                status,
-                                                reason);
-
-    for (auto& state : executionManifestStates)
-    {
-        if (state.Status == "RUNNING")
-        {
-            state.Status = "INVALID";
-            state.Reason = "execution did not complete before suite finalization";
-        }
-        WriteExecutionManifest(state.Path, state.Config, activeSuiteRunId, state.Resolved, context,
-                               state.Status.c_str(), state.Reason);
-    }
+                                                ResearchProvenance::StatusName(finalStatus),
+                                                finalReason,
+                                                activeSuiteCreatedUtc,
+                                                activeSuiteStartUtc.empty() ? activeSuiteCreatedUtc : activeSuiteStartUtc,
+                                                endUtc);
 
     ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
     ResearchArtifactWriter::WriteEnvironment(artifactContext, context.BuildMetadata());

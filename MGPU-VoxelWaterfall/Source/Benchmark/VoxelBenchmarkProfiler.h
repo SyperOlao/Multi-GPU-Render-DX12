@@ -111,6 +111,7 @@ public:
         std::string GitDirtyState;
         bool D3D12DebugLayerEnabled = false;
         double CpuWaitMs = 0.0;
+        double PresentToPresentMs = 0.0;
         uint64_t TotalCrossAdapterBytes = 0;
         uint64_t ColorTransferBytes = 0;
         uint64_t DepthTransferBytes = 0;
@@ -137,6 +138,10 @@ public:
         bool VisualValidationHasResult = false;
         bool VisualValidationPassed = false;
         std::string VisualValidationRunId;
+        std::string VisualValidationCaseId;
+        std::string VisualValidationProtocolHash;
+        std::string VisualValidationConfigHash;
+        std::string VisualValidationCameraHash;
         uint64_t VisualValidationSnapshotHash = 0;
         double VisualValidationColorMAE = 0.0;
         double VisualValidationColorRMSE = 0.0;
@@ -184,7 +189,21 @@ public:
         uint32_t InvalidFrameCount = 0;
         bool Valid = true;
         std::string ValidityReason;
-        std::string SpeedupStatistic = "mean_cpu_frame_ms";
+        std::string SpeedupStatistic = "mean_present_to_present_ms";
+        double AveragePresentToPresentMs = 0.0;
+        double MedianPresentToPresentMs = 0.0;
+        double P95PresentToPresentMs = 0.0;
+        double P99PresentToPresentMs = 0.0;
+        double StdDevPresentToPresentMs = 0.0;
+        double PresentToPresentCi95HalfWidthMs = 0.0;
+        double AverageCpuSubmissionMs = 0.0;
+        double MedianCpuSubmissionMs = 0.0;
+        double P95CpuSubmissionMs = 0.0;
+        double P99CpuSubmissionMs = 0.0;
+        double StdDevCpuSubmissionMs = 0.0;
+        double AverageCpuTotalFrameMs = 0.0;
+        double MedianCpuTotalFrameMs = 0.0;
+        double StdDevCpuTotalFrameMs = 0.0;
         double AverageCpuFrameMs = 0.0;
         double MedianCpuFrameMs = 0.0;
         double P95CpuFrameMs = 0.0;
@@ -220,6 +239,10 @@ public:
         double SpeedupVsMatchingSingleGpu = 0.0;
         double Efficiency = 0.0;
         bool VisualValidationPassed = false;
+        std::string VisualValidationCaseId;
+        std::string VisualValidationProtocolHash;
+        std::string VisualValidationConfigHash;
+        std::string VisualValidationCameraHash;
         std::filesystem::path CsvPath;
     };
 
@@ -341,7 +364,7 @@ private:
         FrameMetadata Metadata{};
         std::array<RangeRecord, RangeCount> Ranges{};
         std::array<uint64_t, QueueCount> FenceValues{};
-        double CpuFrameMs = 0.0;
+        double CpuSubmissionMs = 0.0;
     };
 
     std::array<QueueContext, QueueCount> queues{};
@@ -372,7 +395,9 @@ private:
     TimingSnapshot latestTimingSnapshot{};
     bool completedSummaryReady = false;
 
-    std::vector<double> cpuFrameMsSamples;
+    std::vector<double> presentToPresentMsSamples;
+    std::vector<double> cpuSubmissionMsSamples;
+    std::vector<double> cpuTotalFrameMsSamples;
     std::vector<double> criticalPathGpuMsSamples;
     std::vector<double> gpuWorkSumMsSamples;
     std::vector<double> primaryComputeMsSamples;

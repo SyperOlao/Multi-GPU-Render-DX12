@@ -19,24 +19,27 @@ struct VoxelVisualValidationTolerances
 
 struct VoxelVisualValidationSnapshot
 {
-    uint32_t SchemaVersion = 1;
+    uint32_t SchemaVersion = 2;
+    std::string ProtocolVersion = "mgpu_voxel_visual_validation_protocol.v2";
+    std::string GeneratorVersion = "mgpu_voxel_visual_validation_generator.v2";
     uint64_t SnapshotHash = 0;
     std::string ValidationRunId;
     std::string WorkloadProfile = "MixedStaticAndDynamic";
     std::string ScenePreset = "MixedVoxelEnvironment";
-    uint32_t StaticSeed = 1337;
-    uint32_t DynamicSeed = 4242;
-    uint32_t RequestedStaticCount = 100000;
-    uint32_t ActualStaticCount = 98556;
-    uint32_t RequestedDynamicCount = 25000;
-    uint32_t ActualDynamicCount = 25000;
-    uint32_t TotalVoxelCount = 123556;
-    float StaticVoxelSize = 0.65f;
-    float DynamicVoxelSize = 0.35f;
-    uint32_t RenderWidth = 1920;
-    uint32_t RenderHeight = 1080;
-    std::string ColorFormat = "R8G8B8A8_UNORM";
-    std::string LinearDepthFormat = "R32_FLOAT";
+    uint32_t StaticSeed = 0;
+    uint32_t DynamicSeed = 0;
+    uint32_t RequestedStaticCount = 0;
+    uint32_t ActualStaticCount = 0;
+    uint32_t RequestedDynamicCount = 0;
+    uint32_t ActualDynamicCount = 0;
+    uint32_t TotalVoxelCount = 0;
+    float StaticVoxelSize = 0.0f;
+    float DynamicVoxelSize = 0.0f;
+    uint32_t RenderWidth = 0;
+    uint32_t RenderHeight = 0;
+    uint32_t SampleCount = 1;
+    std::string ColorFormat;
+    std::string LinearDepthFormat;
     double FixedDeltaTime = 1.0 / 60.0;
     uint64_t FixedStepCount = 240;
     uint32_t WarmupStepCount = 0;
@@ -58,15 +61,56 @@ struct VoxelVisualValidationSnapshot
     std::string BuildHash = "unknown";
     std::string ShaderHash = "unknown";
     std::string ShaderSetHash = "unknown";
+    std::string AdapterPairIdentity;
+    std::string PrimaryDriverVersion;
+    std::string SecondaryDriverVersion;
+    std::string ProtocolHash = "unknown";
+    std::string CaseConfigHash = "unknown";
+    std::string CameraHash = "unknown";
 };
 
 struct VoxelVisualValidationCase
 {
     std::string CaseId;
+    std::string ValidationKind = "implementation_equivalence";
+    std::string ModeFamily = "Full";
+    std::string Suite = "Full";
+    std::string Preset = "Low";
+    std::string ConfigKey;
+    uint32_t RequestedLabelCount = 0;
+    uint32_t RequestedStaticBudget = 0;
+    uint32_t RequestedDynamicBudget = 0;
+    uint32_t RandomizationSeed = 0;
+    float SecondaryShare = 0.5f;
     VoxelExecutionMode SingleMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode MultiMode = VoxelExecutionMode::MultiGpuFull;
+    VoxelExecutionMode ReferenceMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode CandidateMode = VoxelExecutionMode::MultiGpuFull;
     bool SpatialLodEnabled = false;
     uint32_t TemporalInterval = 1;
+    uint64_t FixedStepCount = 240;
+    std::string CheckpointId = "steady_240";
+    uint32_t CheckpointIndex = 0;
+    std::string CameraMode = "FixedOverview";
+    float CameraPosition[3] = {};
+    float CameraTarget[3] = {};
+    float View[16] = {};
+    float Projection[16] = {};
+    float NearZ = 0.25f;
+    float FarZ = 900.0f;
+    uint32_t RenderWidth = 0;
+    uint32_t RenderHeight = 0;
+    uint32_t SampleCount = 1;
+    std::string ColorFormat;
+    std::string LinearDepthFormat;
+    uint32_t ActualStaticCount = 0;
+    uint32_t ActualDynamicCount = 0;
+    uint32_t ActualTotalCount = 0;
+    std::string ReferenceConfigHash;
+    std::string CandidateConfigHash;
+    std::string ConfigHash;
+    std::string CameraHash;
+    std::string ProtocolHash;
 };
 
 struct VoxelValidationTileStats
@@ -98,8 +142,23 @@ struct VoxelVisualValidationComparisonInput
     std::string BlockedReason;
     VoxelExecutionMode ActualSingleMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode RequestedReferenceMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode ActualReferenceMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode RequestedCandidateMode = VoxelExecutionMode::MultiGpuFull;
+    VoxelExecutionMode ActualCandidateMode = VoxelExecutionMode::SingleGpuFull;
     uint32_t RenderWidth = 0;
     uint32_t RenderHeight = 0;
+    uint32_t SampleCount = 1;
+    std::string ColorFormat;
+    std::string LinearDepthFormat;
+    uint32_t ActualStaticCount = 0;
+    uint32_t ActualDynamicCount = 0;
+    uint32_t ActualTotalCount = 0;
+    std::string ValidationKind;
+    std::string CheckpointId;
+    std::string ProtocolHash;
+    std::string ReferenceConfigHash;
+    std::string CandidateConfigHash;
     std::string ConfigHash;
     std::string CameraHash;
     std::string AdapterPairIdentity;
@@ -120,8 +179,19 @@ struct VoxelVisualValidationCaseResult
     VoxelExecutionMode ActualSingleMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode RequestedMultiMode = VoxelExecutionMode::MultiGpuFull;
     VoxelExecutionMode ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode RequestedReferenceMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode ActualReferenceMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode RequestedCandidateMode = VoxelExecutionMode::MultiGpuFull;
+    VoxelExecutionMode ActualCandidateMode = VoxelExecutionMode::SingleGpuFull;
     VoxelSpatialLodMode SpatialLodMode = VoxelSpatialLodMode::Off;
     uint32_t TemporalInterval = 1;
+    std::string ValidationKind;
+    std::string ModeFamily;
+    std::string ConfigKey;
+    std::string CheckpointId;
+    std::string ProtocolHash;
+    std::string ReferenceConfigHash;
+    std::string CandidateConfigHash;
     uint32_t TotalVoxelCount = 0;
     uint32_t ActualStaticCount = 0;
     uint32_t ActualDynamicCount = 0;
@@ -197,6 +267,8 @@ public:
     VoxelVisualValidationMetrics RunDeterministicSuite(
         const VoxelVisualValidationConfig& config,
         const std::filesystem::path& outputDirectory) const;
+    static std::string BuildCanonicalProtocolJson(const VoxelVisualValidationConfig& config);
+    static std::string BuildProtocolHash(const VoxelVisualValidationConfig& config);
 
 private:
     static uint64_t ComputeSnapshotHash(const VoxelVisualValidationSnapshot& snapshot);

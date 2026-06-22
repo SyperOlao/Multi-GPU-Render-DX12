@@ -46,6 +46,17 @@ namespace
         return text.find(flag) != std::string::npos;
     }
 
+    bool IsResearchCommand(const char* commandLine)
+    {
+        return HasCommandLineFlag(commandLine, "--run-validation-once") ||
+            HasCommandLineFlag(commandLine, "--verify-two-adapter") ||
+            HasCommandLineFlag(commandLine, "--benchmark-smoke") ||
+            HasCommandLineFlag(commandLine, "--benchmark-full") ||
+            HasCommandLineFlag(commandLine, "--profile-sweep") ||
+            HasCommandLineFlag(commandLine, "--memory-soak") ||
+            HasCommandLineFlag(commandLine, "--memory-rebuild-stress");
+    }
+
     uint32_t ReadCommandLineUint(const char* commandLine, const char* key, const uint32_t fallback)
     {
         if (!commandLine || !key)
@@ -98,7 +109,8 @@ namespace
         return text;
     }
 
-    void WriteStartupBlockedValidationArtifacts(const std::string& reason)
+    void WriteStartupBlockedValidationArtifacts(const std::string& reason,
+                                                const std::filesystem::path& requestedOutputDirectory = {})
     {
         VoxelVisualValidationConfig config{};
         config.Snapshot.ValidationRunId = "startup_blocked";
@@ -121,11 +133,16 @@ namespace
         try
         {
             VoxelVisualValidationRunner runner;
-            runner.RunDeterministicSuite(config, GetExecutableDirectory() / "VoxelValidation");
+            runner.RunDeterministicSuite(
+                config,
+                requestedOutputDirectory.empty() ? GetExecutableDirectory() / "VoxelValidation"
+                                                 : requestedOutputDirectory);
         }
         catch (...)
         {
-            const auto outputDirectory = GetExecutableDirectory() / "VoxelValidation";
+            const auto outputDirectory = requestedOutputDirectory.empty()
+                                             ? GetExecutableDirectory() / "VoxelValidation"
+                                             : requestedOutputDirectory;
             std::filesystem::create_directories(outputDirectory);
             std::ofstream json(outputDirectory / "voxel_visual_validation.json", std::ios::out | std::ios::trunc);
             json << "{\n"
@@ -156,21 +173,25 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
         {
             VoxelWaterfallApp theApp(hInstance);
             if (!theApp.Initialize())
-                return 0;
+                return IsResearchCommand(cmdLine) ? 2 : 0;
 
             if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
-                result = theApp.RunValidationSuiteOnce();
+                result = theApp.RunValidationSuiteOnce(
+                    ReadCommandLinePath(cmdLine, "--validation-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--verify-two-adapter"))
-                result = theApp.RunTwoAdapterVerificationOnce();
+                result = theApp.RunTwoAdapterVerificationOnce(
+                    ReadCommandLinePath(cmdLine, "--two-adapter-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--benchmark-smoke"))
                 result = theApp.RunAutomaticBenchmarkSuiteOnce(
                     BenchmarkSuite::Smoke,
                     ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
+                    ReadCommandLineUint(cmdLine, "--benchmark-repetitions=", 0),
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--benchmark-full"))
                 result = theApp.RunAutomaticBenchmarkSuiteOnce(
                     BenchmarkSuite::Full,
                     ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
+                    ReadCommandLineUint(cmdLine, "--benchmark-repetitions=", 0),
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--profile-sweep"))
                 result = theApp.RunProfileSweepOnce(
@@ -198,9 +219,13 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
     {
         if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
         {
-            WriteStartupBlockedValidationArtifacts(NarrowForArtifact(e.ToString()));
+            WriteStartupBlockedValidationArtifacts(
+                NarrowForArtifact(e.ToString()),
+                ReadCommandLinePath(cmdLine, "--validation-output-dir="));
             return 3;
         }
+        if (IsResearchCommand(cmdLine))
+            return 2;
         MessageBox(nullptr, e.ToString().c_str(), L"HR Failed", MB_OK);
         return 0;
     }
@@ -208,9 +233,13 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
     {
         if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
         {
-            WriteStartupBlockedValidationArtifacts(e.what());
+            WriteStartupBlockedValidationArtifacts(
+                e.what(),
+                ReadCommandLinePath(cmdLine, "--validation-output-dir="));
             return 3;
         }
+        if (IsResearchCommand(cmdLine))
+            return 2;
         MessageBoxA(nullptr, e.what(), "Unhandled exception", MB_OK);
         return 0;
     }

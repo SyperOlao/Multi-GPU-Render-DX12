@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Source/Benchmark/AutomaticBenchmarkRunner.h"
+#include "Source/Benchmark/ResearchProvenance.h"
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 
 #include <filesystem>
@@ -23,6 +24,10 @@ struct BenchmarkResearchArtifactContext
     std::string TwoGpuAdapterPairIdentity;
     std::string GateStatus;
     std::string GateReason;
+    std::string CreatedUtc;
+    std::string StartUtc;
+    std::string EndUtc;
+    ResearchProvenanceRecord Provenance;
     std::filesystem::path OutputDirectory;
     std::filesystem::path StatusPath;
     std::filesystem::path SummaryPath;

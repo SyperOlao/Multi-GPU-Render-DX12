@@ -1,0 +1,23 @@
+{
+  "schema": "mgpu_voxel_execution_manifest.v2",
+  "fixture_only": true,
+  "note": "Fixture/test only. INVALID execution contains no performance results.",
+  "suite": "Smoke",
+  "run_id": "fixture_invalid_run",
+  "status": "INVALID",
+  "reason": "requested mode differs from actual mode",
+  "config_id": "fixture_multi_full_lod_off",
+  "session_id": "session_000",
+  "pair_id": "pair_000",
+  "block_id": "block_000",
+  "repetition": 0,
+  "randomized_order_index": 1,
+  "block_order_index": 0,
+  "pair_member_order": 1,
+  "randomization_seed": 123,
+  "warmup_frames": 30,
+  "measured_frames": 120,
+  "resolved_config_hash": "fixture_resolved_config_hash",
+  "start_utc": "2026-06-22T00:00:01Z",
+  "end_utc": "2026-06-22T00:00:02Z"
+}

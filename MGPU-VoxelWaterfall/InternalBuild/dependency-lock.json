@@ -1,0 +1,24 @@
+{
+  "schema": "mgpu_voxel_dependency_lock.v1",
+  "visual_studio": {
+    "major_version": "17",
+    "required_workload": "Microsoft.VisualStudio.Workload.NativeDesktop",
+    "msvc_toolset": "14.44.35207",
+    "platform_toolset": "v143",
+    "windows_sdk": "10.0.26100.0"
+  },
+  "submodules": {
+    "Submodule/imgui": {
+      "url": "https://github.com/ocornut/imgui.git",
+      "commit": "9a5c070308ae97bf0f884b071d0262ae1cad26f7",
+      "license": "MIT"
+    }
+  },
+  "nuget_packages": {
+    "assimp-v143": "5.4.3",
+    "directxmesh_uwp": "2025.3.25.2",
+    "directxtex_uwp": "2025.3.25.2",
+    "directxtk12_uwp": "2025.3.21.3",
+    "WinPixEventRuntime": "1.0.240308001"
+  }
+}

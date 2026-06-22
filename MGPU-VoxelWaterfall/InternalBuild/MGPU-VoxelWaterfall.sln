@@ -1,0 +1,48 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.12.35527.113
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Common", "..\..\Common\Common.vcxproj", "{AF7045DC-B376-4CF0-955B-E52FCF1C1385}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Allocator", "..\..\Allocator\Allocator.vcxproj", "{ECB7FFAE-36AE-4FCA-80A7-9D95CDF1FB43}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Graphics", "..\..\Graphics\Graphics.vcxproj", "{B68F46C2-46C5-4BA6-8BCF-B908B34D653D}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Utils", "..\..\Utils\Utils.vcxproj", "{5540756E-9246-4B5B-8B62-0CEF11BD2BA6}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MGPU-VoxelWaterfall", "..\MGPU-VoxelWaterfall.vcxproj", "{F5020190-6B44-4AD4-B985-1BEB0F646AFB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AF7045DC-B376-4CF0-955B-E52FCF1C1385}.Debug|x64.ActiveCfg = Debug|x64
+		{AF7045DC-B376-4CF0-955B-E52FCF1C1385}.Debug|x64.Build.0 = Debug|x64
+		{AF7045DC-B376-4CF0-955B-E52FCF1C1385}.Release|x64.ActiveCfg = Release|x64
+		{AF7045DC-B376-4CF0-955B-E52FCF1C1385}.Release|x64.Build.0 = Release|x64
+		{ECB7FFAE-36AE-4FCA-80A7-9D95CDF1FB43}.Debug|x64.ActiveCfg = Debug|x64
+		{ECB7FFAE-36AE-4FCA-80A7-9D95CDF1FB43}.Debug|x64.Build.0 = Debug|x64
+		{ECB7FFAE-36AE-4FCA-80A7-9D95CDF1FB43}.Release|x64.ActiveCfg = Release|x64
+		{ECB7FFAE-36AE-4FCA-80A7-9D95CDF1FB43}.Release|x64.Build.0 = Release|x64
+		{B68F46C2-46C5-4BA6-8BCF-B908B34D653D}.Debug|x64.ActiveCfg = Debug|x64
+		{B68F46C2-46C5-4BA6-8BCF-B908B34D653D}.Debug|x64.Build.0 = Debug|x64
+		{B68F46C2-46C5-4BA6-8BCF-B908B34D653D}.Release|x64.ActiveCfg = Release|x64
+		{B68F46C2-46C5-4BA6-8BCF-B908B34D653D}.Release|x64.Build.0 = Release|x64
+		{5540756E-9246-4B5B-8B62-0CEF11BD2BA6}.Debug|x64.ActiveCfg = Debug|x64
+		{5540756E-9246-4B5B-8B62-0CEF11BD2BA6}.Debug|x64.Build.0 = Debug|x64
+		{5540756E-9246-4B5B-8B62-0CEF11BD2BA6}.Release|x64.ActiveCfg = Release|x64
+		{5540756E-9246-4B5B-8B62-0CEF11BD2BA6}.Release|x64.Build.0 = Release|x64
+		{F5020190-6B44-4AD4-B985-1BEB0F646AFB}.Debug|x64.ActiveCfg = Debug|x64
+		{F5020190-6B44-4AD4-B985-1BEB0F646AFB}.Debug|x64.Build.0 = Debug|x64
+		{F5020190-6B44-4AD4-B985-1BEB0F646AFB}.Release|x64.ActiveCfg = Release|x64
+		{F5020190-6B44-4AD4-B985-1BEB0F646AFB}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {3F7ED116-48D5-4C40-8EC1-2D417AC64D23}
+	EndGlobalSection
+EndGlobal

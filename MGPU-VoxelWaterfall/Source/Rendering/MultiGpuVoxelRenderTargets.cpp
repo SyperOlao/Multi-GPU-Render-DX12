@@ -1,6 +1,7 @@
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 
 #include "GDevice.h"
+#include "d3dUtil.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -254,6 +255,30 @@ bool MultiGpuVoxelRenderTargets::Initialize(
         const auto compositeClear = CD3DX12_CLEAR_VALUE(desc.ColorFormat, SecondaryColorClear);
         frame.PrimaryCompositeColor = GTexture(primaryDevice, compositeColorDesc, compositeColorName,
                                                TextureUsage::RenderTarget, &compositeClear);
+
+        D3D12_QUERY_HEAP_DESC pipelineStatsHeapDesc{};
+        pipelineStatsHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+        pipelineStatsHeapDesc.Count = 1;
+        pipelineStatsHeapDesc.NodeMask = secondaryDevice->GetNodeMask();
+        ThrowIfFailed(secondaryDevice->GetDXDevice()->CreateQueryHeap(
+            &pipelineStatsHeapDesc,
+            IID_PPV_ARGS(&frame.SecondaryPipelineStatsQueryHeap)));
+        frame.SecondaryPipelineStatsReadback = GResource(
+            secondaryDevice,
+            CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS)),
+            FrameName(L"SecondaryPipelineStatsReadback", frameIndex),
+            nullptr,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
+
+        frame.ExpectedLocalToSharedColorBytes =
+            CopyableTextureBytes(secondaryDevice, frame.SecondaryLocalColor.GetD3D12ResourceDesc());
+        frame.ExpectedLocalToSharedDepthBytes =
+            CopyableTextureBytes(secondaryDevice, frame.SecondaryLocalLinearDepth.GetD3D12ResourceDesc());
+        frame.ExpectedSharedToLocalColorBytes =
+            CopyableTextureBytes(primaryDevice, frame.PrimaryReceivedSecondaryColor.GetD3D12ResourceDesc());
+        frame.ExpectedSharedToLocalDepthBytes =
+            CopyableTextureBytes(primaryDevice, frame.PrimaryReceivedSecondaryLinearDepth.GetD3D12ResourceDesc());
 
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
         rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;

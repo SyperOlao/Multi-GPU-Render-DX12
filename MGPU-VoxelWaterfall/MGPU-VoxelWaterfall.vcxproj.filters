@@ -76,6 +76,7 @@
     <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\ResearchProvenance.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\ResearchArtifactWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
     <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
@@ -113,6 +114,7 @@
     <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkController.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\ResearchProvenance.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\ResearchArtifactWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
     <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>

@@ -1,5 +1,7 @@
 #include "Source/Validation/VoxelVisualValidationRunner.h"
 
+#include "Source/Benchmark/ResearchProvenance.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -76,28 +78,6 @@ namespace
         return escaped;
     }
 
-    uint64_t Fnv1aAppendBytes(uint64_t hash, const void* data, const size_t byteCount)
-    {
-        const auto* bytes = static_cast<const uint8_t*>(data);
-        for (size_t i = 0; i < byteCount; ++i)
-        {
-            hash ^= bytes[i];
-            hash *= 1099511628211ull;
-        }
-        return hash;
-    }
-
-    uint64_t Fnv1aAppendString(uint64_t hash, const std::string& value)
-    {
-        return Fnv1aAppendBytes(hash, value.data(), value.size());
-    }
-
-    template <typename T>
-    uint64_t Fnv1aAppendValue(uint64_t hash, const T& value)
-    {
-        return Fnv1aAppendBytes(hash, &value, sizeof(T));
-    }
-
     std::string HashHex(const uint64_t hash)
     {
         std::ostringstream stream;
@@ -129,6 +109,18 @@ namespace
             json << values[i];
         }
         json << "]" << suffix << "\n";
+    }
+
+    void AppendJsonMatrix(std::ostringstream& json, const char* name, const float values[16], const char* suffix)
+    {
+        json << "\"" << name << "\":[";
+        for (uint32_t i = 0; i < 16; ++i)
+        {
+            if (i != 0)
+                json << ",";
+            json << values[i];
+        }
+        json << "]" << suffix;
     }
 
     const VoxelVisualValidationComparisonInput* FindComparison(
@@ -222,83 +214,182 @@ static_assert(sizeof(VoxelValidationTileStats) == 64,
 
 std::vector<VoxelVisualValidationCase> VoxelVisualValidationConfig::DefaultCases()
 {
-    return {
-        {
-            "full_lod_off",
-            VoxelExecutionMode::SingleGpuFull,
-            VoxelExecutionMode::MultiGpuFull,
-            false,
-            1u
-        },
-        {
-            "full_lod_on",
-            VoxelExecutionMode::SingleGpuFull,
-            VoxelExecutionMode::MultiGpuFull,
-            true,
-            1u
-        },
-        {
-            "temporal_lod_off",
-            VoxelExecutionMode::SingleGpuTemporalDecimation,
-            VoxelExecutionMode::MultiGpuTemporalDecimation,
-            false,
-            2u
-        },
-        {
-            "temporal_lod_on",
-            VoxelExecutionMode::SingleGpuTemporalDecimation,
-            VoxelExecutionMode::MultiGpuTemporalDecimation,
-            true,
-            2u
-        }
+    std::vector<VoxelVisualValidationCase> cases;
+    auto append = [&](const char* caseId,
+                      const VoxelExecutionMode singleMode,
+                      const VoxelExecutionMode multiMode,
+                      const bool lod,
+                      const uint32_t interval)
+    {
+        VoxelVisualValidationCase validationCase{};
+        validationCase.CaseId = caseId;
+        validationCase.ConfigKey = caseId;
+        validationCase.ModeFamily = interval > 1 ? "Temporal" : "Full";
+        validationCase.SingleMode = singleMode;
+        validationCase.MultiMode = multiMode;
+        validationCase.ReferenceMode = singleMode;
+        validationCase.CandidateMode = multiMode;
+        validationCase.SpatialLodEnabled = lod;
+        validationCase.TemporalInterval = interval;
+        validationCase.CheckpointId = "legacy_default";
+        cases.push_back(std::move(validationCase));
     };
+    append("full_lod_off",
+           VoxelExecutionMode::SingleGpuFull,
+           VoxelExecutionMode::MultiGpuFull,
+           false,
+           1u);
+    append("full_lod_on",
+           VoxelExecutionMode::SingleGpuFull,
+           VoxelExecutionMode::MultiGpuFull,
+           true,
+           1u);
+    append("temporal_lod_off",
+           VoxelExecutionMode::SingleGpuTemporalDecimation,
+           VoxelExecutionMode::MultiGpuTemporalDecimation,
+           false,
+           2u);
+    append("temporal_lod_on",
+           VoxelExecutionMode::SingleGpuTemporalDecimation,
+           VoxelExecutionMode::MultiGpuTemporalDecimation,
+           true,
+           2u);
+    return cases;
+}
+
+std::string VoxelVisualValidationRunner::BuildCanonicalProtocolJson(
+    const VoxelVisualValidationConfig& config)
+{
+    std::ostringstream json;
+    json.imbue(std::locale::classic());
+    json << std::fixed << std::setprecision(8);
+    const auto& snapshot = config.Snapshot;
+    json << "{";
+    json << "\"generator_version\":\"" << EscapeJson(snapshot.GeneratorVersion) << "\",";
+    json << "\"protocol_version\":\"" << EscapeJson(snapshot.ProtocolVersion) << "\",";
+    json << "\"runtime\":{";
+    json << "\"adapter_pair\":\"" << EscapeJson(snapshot.AdapterPairIdentity) << "\",";
+    json << "\"build_sha256\":\"" << EscapeJson(snapshot.BuildHash) << "\",";
+    json << "\"color_format\":\"" << EscapeJson(snapshot.ColorFormat) << "\",";
+    json << "\"depth_format\":\"" << EscapeJson(snapshot.LinearDepthFormat) << "\",";
+    json << "\"driver_primary\":\"" << EscapeJson(snapshot.PrimaryDriverVersion) << "\",";
+    json << "\"driver_secondary\":\"" << EscapeJson(snapshot.SecondaryDriverVersion) << "\",";
+    json << "\"render_height\":" << snapshot.RenderHeight << ",";
+    json << "\"render_width\":" << snapshot.RenderWidth << ",";
+    json << "\"sample_count\":" << snapshot.SampleCount << ",";
+    json << "\"shader_set_sha256\":\"" << EscapeJson(snapshot.ShaderSetHash) << "\"},";
+    json << "\"tolerances\":{";
+    json << "\"color\":" << config.Tolerances.ColorTolerance << ",";
+    json << "\"depth\":" << config.Tolerances.DepthTolerance << ",";
+    json << "\"max_color_mismatch_percent\":" << config.Tolerances.MaxColorMismatchPercent << ",";
+    json << "\"max_combined_mismatch_percent\":" << config.Tolerances.MaxCombinedMismatchPercent << ",";
+    json << "\"max_depth_mismatch_percent\":" << config.Tolerances.MaxDepthMismatchPercent << ",";
+    json << "\"valid_depth_max\":" << config.Tolerances.ValidDepthMax << "},";
+    json << "\"cases\":[";
+    for (size_t i = 0; i < config.Cases.size(); ++i)
+    {
+        const auto& validationCase = config.Cases[i];
+        if (i != 0)
+            json << ",";
+        json << "{";
+        json << "\"actual_dynamic_count\":" << validationCase.ActualDynamicCount << ",";
+        json << "\"actual_static_count\":" << validationCase.ActualStaticCount << ",";
+        json << "\"actual_total_count\":" << validationCase.ActualTotalCount << ",";
+        json << "\"camera_hash\":\"" << EscapeJson(validationCase.CameraHash) << "\",";
+        json << "\"camera_mode\":\"" << EscapeJson(validationCase.CameraMode) << "\",";
+        json << "\"case_id\":\"" << EscapeJson(validationCase.CaseId) << "\",";
+        json << "\"candidate_config_hash\":\"" << EscapeJson(validationCase.CandidateConfigHash) << "\",";
+        json << "\"candidate_mode\":\"" << EscapeJson(ModeName(validationCase.CandidateMode)) << "\",";
+        json << "\"checkpoint_id\":\"" << EscapeJson(validationCase.CheckpointId) << "\",";
+        json << "\"checkpoint_index\":" << validationCase.CheckpointIndex << ",";
+        json << "\"color_format\":\"" << EscapeJson(validationCase.ColorFormat) << "\",";
+        json << "\"config_hash\":\"" << EscapeJson(validationCase.ConfigHash) << "\",";
+        json << "\"config_key\":\"" << EscapeJson(validationCase.ConfigKey) << "\",";
+        json << "\"depth_format\":\"" << EscapeJson(validationCase.LinearDepthFormat) << "\",";
+        json << "\"fixed_step_count\":" << validationCase.FixedStepCount << ",";
+        json << "\"kind\":\"" << EscapeJson(validationCase.ValidationKind) << "\",";
+        json << "\"lod_enabled\":" << BoolText(validationCase.SpatialLodEnabled) << ",";
+        json << "\"mode_family\":\"" << EscapeJson(validationCase.ModeFamily) << "\",";
+        json << "\"preset\":\"" << EscapeJson(validationCase.Preset) << "\",";
+        json << "\"randomization_seed\":" << validationCase.RandomizationSeed << ",";
+        json << "\"reference_config_hash\":\"" << EscapeJson(validationCase.ReferenceConfigHash) << "\",";
+        json << "\"reference_mode\":\"" << EscapeJson(ModeName(validationCase.ReferenceMode)) << "\",";
+        json << "\"render_height\":" << validationCase.RenderHeight << ",";
+        json << "\"render_width\":" << validationCase.RenderWidth << ",";
+        json << "\"requested_dynamic_budget\":" << validationCase.RequestedDynamicBudget << ",";
+        json << "\"requested_label_count\":" << validationCase.RequestedLabelCount << ",";
+        json << "\"requested_static_budget\":" << validationCase.RequestedStaticBudget << ",";
+        json << "\"sample_count\":" << validationCase.SampleCount << ",";
+        json << "\"secondary_share\":" << validationCase.SecondaryShare << ",";
+        json << "\"suite\":\"" << EscapeJson(validationCase.Suite) << "\",";
+        json << "\"temporal_interval\":" << validationCase.TemporalInterval << ",";
+        AppendJsonMatrix(json, "view_matrix", validationCase.View, ",");
+        AppendJsonMatrix(json, "projection_matrix", validationCase.Projection, "");
+        json << "}";
+    }
+    json << "]}";
+    return json.str();
+}
+
+std::string VoxelVisualValidationRunner::BuildProtocolHash(
+    const VoxelVisualValidationConfig& config)
+{
+    return ResearchProvenance::Sha256Hex(BuildCanonicalProtocolJson(config));
 }
 
 uint64_t VoxelVisualValidationRunner::ComputeSnapshotHash(const VoxelVisualValidationSnapshot& snapshot)
 {
-    uint64_t hash = 1469598103934665603ull;
-    hash = Fnv1aAppendValue(hash, snapshot.SchemaVersion);
-    hash = Fnv1aAppendString(hash, snapshot.WorkloadProfile);
-    hash = Fnv1aAppendString(hash, snapshot.ScenePreset);
-    hash = Fnv1aAppendValue(hash, snapshot.StaticSeed);
-    hash = Fnv1aAppendValue(hash, snapshot.DynamicSeed);
-    hash = Fnv1aAppendValue(hash, snapshot.RequestedStaticCount);
-    hash = Fnv1aAppendValue(hash, snapshot.ActualStaticCount);
-    hash = Fnv1aAppendValue(hash, snapshot.RequestedDynamicCount);
-    hash = Fnv1aAppendValue(hash, snapshot.ActualDynamicCount);
-    hash = Fnv1aAppendValue(hash, snapshot.TotalVoxelCount);
-    hash = Fnv1aAppendValue(hash, snapshot.StaticVoxelSize);
-    hash = Fnv1aAppendValue(hash, snapshot.DynamicVoxelSize);
-    hash = Fnv1aAppendValue(hash, snapshot.RenderWidth);
-    hash = Fnv1aAppendValue(hash, snapshot.RenderHeight);
-    hash = Fnv1aAppendString(hash, snapshot.ColorFormat);
-    hash = Fnv1aAppendString(hash, snapshot.LinearDepthFormat);
-    hash = Fnv1aAppendValue(hash, snapshot.FixedDeltaTime);
-    hash = Fnv1aAppendValue(hash, snapshot.FixedStepCount);
-    hash = Fnv1aAppendValue(hash, snapshot.WarmupStepCount);
-    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Mode);
-    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Lod0Distance);
-    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Lod1Distance);
-    hash = Fnv1aAppendValue(hash, snapshot.SpatialLod.Hysteresis);
-    hash = Fnv1aAppendValue(hash, snapshot.TemporalPolicy);
-    hash = Fnv1aAppendValue(hash, snapshot.TemporalInterval);
-    hash = Fnv1aAppendValue(hash, snapshot.SecondaryShare);
-    hash = Fnv1aAppendValue(hash, snapshot.PartitionStrategy);
-    hash = Fnv1aAppendValue(hash, snapshot.LoadBalanceScenario);
-    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Width);
-    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Height);
-    hash = Fnv1aAppendValue(hash, snapshot.ChunkSize.Depth);
-    hash = Fnv1aAppendValue(hash, snapshot.RequestedExecutionMode);
-    hash = Fnv1aAppendBytes(hash, snapshot.View, sizeof(snapshot.View));
-    hash = Fnv1aAppendBytes(hash, snapshot.Projection, sizeof(snapshot.Projection));
-    hash = Fnv1aAppendValue(hash, snapshot.NearZ);
-    hash = Fnv1aAppendValue(hash, snapshot.FarZ);
-    hash = Fnv1aAppendString(hash, snapshot.LightingPreset);
-    hash = Fnv1aAppendValue(hash, snapshot.DynamicShadowsEnabled);
-    hash = Fnv1aAppendString(hash, snapshot.Background);
-    hash = Fnv1aAppendString(hash, snapshot.BuildHash);
-    hash = Fnv1aAppendString(hash, snapshot.ShaderSetHash);
-    return hash;
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::fixed << std::setprecision(8)
+           << "{\"adapter_pair\":\"" << EscapeJson(snapshot.AdapterPairIdentity)
+           << "\",\"actual_dynamic_count\":" << snapshot.ActualDynamicCount
+           << ",\"actual_static_count\":" << snapshot.ActualStaticCount
+           << ",\"background\":\"" << EscapeJson(snapshot.Background)
+           << "\",\"build_hash\":\"" << EscapeJson(snapshot.BuildHash)
+           << "\",\"chunk\":[" << snapshot.ChunkSize.Width << ',' << snapshot.ChunkSize.Height
+           << ',' << snapshot.ChunkSize.Depth << ']'
+           << ",\"color_format\":\"" << EscapeJson(snapshot.ColorFormat)
+           << "\",\"dynamic_seed\":" << snapshot.DynamicSeed
+           << ",\"dynamic_shadows\":" << (snapshot.DynamicShadowsEnabled ? "true" : "false")
+           << ",\"dynamic_voxel_size\":" << snapshot.DynamicVoxelSize
+           << ",\"far_z\":" << snapshot.FarZ
+           << ",\"fixed_delta_time\":" << snapshot.FixedDeltaTime
+           << ",\"fixed_step_count\":" << snapshot.FixedStepCount
+           << ",\"generator_version\":\"" << EscapeJson(snapshot.GeneratorVersion)
+           << "\",\"lighting\":\"" << EscapeJson(snapshot.LightingPreset)
+           << "\",\"linear_depth_format\":\"" << EscapeJson(snapshot.LinearDepthFormat)
+           << "\",\"lod\":[" << static_cast<uint32_t>(snapshot.SpatialLod.Mode)
+           << ',' << snapshot.SpatialLod.Lod0Distance
+           << ',' << snapshot.SpatialLod.Lod1Distance
+           << ',' << snapshot.SpatialLod.Hysteresis << ']'
+           << ",\"near_z\":" << snapshot.NearZ
+           << ",\"partition_strategy\":" << static_cast<uint32_t>(snapshot.PartitionStrategy)
+           << ",\"projection\":[";
+    for (uint32_t i = 0; i < 16; ++i)
+        stream << (i == 0 ? "" : ",") << snapshot.Projection[i];
+    stream << "],\"protocol_version\":\"" << EscapeJson(snapshot.ProtocolVersion)
+           << "\",\"render_height\":" << snapshot.RenderHeight
+           << ",\"render_width\":" << snapshot.RenderWidth
+           << ",\"requested_dynamic_count\":" << snapshot.RequestedDynamicCount
+           << ",\"requested_execution_mode\":" << static_cast<uint32_t>(snapshot.RequestedExecutionMode)
+           << ",\"requested_static_count\":" << snapshot.RequestedStaticCount
+           << ",\"schema_version\":" << snapshot.SchemaVersion
+           << ",\"scene_preset\":\"" << EscapeJson(snapshot.ScenePreset)
+           << "\",\"secondary_share\":" << snapshot.SecondaryShare
+           << ",\"shader_set_hash\":\"" << EscapeJson(snapshot.ShaderSetHash)
+           << "\",\"static_seed\":" << snapshot.StaticSeed
+           << ",\"static_voxel_size\":" << snapshot.StaticVoxelSize
+           << ",\"temporal_interval\":" << snapshot.TemporalInterval
+           << ",\"temporal_policy\":" << static_cast<uint32_t>(snapshot.TemporalPolicy)
+           << ",\"total_voxel_count\":" << snapshot.TotalVoxelCount
+           << ",\"view\":[";
+    for (uint32_t i = 0; i < 16; ++i)
+        stream << (i == 0 ? "" : ",") << snapshot.View[i];
+    stream << "],\"warmup_step_count\":" << snapshot.WarmupStepCount
+           << ",\"workload_profile\":\"" << EscapeJson(snapshot.WorkloadProfile) << "\"}";
+    const auto digest = ResearchProvenance::Sha256Hex(stream.str());
+    return std::stoull(digest.substr(0, 16), nullptr, 16);
 }
 
 VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
@@ -339,10 +430,23 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
         result.CaseId = validationCase.CaseId;
         result.ValidationRunId = snapshot.ValidationRunId;
         result.SnapshotHash = snapshot.SnapshotHash;
+        result.ValidationKind = validationCase.ValidationKind;
+        result.ModeFamily = validationCase.ModeFamily;
+        result.ConfigKey = validationCase.ConfigKey;
+        result.CheckpointId = validationCase.CheckpointId;
+        result.ProtocolHash = validationCase.ProtocolHash.empty()
+                                  ? snapshot.ProtocolHash
+                                  : validationCase.ProtocolHash;
+        result.ReferenceConfigHash = validationCase.ReferenceConfigHash;
+        result.CandidateConfigHash = validationCase.CandidateConfigHash;
         result.RequestedSingleMode = validationCase.SingleMode;
         result.ActualSingleMode = validationCase.SingleMode;
         result.RequestedMultiMode = validationCase.MultiMode;
         result.ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+        result.RequestedReferenceMode = validationCase.ReferenceMode;
+        result.ActualReferenceMode = validationCase.ReferenceMode;
+        result.RequestedCandidateMode = validationCase.CandidateMode;
+        result.ActualCandidateMode = VoxelExecutionMode::SingleGpuFull;
         result.SpatialLodMode = validationCase.SpatialLodEnabled
                                     ? VoxelSpatialLodMode::ThreeLevel
                                     : VoxelSpatialLodMode::Off;
@@ -354,6 +458,8 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
         {
             result.ActualSingleMode = comparison->ActualSingleMode;
             result.ActualMultiMode = comparison->ActualMultiMode;
+            result.ActualReferenceMode = comparison->ActualReferenceMode;
+            result.ActualCandidateMode = comparison->ActualCandidateMode;
             result.ConfigHash = comparison->ConfigHash;
             result.CameraHash = comparison->CameraHash;
             result.AdapterPairIdentity = comparison->AdapterPairIdentity;
@@ -377,6 +483,54 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
                     result.Blocked = true;
                     result.Status = "BLOCKED";
                     result.Reason = comparison->BlockedReason;
+                }
+                else if (comparison->ProtocolHash != result.ProtocolHash)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation comparison protocol hash did not match case protocol";
+                }
+                else if (comparison->ConfigHash != validationCase.ConfigHash ||
+                         comparison->ReferenceConfigHash != validationCase.ReferenceConfigHash ||
+                         comparison->CandidateConfigHash != validationCase.CandidateConfigHash)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation comparison config hash did not match resolved case config";
+                }
+                else if (comparison->CameraHash != validationCase.CameraHash)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation comparison camera hash did not match resolved case camera";
+                }
+                else if (comparison->RenderWidth != validationCase.RenderWidth ||
+                         comparison->RenderHeight != validationCase.RenderHeight ||
+                         comparison->SampleCount != validationCase.SampleCount ||
+                         comparison->ColorFormat != validationCase.ColorFormat ||
+                         comparison->LinearDepthFormat != validationCase.LinearDepthFormat)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation comparison render target dimensions/formats did not match protocol";
+                }
+                else if (comparison->ActualReferenceMode != validationCase.ReferenceMode)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation reference actual mode did not match requested mode";
+                }
+                else if (comparison->ActualCandidateMode != validationCase.CandidateMode)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "validation candidate actual mode did not match requested mode";
                 }
                 else if (comparison->ActualSingleMode != validationCase.SingleMode)
                 {
@@ -432,14 +586,36 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
     }
     if (!metrics.CaseResults.empty())
     {
-        const auto& first = metrics.CaseResults.front();
-        metrics.ColorMAE = first.ColorMAE;
-        metrics.ColorRMSE = first.ColorRMSE;
-        metrics.ColorPSNR = first.ColorPSNR;
-        metrics.MaxColorError = first.MaxColorError;
-        metrics.ColorMismatchPercent = first.ColorMismatchPercent;
-        metrics.DepthRMSE = first.DepthRMSE;
-        metrics.DepthMismatchPercent = first.DepthMismatchPercent;
+        double colorMae = 0.0;
+        double colorRmse = 0.0;
+        double psnr = 0.0;
+        double depthRmse = 0.0;
+        double colorMismatch = 0.0;
+        double depthMismatch = 0.0;
+        uint32_t measuredCases = 0;
+        for (const auto& result : metrics.CaseResults)
+        {
+            if (result.Blocked)
+                continue;
+            ++measuredCases;
+            colorMae += result.ColorMAE;
+            colorRmse += result.ColorRMSE;
+            psnr += std::isfinite(result.ColorPSNR) ? result.ColorPSNR : 0.0;
+            depthRmse += result.DepthRMSE;
+            colorMismatch += result.ColorMismatchPercent;
+            depthMismatch += result.DepthMismatchPercent;
+            metrics.MaxColorError = std::max(metrics.MaxColorError, result.MaxColorError);
+        }
+        if (measuredCases > 0)
+        {
+            const double denom = static_cast<double>(measuredCases);
+            metrics.ColorMAE = colorMae / denom;
+            metrics.ColorRMSE = colorRmse / denom;
+            metrics.ColorPSNR = psnr / denom;
+            metrics.ColorMismatchPercent = colorMismatch / denom;
+            metrics.DepthRMSE = depthRmse / denom;
+            metrics.DepthMismatchPercent = depthMismatch / denom;
+        }
     }
 
     ExportCsv(resolvedConfig, metrics, metrics.CsvPath);
@@ -458,8 +634,10 @@ void VoxelVisualValidationRunner::ExportCsv(
 
     const auto& snapshot = config.Snapshot;
     csv.imbue(std::locale::classic());
-    csv << "validation_run_id,snapshot_hash,case_id,status,passed,blocked,requested_single_mode,"
-        << "actual_single_mode,requested_multi_mode,actual_multi_mode,scene_preset,profile,total_voxels,"
+    csv << "validation_run_id,snapshot_hash,case_id,validation_kind,mode_family,config_key,checkpoint_id,"
+        << "protocol_hash,reference_config_hash,candidate_config_hash,status,passed,blocked,requested_single_mode,"
+        << "actual_single_mode,requested_multi_mode,actual_multi_mode,requested_reference_mode,"
+        << "actual_reference_mode,requested_candidate_mode,actual_candidate_mode,scene_preset,profile,total_voxels,"
         << "actual_static_voxels,actual_dynamic_voxels,render_width,render_height,color_format,"
         << "linear_depth_format,fixed_dt,fixed_step_count,warmup_step_count,spatial_lod,lod0_distance,"
         << "lod1_distance,lod_hysteresis,temporal_interval,secondary_share,color_tolerance,"
@@ -477,6 +655,13 @@ void VoxelVisualValidationRunner::ExportCsv(
         csv << EscapeCsv(metrics.ValidationRunId) << ','
             << HashHex(result.SnapshotHash) << ','
             << EscapeCsv(result.CaseId) << ','
+            << EscapeCsv(result.ValidationKind) << ','
+            << EscapeCsv(result.ModeFamily) << ','
+            << EscapeCsv(result.ConfigKey) << ','
+            << EscapeCsv(result.CheckpointId) << ','
+            << EscapeCsv(result.ProtocolHash) << ','
+            << EscapeCsv(result.ReferenceConfigHash) << ','
+            << EscapeCsv(result.CandidateConfigHash) << ','
             << result.Status << ','
             << BoolText(result.Passed) << ','
             << BoolText(result.Blocked) << ','
@@ -484,6 +669,10 @@ void VoxelVisualValidationRunner::ExportCsv(
             << ModeName(result.ActualSingleMode) << ','
             << ModeName(result.RequestedMultiMode) << ','
             << ModeName(result.ActualMultiMode) << ','
+            << ModeName(result.RequestedReferenceMode) << ','
+            << ModeName(result.ActualReferenceMode) << ','
+            << ModeName(result.RequestedCandidateMode) << ','
+            << ModeName(result.ActualCandidateMode) << ','
             << EscapeCsv(snapshot.ScenePreset) << ','
             << EscapeCsv(snapshot.WorkloadProfile) << ','
             << result.TotalVoxelCount << ','
@@ -561,8 +750,20 @@ void VoxelVisualValidationRunner::ExportJson(
     json << "  \"aggregate_status\": \"" << (metrics.Passed ? "PASS" : (metrics.Blocked ? "BLOCKED" : "FAIL")) << "\",\n";
     json << "  \"aggregate_passed\": " << BoolText(metrics.Passed) << ",\n";
     json << "  \"aggregate_reason\": \"" << EscapeJson(metrics.FailReason) << "\",\n";
+    json << "  \"provenance\": {\n";
+    json << "    \"schema\": \"mgpu_research_provenance.v1\",\n";
+    json << "    \"fields\": {\n";
+    json << "      \"build.executable_sha256\": \"" << EscapeJson(snapshot.BuildHash) << "\",\n";
+    json << "      \"build.shader_bytecode_set_sha256\": \"" << EscapeJson(snapshot.ShaderSetHash) << "\",\n";
+    json << "      \"validation.protocol_sha256\": \"" << EscapeJson(snapshot.ProtocolHash) << "\",\n";
+    json << "      \"validation.case_config_sha256\": \"" << EscapeJson(snapshot.CaseConfigHash) << "\",\n";
+    json << "      \"validation.camera_sha256\": \"" << EscapeJson(snapshot.CameraHash) << "\"\n";
+    json << "    }\n";
+    json << "  },\n";
     json << "  \"snapshot\": {\n";
     json << "    \"schema_version\": " << snapshot.SchemaVersion << ",\n";
+    json << "    \"protocol_version\": \"" << EscapeJson(snapshot.ProtocolVersion) << "\",\n";
+    json << "    \"generator_version\": \"" << EscapeJson(snapshot.GeneratorVersion) << "\",\n";
     json << "    \"snapshot_hash\": \"" << HashHex(snapshot.SnapshotHash) << "\",\n";
     json << "    \"profile\": \"" << EscapeJson(snapshot.WorkloadProfile) << "\",\n";
     json << "    \"scene_preset\": \"" << EscapeJson(snapshot.ScenePreset) << "\",\n";
@@ -575,6 +776,7 @@ void VoxelVisualValidationRunner::ExportJson(
     json << "    \"total_voxels\": " << snapshot.TotalVoxelCount << ",\n";
     json << "    \"render_width\": " << snapshot.RenderWidth << ",\n";
     json << "    \"render_height\": " << snapshot.RenderHeight << ",\n";
+    json << "    \"sample_count\": " << snapshot.SampleCount << ",\n";
     json << "    \"color_format\": \"" << EscapeJson(snapshot.ColorFormat) << "\",\n";
     json << "    \"linear_depth_format\": \"" << EscapeJson(snapshot.LinearDepthFormat) << "\",\n";
     json << "    \"fixed_dt\": " << snapshot.FixedDeltaTime << ",\n";
@@ -586,6 +788,12 @@ void VoxelVisualValidationRunner::ExportJson(
     json << "    \"build_hash\": \"" << EscapeJson(snapshot.BuildHash) << "\",\n";
     json << "    \"shader_set_hash\": \"" << EscapeJson(snapshot.ShaderSetHash) << "\",\n";
     json << "    \"shader_hash\": \"" << EscapeJson(snapshot.ShaderHash) << "\",\n";
+    json << "    \"adapter_pair\": \"" << EscapeJson(snapshot.AdapterPairIdentity) << "\",\n";
+    json << "    \"primary_driver_version\": \"" << EscapeJson(snapshot.PrimaryDriverVersion) << "\",\n";
+    json << "    \"secondary_driver_version\": \"" << EscapeJson(snapshot.SecondaryDriverVersion) << "\",\n";
+    json << "    \"protocol_hash\": \"" << EscapeJson(snapshot.ProtocolHash) << "\",\n";
+    json << "    \"case_config_hash\": \"" << EscapeJson(snapshot.CaseConfigHash) << "\",\n";
+    json << "    \"camera_hash\": \"" << EscapeJson(snapshot.CameraHash) << "\",\n";
     WriteJsonMatrix(json, "view_matrix", snapshot.View, ",");
     WriteJsonMatrix(json, "projection_matrix", snapshot.Projection, "");
     json << "  },\n";
@@ -597,12 +805,24 @@ void VoxelVisualValidationRunner::ExportJson(
     json << "    \"max_combined_mismatch_percent\": " << config.Tolerances.MaxCombinedMismatchPercent << ",\n";
     json << "    \"valid_depth_max\": " << config.Tolerances.ValidDepthMax << "\n";
     json << "  },\n";
+    json << "  \"pass_criteria\": {\n";
+    json << "    \"decides_pass\": [\"max_color_mismatch_percent\", \"max_depth_mismatch_percent\", \"max_combined_mismatch_percent\", \"max_combined_mismatch_percent_as_coverage_limit\"],\n";
+    json << "    \"descriptive_only\": [\"mae\", \"rmse\", \"psnr\", \"max_error\"]\n";
+    json << "  },\n";
+    json << "  \"canonical_protocol_json\": \"" << EscapeJson(BuildCanonicalProtocolJson(config)) << "\",\n";
     json << "  \"cases\": [\n";
     for (size_t i = 0; i < metrics.CaseResults.size(); ++i)
     {
         const auto& result = metrics.CaseResults[i];
         json << "    {\n";
         json << "      \"case_id\": \"" << EscapeJson(result.CaseId) << "\",\n";
+        json << "      \"validation_kind\": \"" << EscapeJson(result.ValidationKind) << "\",\n";
+        json << "      \"mode_family\": \"" << EscapeJson(result.ModeFamily) << "\",\n";
+        json << "      \"config_key\": \"" << EscapeJson(result.ConfigKey) << "\",\n";
+        json << "      \"checkpoint_id\": \"" << EscapeJson(result.CheckpointId) << "\",\n";
+        json << "      \"protocol_hash\": \"" << EscapeJson(result.ProtocolHash) << "\",\n";
+        json << "      \"reference_config_hash\": \"" << EscapeJson(result.ReferenceConfigHash) << "\",\n";
+        json << "      \"candidate_config_hash\": \"" << EscapeJson(result.CandidateConfigHash) << "\",\n";
         json << "      \"status\": \"" << result.Status << "\",\n";
         json << "      \"passed\": " << BoolText(result.Passed) << ",\n";
         json << "      \"blocked\": " << BoolText(result.Blocked) << ",\n";
@@ -610,6 +830,10 @@ void VoxelVisualValidationRunner::ExportJson(
         json << "      \"actual_single_mode\": \"" << ModeName(result.ActualSingleMode) << "\",\n";
         json << "      \"requested_multi_mode\": \"" << ModeName(result.RequestedMultiMode) << "\",\n";
         json << "      \"actual_multi_mode\": \"" << ModeName(result.ActualMultiMode) << "\",\n";
+        json << "      \"requested_reference_mode\": \"" << ModeName(result.RequestedReferenceMode) << "\",\n";
+        json << "      \"actual_reference_mode\": \"" << ModeName(result.ActualReferenceMode) << "\",\n";
+        json << "      \"requested_candidate_mode\": \"" << ModeName(result.RequestedCandidateMode) << "\",\n";
+        json << "      \"actual_candidate_mode\": \"" << ModeName(result.ActualCandidateMode) << "\",\n";
         json << "      \"spatial_lod\": \"" << LodName(result.SpatialLodMode) << "\",\n";
         json << "      \"temporal_interval\": " << result.TemporalInterval << ",\n";
         json << "      \"config_hash\": \"" << EscapeJson(result.ConfigHash) << "\",\n";

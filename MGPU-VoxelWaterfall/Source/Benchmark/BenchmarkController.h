@@ -1,12 +1,24 @@
 #pragma once
 
 #include "Source/Benchmark/AutomaticBenchmarkRunner.h"
+#include "Source/Benchmark/ResearchProvenance.h"
 #include "Source/Benchmark/VoxelBenchmarkProfiler.h"
 
 #include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
+
+struct BenchmarkValidationCoverage
+{
+    std::string ConfigKey;
+    std::string ModeName;
+    std::string CaseId;
+    std::string ProtocolHash;
+    std::string ConfigHash;
+    std::string CameraHash;
+    bool Passed = false;
+};
 
 struct BenchmarkControllerContext
 {
@@ -32,11 +44,21 @@ struct BenchmarkControllerContext
     std::string ValidationBuildHash;
     std::string ValidationShaderHash;
     std::string ValidationAdapterPairIdentity;
+    std::string ValidationProtocolHash;
+    std::string ValidationCaseConfigHash;
+    std::string ValidationCameraHash;
+    std::filesystem::path ValidationJsonPath;
+    std::filesystem::path ValidationCsvPath;
+    std::vector<BenchmarkValidationCoverage> ValidationCoverage;
+    ResearchProvenanceRecord CurrentProvenance;
+    ResearchProvenanceRecord ValidationProvenance;
+    ResearchProvenanceRecord TwoAdapterProvenance;
     bool TwoAdapterVerificationPassed = false;
     std::string TwoAdapterVerificationRunId;
     std::string TwoAdapterAdapterPairIdentity;
     std::string TwoAdapterBuildHash;
     std::string TwoAdapterVerificationReason;
+    std::filesystem::path TwoAdapterJsonPath;
 };
 
 class BenchmarkController
@@ -46,7 +68,8 @@ public:
     void StopManual(const BenchmarkControllerContext& context);
     bool StartAutomatic(const BenchmarkControllerContext& context,
                         BenchmarkSuite suite = BenchmarkSuite::Full,
-                        uint32_t seedOverride = 0);
+                        uint32_t seedOverride = 0,
+                        uint32_t repetitionOverride = 0);
     void StopAutomatic(const BenchmarkControllerContext& context);
     void UpdateAutomatic(const BenchmarkControllerContext& context);
     void RestoreVSyncAfterManualCompletion(const BenchmarkControllerContext& context, bool benchmarkWasActive) const;
@@ -59,6 +82,7 @@ public:
     size_t GetAutomaticCount() const { return automaticBenchmarkConfigs.size(); }
     const std::filesystem::path& GetAutomaticSummaryPath() const { return automaticBenchmarkSummaryPath; }
     const std::filesystem::path& GetSuiteStatusPath() const { return automaticBenchmarkStatusPath; }
+    ResearchRunStatus GetAutomaticTerminalStatus() const { return automaticBenchmarkTerminalStatus; }
     void SetBenchmarkDirectory(const std::filesystem::path& path) { benchmarkDirectory = path; }
 
 private:
@@ -74,6 +98,8 @@ private:
         BenchmarkConfigurationApplyResult Resolved{};
         std::string Status;
         std::string Reason;
+        std::string StartUtc;
+        std::string EndUtc;
     };
     std::vector<ExecutionManifestState> executionManifestStates;
     size_t automaticBenchmarkIndex = 0;
@@ -84,11 +110,14 @@ private:
     BenchmarkSuite activeSuite = BenchmarkSuite::Full;
     uint32_t activeSuiteSeed = 0;
     std::string activeSuiteRunId;
+    std::string activeSuiteCreatedUtc;
+    std::string activeSuiteStartUtc;
+    ResearchRunStatus automaticBenchmarkTerminalStatus = ResearchRunStatus::Invalid;
 
     void StartAutomaticTest(const BenchmarkControllerContext& context);
     void ApplyBenchmarkVoxelCount(const BenchmarkControllerContext& context, int totalCount) const;
     void WriteAutomaticSummary(const BenchmarkControllerContext& context);
     void FinalizeAutomaticArtifacts(const BenchmarkControllerContext& context,
-                                    const char* status,
+                                    ResearchRunStatus requestedStatus,
                                     const std::string& reason);
 };

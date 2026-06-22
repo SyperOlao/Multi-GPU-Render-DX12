@@ -2,6 +2,7 @@
 
 #include "GCommandQueue.h"
 #include "GDevice.h"
+#include "Source/Benchmark/ResearchProvenance.h"
 #include "d3dx12.h"
 
 #include <Windows.h>
@@ -361,11 +362,36 @@ namespace
              << "  \"adapter_pair_identity\":\"" << EscapeJson(result.AdapterPairIdentity) << "\",\n"
              << "  \"status\":\"" << TwoAdapterVerificationRunner::StatusName(result.Status) << "\",\n"
              << "  \"reasons\":" << ReasonsJson(result.Reasons) << ",\n"
+             << "  \"provenance\":{\n"
+             << "    \"schema\":\"mgpu_research_provenance.v1\",\n"
+             << "    \"fields\":{\n"
+             << "      \"build.executable_sha256\":\"" << EscapeJson(result.BuildHash) << "\",\n"
+             << "      \"build.shader_bytecode_set_sha256\":\"" << EscapeJson(result.Runtime.ShaderHash) << "\",\n"
+             << "      \"adapter.luid_pair\":\"" << EscapeJson(result.AdapterPairIdentity) << "\",\n"
+             << "      \"adapter.primary_driver_version\":\"" << EscapeJson(result.Runtime.PrimaryDriverVersion) << "\",\n"
+             << "      \"adapter.secondary_driver_version\":\"" << EscapeJson(result.Runtime.SecondaryDriverVersion) << "\",\n"
+             << "      \"validation.protocol_sha256\":\"" << EscapeJson(result.Runtime.ProtocolHash) << "\",\n"
+             << "      \"validation.case_config_sha256\":\"" << EscapeJson(result.Runtime.ConfigHash) << "\",\n"
+             << "      \"render.resolution\":\"" << result.Runtime.RenderWidth << "x" << result.Runtime.RenderHeight << "\",\n"
+             << "      \"render.color_format\":\"R8G8B8A8_UNORM\",\n"
+             << "      \"render.depth_format\":\"R32_FLOAT\"\n"
+             << "    }\n"
+             << "  },\n"
              << result.PreflightJsonFragment << ",\n"
              << "  \"runtime\":{\n"
              << "    \"attempted\":" << (result.Runtime.Attempted ? "true" : "false") << ",\n"
              << "    \"frames_observed\":" << result.Runtime.FramesObserved << ",\n"
              << "    \"frame_config_id\":\"" << EscapeJson(result.Runtime.FrameConfigId) << "\",\n"
+             << "    \"protocol_hash\":\"" << EscapeJson(result.Runtime.ProtocolHash) << "\",\n"
+             << "    \"config_hash\":\"" << EscapeJson(result.Runtime.ConfigHash) << "\",\n"
+             << "    \"build_hash\":\"" << EscapeJson(result.Runtime.BuildHash) << "\",\n"
+             << "    \"shader_hash\":\"" << EscapeJson(result.Runtime.ShaderHash) << "\",\n"
+             << "    \"primary_driver_version\":\"" << EscapeJson(result.Runtime.PrimaryDriverVersion) << "\",\n"
+             << "    \"secondary_driver_version\":\"" << EscapeJson(result.Runtime.SecondaryDriverVersion) << "\",\n"
+             << "    \"render_width\":" << result.Runtime.RenderWidth << ",\n"
+             << "    \"render_height\":" << result.Runtime.RenderHeight << ",\n"
+             << "    \"color_format\":\"" << EscapeJson(result.Runtime.ColorFormat) << "\",\n"
+             << "    \"depth_format\":\"" << EscapeJson(result.Runtime.DepthFormat) << "\",\n"
              << "    \"requested_mode\":\"" << ModeName(result.Runtime.RequestedMode) << "\",\n"
              << "    \"actual_mode\":\"" << ModeName(result.Runtime.ActualMode) << "\",\n"
              << "    \"fallback\":" << (result.Runtime.Fallback ? "true" : "false") << ",\n"
@@ -400,11 +426,47 @@ namespace
              << "    \"secondary_graphics_draw_count\":" << result.Runtime.SecondaryGraphicsDrawCount << ",\n"
              << "    \"secondary_indirect_draw_count\":" << result.Runtime.SecondaryIndirectDrawCount << ",\n"
              << "    \"secondary_rendered_voxel_count\":" << result.Runtime.SecondaryRenderedVoxelCount << ",\n"
-             << "    \"secondary_primitive_estimate\":" << result.Runtime.SecondaryPrimitiveEstimate << ",\n"
+             << "    \"estimated_primitives\":" << result.Runtime.SecondaryPrimitiveEstimate << ",\n"
+             << "    \"pipeline_statistics\":{"
+             << "\"ia_primitives\":" << result.Runtime.SecondaryPipelineIAPrimitives
+             << ",\"vs_invocations\":" << result.Runtime.SecondaryPipelineVSInvocations
+             << ",\"ps_invocations\":" << result.Runtime.SecondaryPipelinePSInvocations
+             << ",\"c_invocations\":" << result.Runtime.SecondaryPipelineCInvocations
+             << ",\"c_primitives\":" << result.Runtime.SecondaryPipelineCPrimitives
+             << "},\n"
+             << "    \"command_list_submissions\":{"
+             << "\"secondary_graphics\":" << result.Runtime.SecondaryGraphicsCommandListSubmissionCount
+             << ",\"local_to_shared\":" << result.Runtime.LocalToSharedCommandListSubmissionCount
+             << ",\"shared_to_local\":" << result.Runtime.SharedToLocalCommandListSubmissionCount
+             << "},\n"
+             << "    \"indirect_arguments\":{"
+             << "\"max_command_count\":" << result.Runtime.SecondaryIndirectArgumentMaxCommandCount
+             << ",\"resolved_draw_count\":" << result.Runtime.SecondaryIndirectArgumentResolvedDrawCount
+             << "},\n"
+             << "    \"expected_color_local_to_shared_bytes\":" << result.Runtime.ExpectedColorLocalToSharedBytes << ",\n"
+             << "    \"expected_depth_local_to_shared_bytes\":" << result.Runtime.ExpectedDepthLocalToSharedBytes << ",\n"
+             << "    \"expected_color_shared_to_local_bytes\":" << result.Runtime.ExpectedColorSharedToLocalBytes << ",\n"
+             << "    \"expected_depth_shared_to_local_bytes\":" << result.Runtime.ExpectedDepthSharedToLocalBytes << ",\n"
              << "    \"color_local_to_shared_bytes\":" << result.Runtime.ColorLocalToSharedBytes << ",\n"
              << "    \"depth_local_to_shared_bytes\":" << result.Runtime.DepthLocalToSharedBytes << ",\n"
              << "    \"color_shared_to_local_bytes\":" << result.Runtime.ColorSharedToLocalBytes << ",\n"
              << "    \"depth_shared_to_local_bytes\":" << result.Runtime.DepthSharedToLocalBytes << ",\n"
+             << "    \"copy_resources\":{"
+             << "\"color_local_to_shared\":{\"source\":\"" << EscapeJson(result.Runtime.ColorLocalToSharedSource)
+             << "\",\"destination\":\"" << EscapeJson(result.Runtime.ColorLocalToSharedDestination) << "\"},"
+             << "\"depth_local_to_shared\":{\"source\":\"" << EscapeJson(result.Runtime.DepthLocalToSharedSource)
+             << "\",\"destination\":\"" << EscapeJson(result.Runtime.DepthLocalToSharedDestination) << "\"},"
+             << "\"color_shared_to_local\":{\"source\":\"" << EscapeJson(result.Runtime.ColorSharedToLocalSource)
+             << "\",\"destination\":\"" << EscapeJson(result.Runtime.ColorSharedToLocalDestination) << "\"},"
+             << "\"depth_shared_to_local\":{\"source\":\"" << EscapeJson(result.Runtime.DepthSharedToLocalSource)
+             << "\",\"destination\":\"" << EscapeJson(result.Runtime.DepthSharedToLocalDestination) << "\"}},\n"
+             << "    \"timestamp_query_ranges\":{"
+             << "\"secondary_graphics\":[" << result.Runtime.SecondaryGraphicsTimestampBeginQuery << ","
+             << result.Runtime.SecondaryGraphicsTimestampEndQuery << "],"
+             << "\"local_to_shared\":[" << result.Runtime.LocalToSharedTimestampBeginQuery << ","
+             << result.Runtime.LocalToSharedTimestampEndQuery << "],"
+             << "\"shared_to_local\":[" << result.Runtime.SharedToLocalTimestampBeginQuery << ","
+             << result.Runtime.SharedToLocalTimestampEndQuery << "]},\n"
              << "    \"particle_transfer_bytes\":" << result.Runtime.ParticleTransferBytes << ",\n"
              << "    \"secondary_compute_fence_value\":" << result.Runtime.SecondaryComputeFenceValue << ",\n"
              << "    \"secondary_graphics_fence_value\":" << result.Runtime.SecondaryGraphicsFenceValue << ",\n"
@@ -496,31 +558,24 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
     result.JsonPath = outputDirectory / "two_adapter_preflight.json";
     result.TextPath = outputDirectory / "two_adapter_preflight.txt";
 
-    uint64_t identityHash = 1469598103934665603ull;
-    auto append = [&identityHash](const uint64_t value)
-    {
-        for (uint32_t i = 0; i < 8; ++i)
-        {
-            identityHash ^= static_cast<uint8_t>((value >> (i * 8)) & 0xffu);
-            identityHash *= 1099511628211ull;
-        }
-    };
-    append(static_cast<uint64_t>(devices.size()));
+    std::ostringstream identity;
+    identity << "mgpu_two_adapter_preflight_identity.v2\n"
+             << "device_count=" << devices.size() << "\n";
     if (selectedDevices.Primary)
     {
-        append(static_cast<uint32_t>(selectedDevices.Primary->GetDesc().VendorId));
-        append(static_cast<uint32_t>(selectedDevices.Primary->GetDesc().DeviceId));
-        append(static_cast<uint32_t>(selectedDevices.Primary->GetDesc().AdapterLuid.LowPart));
-        append(static_cast<uint32_t>(selectedDevices.Primary->GetDesc().AdapterLuid.HighPart));
+        identity << "primary.vendor=" << selectedDevices.Primary->GetDesc().VendorId << "\n"
+                 << "primary.device=" << selectedDevices.Primary->GetDesc().DeviceId << "\n"
+                 << "primary.luid.low=" << selectedDevices.Primary->GetDesc().AdapterLuid.LowPart << "\n"
+                 << "primary.luid.high=" << selectedDevices.Primary->GetDesc().AdapterLuid.HighPart << "\n";
     }
     if (selectedDevices.Secondary)
     {
-        append(static_cast<uint32_t>(selectedDevices.Secondary->GetDesc().VendorId));
-        append(static_cast<uint32_t>(selectedDevices.Secondary->GetDesc().DeviceId));
-        append(static_cast<uint32_t>(selectedDevices.Secondary->GetDesc().AdapterLuid.LowPart));
-        append(static_cast<uint32_t>(selectedDevices.Secondary->GetDesc().AdapterLuid.HighPart));
+        identity << "secondary.vendor=" << selectedDevices.Secondary->GetDesc().VendorId << "\n"
+                 << "secondary.device=" << selectedDevices.Secondary->GetDesc().DeviceId << "\n"
+                 << "secondary.luid.low=" << selectedDevices.Secondary->GetDesc().AdapterLuid.LowPart << "\n"
+                 << "secondary.luid.high=" << selectedDevices.Secondary->GetDesc().AdapterLuid.HighPart << "\n";
     }
-    result.VerificationRunId = Hex64(identityHash);
+    result.VerificationRunId = ResearchProvenance::Sha256Hex(identity.str()).substr(0, 32);
 
     std::ostringstream adaptersJson;
     std::ostringstream text;
