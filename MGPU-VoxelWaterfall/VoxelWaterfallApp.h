@@ -72,6 +72,10 @@ protected:
     void StartManualBenchmark();
     void StopManualBenchmark();
     void RunVisualValidation();
+    VoxelVisualValidationComparisonInput CaptureVisualValidationCase(
+        const VoxelVisualValidationConfig& config,
+        const VoxelVisualValidationCase& validationCase,
+        const std::filesystem::path& outputDirectory);
     void RequestResearchRunner(const ResearchRunnerRequest& request);
     void CancelResearchRunner();
     void AdvanceResearchRunner(bool presentedFrame);
@@ -210,6 +214,7 @@ protected:
         bool Initialized = false;
         std::string BuildHash = "Unknown: benchmark provenance cache not initialized";
         std::string ShaderHash = "Unknown: benchmark provenance cache not initialized";
+        std::string ShaderSetHash = "Unknown: benchmark provenance cache not initialized";
         std::string GitCommit = "Unknown: benchmark provenance cache not initialized";
         std::string GitDirtyState = "Unknown: benchmark provenance cache not initialized";
         std::string OperatingSystem = "Windows";
@@ -248,6 +253,8 @@ protected:
     bool currentFrameResourceReady = true;
     bool frameResourceBackpressureActive = false;
     bool pumpFrameQuitRequested = false;
+    bool visualValidationFixedStepMode = false;
+    uint32_t visualValidationFixedStepsPerFrame = 1;
     uint64_t totalFrameResourceBackpressurePollCount = 0;
     uint64_t currentFrameResourceBackpressurePollCount = 0;
     uint32_t currentFrameDrainedMessageCount = 0;

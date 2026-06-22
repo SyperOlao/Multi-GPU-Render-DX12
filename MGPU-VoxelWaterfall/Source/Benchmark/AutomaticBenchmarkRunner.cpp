@@ -25,6 +25,17 @@ namespace
         return "share" + std::to_string(static_cast<int>(share * 100.0f + 0.5f));
     }
 
+    uint32_t MixedDynamicBudgetForStaticBudget(const uint32_t staticBudget)
+    {
+        if (staticBudget <= 100000)
+            return 25000;
+        if (staticBudget <= 250000)
+            return 100000;
+        if (staticBudget <= 500000)
+            return 250000;
+        return 500000;
+    }
+
     std::string BuildSessionId(const BenchmarkSuite suite, const uint32_t seed)
     {
         std::ostringstream stream;
@@ -32,20 +43,33 @@ namespace
         return stream.str();
     }
 
-    std::string BuildPairId(const ModeSpec& mode, const char* preset, const uint32_t total,
+    std::string CountToken(const uint32_t labelCount,
+                           const uint32_t staticBudget,
+                           const uint32_t dynamicBudget)
+    {
+        std::ostringstream stream;
+        stream << "label" << labelCount << ":static" << staticBudget << ":dynamic" << dynamicBudget;
+        return stream.str();
+    }
+
+    std::string BuildPairId(const ModeSpec& mode, const char* preset, const uint32_t labelCount,
+                            const uint32_t staticBudget, const uint32_t dynamicBudget,
                             const float share, const bool lod)
     {
         std::ostringstream stream;
-        stream << mode.PairPrefix << ':' << preset << ':' << total << ':' << ShareToken(share)
+        stream << mode.PairPrefix << ':' << preset << ':' << CountToken(labelCount, staticBudget, dynamicBudget)
+               << ':' << ShareToken(share)
                << ':' << LodToken(lod) << ":temporal" << mode.TemporalInterval;
         return stream.str();
     }
 
-    std::string BuildBlockId(const ModeSpec& mode, const char* preset, const uint32_t total,
+    std::string BuildBlockId(const ModeSpec& mode, const char* preset, const uint32_t labelCount,
+                             const uint32_t staticBudget, const uint32_t dynamicBudget,
                              const float share, const bool lod, const uint32_t repetition)
     {
         std::ostringstream stream;
-        stream << BuildPairId(mode, preset, total, share, lod) << ":rep" << repetition;
+        stream << BuildPairId(mode, preset, labelCount, staticBudget, dynamicBudget, share, lod)
+               << ":rep" << repetition;
         return stream.str();
     }
 
@@ -53,7 +77,10 @@ namespace
     {
         std::ostringstream stream;
         stream << AutomaticBenchmarkRunner::SuiteName(config.Suite) << ':'
-               << config.ModeName << ':' << config.Preset << ':' << config.TotalCount << ':'
+               << config.ModeName << ':' << config.Preset << ':'
+               << CountToken(config.RequestedLabelCount,
+                             config.RequestedStaticBudget,
+                             config.RequestedDynamicBudget) << ':'
                << ShareToken(config.SecondaryShare) << ':' << LodToken(config.SpatialLodEnabled)
                << ":temporal" << config.TemporalInterval << ":rep" << config.Repetition;
         return stream.str();
@@ -62,7 +89,7 @@ namespace
     AutomaticBenchmarkConfig MakeConfig(BenchmarkSuite suite,
                                         const ModeSpec& mode,
                                         const char* preset,
-                                        const uint32_t total,
+                                        const uint32_t labelCount,
                                         const float share,
                                         const bool lod,
                                         const uint32_t repetition,
@@ -78,7 +105,10 @@ namespace
         config.Mode = mode.Mode;
         config.ModeName = mode.Name;
         config.Preset = preset;
-        config.TotalCount = total;
+        config.RequestedLabelCount = labelCount;
+        config.RequestedStaticBudget = labelCount;
+        config.RequestedDynamicBudget = MixedDynamicBudgetForStaticBudget(labelCount);
+        config.TotalCount = labelCount;
         config.SecondaryShare = share;
         config.SpatialLodEnabled = lod;
         config.TemporalInterval = mode.TemporalInterval;
@@ -89,7 +119,11 @@ namespace
         config.RandomizationSeed = seed;
         config.SessionId = sessionId;
         config.BlockId = blockId;
-        config.PairId = BuildPairId(mode, preset, total, share, lod);
+        config.PairId = BuildPairId(mode, preset,
+                                    config.RequestedLabelCount,
+                                    config.RequestedStaticBudget,
+                                    config.RequestedDynamicBudget,
+                                    share, lod);
         config.ConfigId = BuildConfigId(config);
         return config;
     }
@@ -102,7 +136,7 @@ namespace
     void AppendPairedBlock(std::vector<BenchmarkBlock>& blocks,
                            const BenchmarkSuite suite,
                            const char* preset,
-                           const uint32_t total,
+                           const uint32_t labelCount,
                            const float share,
                            const bool lod,
                            const uint32_t repetition,
@@ -115,11 +149,13 @@ namespace
                            const ModeSpec& multi)
     {
         BenchmarkBlock block;
-        const auto blockId = BuildBlockId(single, preset, total, share, lod, repetition);
-        block.Members.push_back(MakeConfig(suite, single, preset, total, share, lod,
+        const uint32_t staticBudget = labelCount;
+        const uint32_t dynamicBudget = MixedDynamicBudgetForStaticBudget(labelCount);
+        const auto blockId = BuildBlockId(single, preset, labelCount, staticBudget, dynamicBudget, share, lod, repetition);
+        block.Members.push_back(MakeConfig(suite, single, preset, labelCount, share, lod,
                                            repetition, repetitionCount, warmupFrames,
                                            measuredFrames, seed, sessionId, blockId));
-        block.Members.push_back(MakeConfig(suite, multi, preset, total, share, lod,
+        block.Members.push_back(MakeConfig(suite, multi, preset, labelCount, share, lod,
                                            repetition, repetitionCount, warmupFrames,
                                            measuredFrames, seed, sessionId, blockId));
         blocks.push_back(std::move(block));

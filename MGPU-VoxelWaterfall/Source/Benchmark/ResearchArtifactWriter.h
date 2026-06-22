@@ -49,7 +49,8 @@ public:
     static void WritePairedRunsCsv(const BenchmarkResearchArtifactContext& context,
                                    const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries);
 
-    static void WriteTelemetryCsv(const BenchmarkResearchArtifactContext& context);
+    static void WriteTelemetryCsv(const BenchmarkResearchArtifactContext& context,
+                                  const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries);
 
     static void WriteMemoryTimelineCsv(const BenchmarkResearchArtifactContext& context);
 

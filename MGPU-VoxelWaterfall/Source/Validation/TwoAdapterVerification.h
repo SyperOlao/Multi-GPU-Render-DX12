@@ -33,13 +33,28 @@ struct TwoAdapterQueueCalibration
 struct TwoAdapterRuntimeEvidence
 {
     bool Attempted = false;
+    uint32_t FramesObserved = 0;
     std::string FrameConfigId;
     VoxelExecutionMode RequestedMode = VoxelExecutionMode::MultiGpuFull;
     VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;
     bool Fallback = true;
     std::string FallbackReason;
+    bool AnyActualMultiMode = false;
     uint32_t PrimaryPartitionVoxels = 0;
     uint32_t SecondaryPartitionVoxels = 0;
+    uint32_t TotalSecondaryComputeDispatchCount = 0;
+    uint32_t MaxSecondaryGraphicsDrawCount = 0;
+    uint32_t MaxSecondaryRenderedVoxelCount = 0;
+    uint64_t TotalColorTransferBytes = 0;
+    uint64_t TotalDepthTransferBytes = 0;
+    bool AnyCompositeSubmitted = false;
+    bool AnySecondaryComputeFenceValue = false;
+    bool AnySecondaryGraphicsFenceValue = false;
+    bool AnySecondaryLocalToSharedCopyFenceValue = false;
+    bool AnyCrossAdapterRenderReadyFenceValue = false;
+    bool AnyPrimarySharedToLocalCopyFenceValue = false;
+    bool AnyPrimarySecondaryImageReadyFenceValue = false;
+    bool AnyFinalPresentFenceValue = false;
     uint32_t SecondaryComputeDispatchCount = 0;
     uint32_t SecondaryGraphicsDrawCount = 0;
     uint32_t SecondaryIndirectDrawCount = 0;

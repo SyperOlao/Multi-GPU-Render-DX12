@@ -57,6 +57,7 @@ struct VoxelVisualValidationSnapshot
     std::string Background = "BenchmarkNeutral";
     std::string BuildHash = "unknown";
     std::string ShaderHash = "unknown";
+    std::string ShaderSetHash = "unknown";
 };
 
 struct VoxelVisualValidationCase
@@ -94,6 +95,7 @@ struct VoxelVisualValidationComparisonInput
     bool CaptureAvailable = false;
     bool CompareShaderDispatched = false;
     bool ReadbackComplete = false;
+    std::string BlockedReason;
     VoxelExecutionMode ActualSingleMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
     uint32_t RenderWidth = 0;

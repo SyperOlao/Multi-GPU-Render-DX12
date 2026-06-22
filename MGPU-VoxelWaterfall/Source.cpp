@@ -1,6 +1,9 @@
 #include "VoxelWaterfallApp.h"
+#include "Source/Validation/VoxelVisualValidationRunner.h"
 #include <array>
+#include <exception>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 using namespace Common;
@@ -86,6 +89,55 @@ namespace
         return text.substr(start, end == std::string::npos ? std::string::npos : end - start);
     }
 
+    std::string NarrowForArtifact(const std::wstring& value)
+    {
+        std::string text;
+        text.reserve(value.size());
+        for (const wchar_t ch : value)
+            text.push_back(ch >= 0 && ch < 128 ? static_cast<char>(ch) : '?');
+        return text;
+    }
+
+    void WriteStartupBlockedValidationArtifacts(const std::string& reason)
+    {
+        VoxelVisualValidationConfig config{};
+        config.Snapshot.ValidationRunId = "startup_blocked";
+        config.Snapshot.BuildHash = "unknown: application initialization failed before provenance capture";
+        config.Snapshot.ShaderHash = "unknown: application initialization failed before provenance capture";
+        config.Snapshot.ShaderSetHash = "unknown: application initialization failed before provenance capture";
+        config.Cases = VoxelVisualValidationConfig::DefaultCases();
+        config.CompletedComparisons.reserve(config.Cases.size());
+        for (const auto& validationCase : config.Cases)
+        {
+            VoxelVisualValidationComparisonInput comparison{};
+            comparison.CaseId = validationCase.CaseId;
+            comparison.ActualSingleMode = validationCase.SingleMode;
+            comparison.ActualMultiMode = VoxelExecutionMode::SingleGpuFull;
+            comparison.BlockedReason =
+                "application initialization failed before deterministic GPU validation capture: " + reason;
+            config.CompletedComparisons.push_back(std::move(comparison));
+        }
+
+        try
+        {
+            VoxelVisualValidationRunner runner;
+            runner.RunDeterministicSuite(config, GetExecutableDirectory() / "VoxelValidation");
+        }
+        catch (...)
+        {
+            const auto outputDirectory = GetExecutableDirectory() / "VoxelValidation";
+            std::filesystem::create_directories(outputDirectory);
+            std::ofstream json(outputDirectory / "voxel_visual_validation.json", std::ios::out | std::ios::trunc);
+            json << "{\n"
+                 << "  \"aggregate_status\":\"BLOCKED\",\n"
+                 << "  \"aggregate_reason\":\"application initialization failed before validation artifact export\"\n"
+                 << "}\n";
+            std::ofstream csv(outputDirectory / "voxel_visual_validation.csv", std::ios::out | std::ios::trunc);
+            csv << "case_id,status,compared_pixel_count,reason\n"
+                << "startup,BLOCKED,0,application initialization failed before validation artifact export\n";
+        }
+    }
+
 }
 
 int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -144,7 +196,22 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
     }
     catch (DxException& e)
     {
+        if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
+        {
+            WriteStartupBlockedValidationArtifacts(NarrowForArtifact(e.ToString()));
+            return 3;
+        }
         MessageBox(nullptr, e.ToString().c_str(), L"HR Failed", MB_OK);
+        return 0;
+    }
+    catch (const std::exception& e)
+    {
+        if (HasCommandLineFlag(cmdLine, "--run-validation-once"))
+        {
+            WriteStartupBlockedValidationArtifacts(e.what());
+            return 3;
+        }
+        MessageBoxA(nullptr, e.what(), "Unhandled exception", MB_OK);
         return 0;
     }
 }

@@ -79,6 +79,14 @@ namespace
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
+    std::filesystem::path ExecutionManifestPath(const std::filesystem::path& benchmarkDirectory,
+                                                const AutomaticBenchmarkConfig& config)
+    {
+        return benchmarkDirectory /
+            ("VoxelBenchmark_" + std::string(AutomaticBenchmarkRunner::SuiteName(config.Suite)) + "_" +
+             SanitizeFileToken(config.ConfigId) + "_manifest.json");
+    }
+
     std::string BuildGateFailureReason(const BenchmarkControllerContext& context)
     {
         if (!context.VisualValidationPassed)
@@ -95,7 +103,7 @@ namespace
         if (context.CurrentShaderHash.empty() || context.ValidationShaderHash.empty() ||
             context.CurrentShaderHash != context.ValidationShaderHash)
         {
-            return "visual validation shader hash does not match current shader";
+            return "visual validation shader set hash does not match current shader set";
         }
         if (!context.TwoAdapterVerificationPassed)
         {
@@ -178,8 +186,10 @@ namespace
              << "  \"visual_validation_run_id\":\"" << EscapeJson(context.VisualValidationRunId) << "\",\n"
              << "  \"two_gpu_verification_run_id\":\"" << EscapeJson(context.TwoAdapterVerificationRunId) << "\",\n"
              << "  \"current_build_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
+             << "  \"current_shader_set_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
              << "  \"current_shader_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
              << "  \"validation_build_hash\":\"" << EscapeJson(context.ValidationBuildHash) << "\",\n"
+             << "  \"validation_shader_set_hash\":\"" << EscapeJson(context.ValidationShaderHash) << "\",\n"
              << "  \"validation_shader_hash\":\"" << EscapeJson(context.ValidationShaderHash) << "\",\n"
              << "  \"validation_adapter_pair\":\"" << EscapeJson(context.ValidationAdapterPairIdentity) << "\",\n"
              << "  \"two_gpu_adapter_pair\":\"" << EscapeJson(context.TwoAdapterAdapterPairIdentity) << "\"\n"
@@ -213,6 +223,12 @@ namespace
              << "  \"requested_mode\":\"" << config.ModeName << "\",\n"
              << "  \"actual_mode\":\"" << EscapeJson(resolved.ActualMode) << "\",\n"
              << "  \"requested_total_count\":" << config.TotalCount << ",\n"
+             << "  \"requested_label_count\":" << config.RequestedLabelCount << ",\n"
+             << "  \"requested_static_budget\":" << config.RequestedStaticBudget << ",\n"
+             << "  \"requested_dynamic_budget\":" << config.RequestedDynamicBudget << ",\n"
+             << "  \"resolved_requested_label_count\":" << resolved.RequestedLabelCount << ",\n"
+             << "  \"resolved_requested_static_budget\":" << resolved.RequestedStaticBudget << ",\n"
+             << "  \"resolved_requested_dynamic_budget\":" << resolved.RequestedDynamicBudget << ",\n"
              << "  \"actual_static_count\":" << resolved.ActualStaticCount << ",\n"
              << "  \"actual_dynamic_count\":" << resolved.ActualDynamicCount << ",\n"
              << "  \"actual_total_count\":" << resolved.ActualTotalCount << ",\n"
@@ -223,12 +239,45 @@ namespace
              << "  \"validation_run_id\":\"" << EscapeJson(context.VisualValidationRunId) << "\",\n"
              << "  \"two_gpu_verification_run_id\":\"" << EscapeJson(context.TwoAdapterVerificationRunId) << "\",\n"
              << "  \"build_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
+             << "  \"shader_set_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
              << "  \"shader_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
              << "  \"start_utc\":\"" << UtcTimestamp() << "\",\n"
              << "  \"end_utc\":\"\",\n"
              << "  \"status\":\"" << status << "\",\n"
              << "  \"reason\":\"" << EscapeJson(reason) << "\"\n"
              << "}\n";
+    }
+
+    void ApplyResolvedCountsToSummary(VoxelBenchmarkProfiler::BenchmarkSummary& summary,
+                                      const AutomaticBenchmarkConfig& config,
+                                      const BenchmarkConfigurationApplyResult& resolved)
+    {
+        summary.RequestedLabelCount =
+            config.RequestedLabelCount != 0 ? config.RequestedLabelCount : config.TotalCount;
+        summary.RequestedStaticBudget =
+            config.RequestedStaticBudget != 0 ? config.RequestedStaticBudget : config.TotalCount;
+        summary.RequestedDynamicBudget = config.RequestedDynamicBudget;
+        summary.ResolvedConfigHash = resolved.ResolvedConfigHash;
+
+        const bool hasResolvedCounts =
+            resolved.ActualTotalCount != 0 ||
+            resolved.ActualStaticCount != 0 ||
+            resolved.ActualDynamicCount != 0;
+        if (hasResolvedCounts)
+        {
+            summary.ActualStaticVoxelCount = resolved.ActualStaticCount;
+            summary.ActualDynamicVoxelCount = resolved.ActualDynamicCount;
+            summary.TotalVoxelCount =
+                resolved.ActualTotalCount != 0
+                    ? resolved.ActualTotalCount
+                    : resolved.ActualStaticCount + resolved.ActualDynamicCount;
+        }
+        else if (summary.TotalVoxelCount == 0 &&
+                 (summary.ActualStaticVoxelCount != 0 || summary.ActualDynamicVoxelCount != 0))
+        {
+            summary.TotalVoxelCount =
+                summary.ActualStaticVoxelCount + summary.ActualDynamicVoxelCount;
+        }
     }
 }
 
@@ -262,6 +311,7 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
 
     automaticBenchmarkConfigs.clear();
     automaticBenchmarkSummaries.clear();
+    executionManifestStates.clear();
     automaticBenchmarkIndex = 0;
     automaticBenchmarkStopRequested = false;
     activeSuite = suite;
@@ -297,12 +347,13 @@ bool BenchmarkController::StartAutomatic(const BenchmarkControllerContext& conte
                          warmupFrames, measuredFrames, automaticBenchmarkConfigs.size(),
                          "BLOCKED", gateFailure, context);
         artifactContext.GateStatus = "BLOCKED";
+        artifactContext.GateReason = gateFailure;
+        ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
+        ResearchArtifactWriter::WriteReproductionReadme(artifactContext);
         ResearchArtifactWriter::WriteRunsCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
         ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
-        ResearchArtifactWriter::WriteTelemetryCsv(artifactContext);
-        ResearchArtifactWriter::WriteMemoryTimelineCsv(artifactContext);
         BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries);
         context.Log(L"\nAutomatic voxel benchmark blocked: " + ToWide(gateFailure.c_str()));
         return false;
@@ -355,12 +406,39 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
             const auto& config = automaticBenchmarkConfigs[automaticBenchmarkIndex];
             summary.RequestedMode = config.ModeName;
             summary.Preset = config.Preset;
-            summary.TotalVoxelCount = config.TotalCount;
+            ApplyResolvedCountsToSummary(summary, config, BenchmarkConfigurationApplyResult{});
+            for (const auto& state : executionManifestStates)
+            {
+                if (state.Config.ConfigId == config.ConfigId)
+                {
+                    ApplyResolvedCountsToSummary(summary, config, state.Resolved);
+                    break;
+                }
+            }
             summary.SecondaryShare = config.SecondaryShare;
             summary.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
             summary.TemporalPolicy =
                 config.TemporalInterval <= 1 ? "Full" : "Decimated";
             summary.Repetition = config.Repetition;
+            const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
+            const std::string finalStatus = summary.Valid ? "COMPLETE" : "INVALID";
+            const std::string finalReason = summary.Valid
+                                                ? ""
+                                                : (!summary.ValidityReason.empty()
+                                                       ? summary.ValidityReason
+                                                       : summary.SkipReason);
+            for (auto& state : executionManifestStates)
+            {
+                if (state.Path == manifestPath)
+                {
+                    state.Status = finalStatus;
+                    state.Reason = finalReason;
+                    WriteExecutionManifest(state.Path, state.Config, activeSuiteRunId,
+                                           state.Resolved, context,
+                                           state.Status.c_str(), state.Reason);
+                    break;
+                }
+            }
         }
         automaticBenchmarkSummaries.push_back(summary);
         context.Log(L"\nFinished benchmark CSV: " + summary.CsvPath.wstring());
@@ -372,15 +450,10 @@ void BenchmarkController::UpdateAutomatic(const BenchmarkControllerContext& cont
 
     if (automaticBenchmarkStopRequested || automaticBenchmarkIndex >= automaticBenchmarkConfigs.size())
     {
-        WriteAutomaticSummary(context);
         automaticBenchmarkActive = false;
         automaticBenchmarkStopRequested = false;
         context.SetVSync(benchmarkVSyncWasEnabled);
-        WriteSuiteStatus(automaticBenchmarkStatusPath, activeSuite, activeSuiteRunId, activeSuiteSeed,
-                         automaticBenchmarkConfigs.empty() ? 0 : automaticBenchmarkConfigs.front().WarmupFrameCount,
-                         automaticBenchmarkConfigs.empty() ? 0 : automaticBenchmarkConfigs.front().MeasuredFrameCount,
-                         automaticBenchmarkConfigs.size(),
-                         "COMPLETE", "", context);
+        FinalizeAutomaticArtifacts(context, "COMPLETE", "");
         context.Log(L"\nAutomatic voxel benchmark finished");
         return;
     }
@@ -410,6 +483,14 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
     const bool requestsMultiGpu = RequestsMultiGpu(config.Mode);
     if (requestsMultiGpu && !context.MultiGpuAvailable)
     {
+        BenchmarkConfigurationApplyResult resolved{};
+        resolved.Passed = false;
+        resolved.ActualMode = "Skipped";
+        resolved.Reason = "secondary hardware adapter unavailable";
+        const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
+        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
+                               "INVALID", resolved.Reason);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
         context.Log(L"\nSkipped benchmark " + ToWide(config.ModeName) +
             L" / " + ToWide(config.Preset) +
             L": secondary hardware adapter unavailable");
@@ -417,7 +498,7 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.RequestedMode = config.ModeName;
         skipped.ActualMode = "Skipped";
         skipped.Preset = config.Preset;
-        skipped.TotalVoxelCount = config.TotalCount;
+        ApplyResolvedCountsToSummary(skipped, config, resolved);
         skipped.SecondaryShare = config.SecondaryShare;
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
@@ -426,7 +507,7 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.BlockId = config.BlockId;
         skipped.Repetition = config.Repetition;
         skipped.Valid = false;
-        skipped.SkipReason = "secondary hardware adapter unavailable";
+        skipped.SkipReason = resolved.Reason;
         automaticBenchmarkSummaries.push_back(skipped);
         ++automaticBenchmarkIndex;
         return;
@@ -436,6 +517,14 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         const auto reason = context.TwoAdapterVerificationReason.empty()
                                 ? "two-adapter runtime verification has not passed for this build/adapter pair"
                                 : context.TwoAdapterVerificationReason;
+        BenchmarkConfigurationApplyResult resolved{};
+        resolved.Passed = false;
+        resolved.ActualMode = "Skipped";
+        resolved.Reason = reason;
+        const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
+        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
+                               "INVALID", resolved.Reason);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
         context.Log(L"\nSkipped benchmark " + ToWide(config.ModeName) +
             L" / " + ToWide(config.Preset) +
             L": " + ToWide(reason.c_str()));
@@ -443,7 +532,7 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         skipped.RequestedMode = config.ModeName;
         skipped.ActualMode = "Skipped";
         skipped.Preset = config.Preset;
-        skipped.TotalVoxelCount = config.TotalCount;
+        ApplyResolvedCountsToSummary(skipped, config, resolved);
         skipped.SecondaryShare = config.SecondaryShare;
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
@@ -467,7 +556,9 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
     {
         context.Flush();
         context.ApplyExecutionMode(config.Mode);
-        ApplyBenchmarkVoxelCount(context, static_cast<int>(config.TotalCount));
+        const uint32_t requestedStaticBudget =
+            config.RequestedStaticBudget != 0 ? config.RequestedStaticBudget : config.TotalCount;
+        ApplyBenchmarkVoxelCount(context, static_cast<int>(requestedStaticBudget));
         if (context.ApplySecondaryShare)
             context.ApplySecondaryShare(config.SecondaryShare);
         if (context.ApplySpatialLodEnabled)
@@ -481,20 +572,17 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         resolved.ActualMode = config.ModeName;
     }
 
-    const auto manifestPath = benchmarkDirectory /
-        ("VoxelBenchmark_" + std::string(AutomaticBenchmarkRunner::SuiteName(config.Suite)) + "_" +
-         SanitizeFileToken(config.ConfigId) + "_manifest.json");
+    const auto manifestPath = ExecutionManifestPath(benchmarkDirectory, config);
     if (!resolved.Passed)
     {
         WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context,
                                "INVALID", resolved.Reason);
+        executionManifestStates.push_back({manifestPath, config, resolved, "INVALID", resolved.Reason});
         VoxelBenchmarkProfiler::BenchmarkSummary skipped{};
         skipped.RequestedMode = config.ModeName;
         skipped.ActualMode = resolved.ActualMode.empty() ? "Invalid" : resolved.ActualMode;
         skipped.Preset = config.Preset;
-        skipped.TotalVoxelCount = config.TotalCount;
-        skipped.ActualStaticVoxelCount = resolved.ActualStaticCount;
-        skipped.ActualDynamicVoxelCount = resolved.ActualDynamicCount;
+        ApplyResolvedCountsToSummary(skipped, config, resolved);
         skipped.SecondaryShare = config.SecondaryShare;
         skipped.SpatialLodPolicy = config.SpatialLodEnabled ? "ThreeLevel" : "Off";
         skipped.TemporalPolicy = config.TemporalInterval <= 1 ? "Full" : "Decimated";
@@ -510,9 +598,12 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
         return;
     }
     WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "RUNNING", "");
+    executionManifestStates.push_back({manifestPath, config, resolved, "RUNNING", ""});
 
     const std::string fileName = "VoxelBenchmark_" + std::string(config.ModeName) + "_" +
-        config.Preset + "_" + std::to_string(config.TotalCount) +
+        config.Preset + "_label" + std::to_string(config.RequestedLabelCount) +
+        "_static" + std::to_string(config.RequestedStaticBudget) +
+        "_dynamic" + std::to_string(config.RequestedDynamicBudget) +
         "_share" + std::to_string(static_cast<int>(config.SecondaryShare * 100.0f)) +
         "_" + (config.SpatialLodEnabled ? "SpatialLOD" : "NoSpatialLOD") +
         "_temporal" + std::to_string(config.TemporalInterval) +
@@ -531,6 +622,17 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
                                 config.PairMemberOrder,
                                 config.RandomizationSeed))
     {
+        const std::string reason = "profiler failed to start benchmark execution";
+        WriteExecutionManifest(manifestPath, config, activeSuiteRunId, resolved, context, "INVALID", reason);
+        if (!executionManifestStates.empty())
+        {
+            auto& state = executionManifestStates.back();
+            if (state.Path == manifestPath)
+            {
+                state.Status = "INVALID";
+                state.Reason = reason;
+            }
+        }
         context.Log(L"\nFailed to start benchmark " + ToWide(config.ModeName));
         ++automaticBenchmarkIndex;
         return;
@@ -538,7 +640,8 @@ void BenchmarkController::StartAutomaticTest(const BenchmarkControllerContext& c
 
     context.Log(L"\nStarted benchmark: " + ToWide(config.ModeName) +
         L" / " + ToWide(config.Preset) +
-        L" / " + std::to_wstring(config.TotalCount) + L" voxels" +
+        L" / requested static " + std::to_wstring(config.RequestedStaticBudget) +
+        L" / requested dynamic " + std::to_wstring(config.RequestedDynamicBudget) +
         L" / secondary share " + std::to_wstring(config.SecondaryShare));
 }
 
@@ -568,11 +671,58 @@ void BenchmarkController::WriteAutomaticSummary(const BenchmarkControllerContext
     ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
     ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
     ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
-    ResearchArtifactWriter::WriteTelemetryCsv(artifactContext);
-    ResearchArtifactWriter::WriteMemoryTimelineCsv(artifactContext);
+    ResearchArtifactWriter::WriteTelemetryCsv(artifactContext, automaticBenchmarkSummaries);
 
     if (automaticBenchmarkSummaries.empty())
         return;
+
+    if (BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries))
+        context.Log(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());
+}
+
+void BenchmarkController::FinalizeAutomaticArtifacts(const BenchmarkControllerContext& context,
+                                                     const char* status,
+                                                     const std::string& reason)
+{
+    const uint32_t warmupFrames = automaticBenchmarkConfigs.empty()
+                                      ? 0
+                                      : automaticBenchmarkConfigs.front().WarmupFrameCount;
+    const uint32_t measuredFrames = automaticBenchmarkConfigs.empty()
+                                        ? 0
+                                        : automaticBenchmarkConfigs.front().MeasuredFrameCount;
+
+    WriteSuiteStatus(automaticBenchmarkStatusPath, activeSuite, activeSuiteRunId, activeSuiteSeed,
+                     warmupFrames, measuredFrames, automaticBenchmarkConfigs.size(),
+                     status, reason, context);
+
+    auto artifactContext = BuildArtifactContext(context, activeSuite, activeSuiteRunId, activeSuiteSeed,
+                                                warmupFrames, measuredFrames,
+                                                automaticBenchmarkConfigs.size(),
+                                                benchmarkDirectory,
+                                                automaticBenchmarkStatusPath,
+                                                automaticBenchmarkSummaryPath,
+                                                status,
+                                                reason);
+
+    for (auto& state : executionManifestStates)
+    {
+        if (state.Status == "RUNNING")
+        {
+            state.Status = "INVALID";
+            state.Reason = "execution did not complete before suite finalization";
+        }
+        WriteExecutionManifest(state.Path, state.Config, activeSuiteRunId, state.Resolved, context,
+                               state.Status.c_str(), state.Reason);
+    }
+
+    ResearchArtifactWriter::WriteSuiteManifest(artifactContext, automaticBenchmarkConfigs);
+    ResearchArtifactWriter::WriteEnvironment(artifactContext, context.BuildMetadata());
+    ResearchArtifactWriter::WriteReproductionReadme(artifactContext);
+    ResearchArtifactWriter::WriteRunsCsv(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WriteRawFramesCsv(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WritePairedRunsCsv(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WriteInvalidRecords(artifactContext, automaticBenchmarkSummaries);
+    ResearchArtifactWriter::WriteTelemetryCsv(artifactContext, automaticBenchmarkSummaries);
 
     if (BenchmarkCsvWriter::WriteAutomaticSummary(automaticBenchmarkSummaryPath, automaticBenchmarkSummaries))
         context.Log(L"\nAutomatic benchmark summary written: " + automaticBenchmarkSummaryPath.wstring());

@@ -67,6 +67,15 @@ private:
 
     std::vector<AutomaticBenchmarkConfig> automaticBenchmarkConfigs;
     std::vector<VoxelBenchmarkProfiler::BenchmarkSummary> automaticBenchmarkSummaries;
+    struct ExecutionManifestState
+    {
+        std::filesystem::path Path;
+        AutomaticBenchmarkConfig Config{};
+        BenchmarkConfigurationApplyResult Resolved{};
+        std::string Status;
+        std::string Reason;
+    };
+    std::vector<ExecutionManifestState> executionManifestStates;
     size_t automaticBenchmarkIndex = 0;
     bool automaticBenchmarkActive = false;
     bool automaticBenchmarkStopRequested = false;
@@ -79,4 +88,7 @@ private:
     void StartAutomaticTest(const BenchmarkControllerContext& context);
     void ApplyBenchmarkVoxelCount(const BenchmarkControllerContext& context, int totalCount) const;
     void WriteAutomaticSummary(const BenchmarkControllerContext& context);
+    void FinalizeAutomaticArtifacts(const BenchmarkControllerContext& context,
+                                    const char* status,
+                                    const std::string& reason);
 };

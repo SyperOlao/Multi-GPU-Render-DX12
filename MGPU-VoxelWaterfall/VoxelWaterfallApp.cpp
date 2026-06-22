@@ -1,11 +1,17 @@
 #include "VoxelWaterfallApp.h"
+#include "ComputePSO.h"
 #include "GDescriptorHeap.h"
+#include "GCommandList.h"
+#include "GCommandQueue.h"
+#include "GRootSignature.h"
 #include "Source/Assets/SampleAssetManifest.h"
 #include "Source/Devices/DeviceSelectionPolicy.h"
 
 #include <array>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cfloat>
 #include <cstdio>
 #include <cstring>
 #include <DirectXMath.h>
@@ -125,6 +131,64 @@ namespace
             const auto count = static_cast<size_t>(file.gcount());
             if (count > 0)
                 hash = Fnv1aAppendBytes(hash, buffer.data(), count);
+        }
+
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return stream.str();
+    }
+
+    std::string ToGenericUtf8Path(std::filesystem::path path)
+    {
+        return path.generic_string();
+    }
+
+    std::string RuntimeShaderRelativePath(const std::filesystem::path& shaderDirectory,
+                                          const std::filesystem::path& shaderPath)
+    {
+        std::error_code error;
+        const auto relative = std::filesystem::relative(shaderPath, shaderDirectory, error);
+        const auto path = error ? shaderPath.filename() : relative;
+        return "Shaders/" + ToGenericUtf8Path(path);
+    }
+
+    uint64_t Fnv1aAppendString(uint64_t hash, const std::string& value)
+    {
+        hash = Fnv1aAppendBytes(hash, value.data(), value.size());
+        const char terminator = '\0';
+        return Fnv1aAppendBytes(hash, &terminator, sizeof(terminator));
+    }
+
+    std::string HashShaderSetOrUnknown(const std::filesystem::path& shaderDirectory)
+    {
+        if (!std::filesystem::exists(shaderDirectory) || !std::filesystem::is_directory(shaderDirectory))
+            return "unknown";
+
+        std::vector<std::filesystem::path> shaderPaths;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(shaderDirectory))
+        {
+            if (entry.is_regular_file() && entry.path().extension() == L".hlsl")
+                shaderPaths.push_back(entry.path());
+        }
+        if (shaderPaths.empty())
+            return "unknown";
+
+        std::sort(shaderPaths.begin(), shaderPaths.end(),
+                  [&shaderDirectory](const auto& lhs, const auto& rhs)
+                  {
+                      return RuntimeShaderRelativePath(shaderDirectory, lhs) <
+                          RuntimeShaderRelativePath(shaderDirectory, rhs);
+                  });
+
+        uint64_t hash = 1469598103934665603ull;
+        for (const auto& shaderPath : shaderPaths)
+        {
+            const std::string contentHash = HashFileOrUnknown(shaderPath);
+            if (contentHash == "unknown")
+                return "unknown";
+            const std::string relativePath = RuntimeShaderRelativePath(shaderDirectory, shaderPath);
+            hash = Fnv1aAppendString(hash, relativePath);
+            hash = Fnv1aAppendString(hash, contentHash);
         }
 
         std::ostringstream stream;
@@ -511,6 +575,271 @@ namespace
         }
     }
 
+    struct ValidationCapturedPath
+    {
+        bool Available = false;
+        std::string BlockedReason;
+        VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;
+        uint32_t FrameIndex = 0;
+        PEPEngine::Graphics::GTexture Color;
+        PEPEngine::Graphics::GTexture HardwareDepth;
+        PEPEngine::Graphics::GTexture SecondaryColor;
+        PEPEngine::Graphics::GTexture SecondaryLinearDepth;
+        PEPEngine::Graphics::GTexture LinearDepth;
+        bool UseSecondaryDepth = false;
+    };
+
+    struct ValidationDepthConstants
+    {
+        uint32_t RenderSize[2] = {};
+        float NearZ = 0.25f;
+        float FarZ = 900.0f;
+        float DepthEpsilon = 0.02f;
+        uint32_t UseSecondary = 0;
+        float SecondaryInvalidDepth = FLT_MAX;
+        float Padding0 = 0.0f;
+    };
+    static_assert(sizeof(ValidationDepthConstants) == 32);
+
+    struct ValidationCompareConstants
+    {
+        uint32_t RenderSize[2] = {};
+        float ColorTolerance = 0.025f;
+        float DepthTolerance = 0.02f;
+        float ValidDepthMax = 1000000.0f;
+        float Padding1 = 0.0f;
+    };
+    static_assert(sizeof(ValidationCompareConstants) == 24);
+
+    std::string SanitizeValidationToken(std::string value)
+    {
+        for (auto& ch : value)
+        {
+            if (ch == ':' || ch == '/' || ch == '\\' || ch == '?' || ch == '*' ||
+                ch == '"' || ch == '<' || ch == '>' || ch == '|')
+            {
+                ch = '_';
+            }
+        }
+        return value;
+    }
+
+    uint32_t BytesPerPixel(const DXGI_FORMAT format)
+    {
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            return 4;
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_D32_FLOAT:
+        case DXGI_FORMAT_R32_TYPELESS:
+            return 4;
+        default:
+            return 0;
+        }
+    }
+
+    std::string FormatName(const DXGI_FORMAT format)
+    {
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+        case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+        case DXGI_FORMAT_R32_FLOAT: return "R32_FLOAT";
+        case DXGI_FORMAT_R32_TYPELESS: return "R32_TYPELESS";
+        default: return "UNKNOWN";
+        }
+    }
+
+    std::string NarrowForLog(const std::wstring& value)
+    {
+        std::string text;
+        text.reserve(value.size());
+        for (const wchar_t ch : value)
+            text.push_back(ch >= 0 && ch < 128 ? static_cast<char>(ch) : '?');
+        return text;
+    }
+
+    std::string DxFailureReason(const char* prefix, const DxException& ex)
+    {
+        return std::string(prefix) + ": " + HResultToHex(ex.ErrorCode) + " " + NarrowForLog(ex.ToString());
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC Texture2DSrvDesc(const DXGI_FORMAT format)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+        desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        desc.Format = format;
+        desc.Texture2D.MostDetailedMip = 0;
+        desc.Texture2D.MipLevels = 1;
+        return desc;
+    }
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC Texture2DUavDesc(const DXGI_FORMAT format)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        desc.Format = format;
+        return desc;
+    }
+
+    PEPEngine::Graphics::GTexture CreateValidationTexture(
+        const std::shared_ptr<PEPEngine::Graphics::GDevice>& device,
+        const uint32_t width,
+        const uint32_t height,
+        const DXGI_FORMAT format,
+        const D3D12_RESOURCE_FLAGS flags,
+        const std::wstring& name)
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = std::max(1u, width);
+        desc.Height = std::max(1u, height);
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = flags;
+        return PEPEngine::Graphics::GTexture(device, desc, name, PEPEngine::Graphics::TextureUsage::Albedo);
+    }
+
+    std::filesystem::path RawPath(
+        const std::filesystem::path& outputDirectory,
+        const std::string& caseId,
+        const char* suffix)
+    {
+        return outputDirectory / "references" /
+            (SanitizeValidationToken(caseId) + "_" + suffix + ".raw");
+    }
+
+    bool ExportTextureRaw(
+        const std::shared_ptr<PEPEngine::Graphics::GDevice>& device,
+        const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& queue,
+        PEPEngine::Graphics::GTexture& texture,
+        const std::filesystem::path& path,
+        std::string& reason)
+    {
+        const auto resource = texture.GetD3D12Resource();
+        if (!device || !queue || !resource)
+        {
+            reason = "reference texture export failed: missing D3D12 resource or queue";
+            return false;
+        }
+
+        const auto desc = resource->GetDesc();
+        const uint32_t bytesPerPixel = BytesPerPixel(desc.Format);
+        if (bytesPerPixel == 0)
+        {
+            reason = "reference texture export failed: unsupported texture format " +
+                std::to_string(static_cast<int>(desc.Format));
+            return false;
+        }
+
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+        UINT numRows = 0;
+        UINT64 rowSizeInBytes = 0;
+        UINT64 totalBytes = 0;
+        device->GetDXDevice()->GetCopyableFootprints(
+            &desc, 0, 1, 0, &layout, &numRows, &rowSizeInBytes, &totalBytes);
+
+        PEPEngine::Graphics::GResource readback(
+            device,
+            CD3DX12_RESOURCE_DESC::Buffer(totalBytes),
+            L"VoxelValidationTextureReadback",
+            nullptr,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
+
+        const auto cmdList = queue->GetCommandList();
+        cmdList->TransitionBarrier(texture, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->FlushResourceBarriers();
+
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = readback.GetD3D12Resource().Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = layout;
+
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = resource.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        const auto fence = queue->ExecuteCommandList(cmdList);
+        queue->WaitForFenceValue(fence);
+
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!file.is_open())
+        {
+            reason = "reference texture export failed: could not open " + path.string();
+            return false;
+        }
+
+        void* mapped = nullptr;
+        const D3D12_RANGE readRange{0, static_cast<SIZE_T>(totalBytes)};
+        HRESULT hr = readback.GetD3D12Resource()->Map(0, &readRange, &mapped);
+        if (FAILED(hr) || !mapped)
+        {
+            reason = "reference texture export failed: readback Map failed with " + HResultToHex(hr);
+            return false;
+        }
+
+        const std::string header =
+            "MGPU_VOXEL_TEXTURE_RAW_V1\nwidth " + std::to_string(desc.Width) +
+            "\nheight " + std::to_string(desc.Height) +
+            "\nformat " + FormatName(desc.Format) +
+            "\nbytes_per_pixel " + std::to_string(bytesPerPixel) +
+            "\nlayout tight_rows\n\n";
+        file.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+        const auto* base = static_cast<const uint8_t*>(mapped) + layout.Offset;
+        const size_t tightRowBytes = static_cast<size_t>(desc.Width) * bytesPerPixel;
+        for (UINT row = 0; row < numRows; ++row)
+        {
+            file.write(reinterpret_cast<const char*>(base + row * layout.Footprint.RowPitch),
+                       static_cast<std::streamsize>(tightRowBytes));
+        }
+
+        const D3D12_RANGE emptyRange{0, 0};
+        readback.GetD3D12Resource()->Unmap(0, &emptyRange);
+        return true;
+    }
+
+    std::string BuildValidationConfigHash(const VoxelVisualValidationCase& validationCase,
+                                          const VoxelVisualValidationSnapshot& snapshot)
+    {
+        uint64_t hash = 1469598103934665603ull;
+        hash = Fnv1aAppendBytes(hash, validationCase.CaseId.data(), validationCase.CaseId.size());
+        hash = Fnv1aAppendBytes(hash, &validationCase.SingleMode, sizeof(validationCase.SingleMode));
+        hash = Fnv1aAppendBytes(hash, &validationCase.MultiMode, sizeof(validationCase.MultiMode));
+        hash = Fnv1aAppendBytes(hash, &validationCase.SpatialLodEnabled, sizeof(validationCase.SpatialLodEnabled));
+        hash = Fnv1aAppendBytes(hash, &validationCase.TemporalInterval, sizeof(validationCase.TemporalInterval));
+        hash = Fnv1aAppendBytes(hash, &snapshot.TotalVoxelCount, sizeof(snapshot.TotalVoxelCount));
+        hash = Fnv1aAppendBytes(hash, &snapshot.SecondaryShare, sizeof(snapshot.SecondaryShare));
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return stream.str();
+    }
+
+    std::string BuildValidationCameraHash(const VoxelVisualValidationSnapshot& snapshot)
+    {
+        uint64_t hash = 1469598103934665603ull;
+        hash = Fnv1aAppendBytes(hash, snapshot.View, sizeof(snapshot.View));
+        hash = Fnv1aAppendBytes(hash, snapshot.Projection, sizeof(snapshot.Projection));
+        hash = Fnv1aAppendBytes(hash, &snapshot.NearZ, sizeof(snapshot.NearZ));
+        hash = Fnv1aAppendBytes(hash, &snapshot.FarZ, sizeof(snapshot.FarZ));
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return stream.str();
+    }
+
     const char* BenchmarkConfigClassName(const VoxelBenchmarkConfigClass configClass)
     {
         switch (configClass)
@@ -878,9 +1207,11 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     VoxelSimulationSchedulerContext schedulerContext{
         voxelWorkload,
         executionMode,
-        benchmarkWasActive ? VoxelSimulationSchedulerMode::Benchmark : VoxelSimulationSchedulerMode::Interactive,
+        (benchmarkWasActive || visualValidationFixedStepMode)
+            ? VoxelSimulationSchedulerMode::Benchmark
+            : VoxelSimulationSchedulerMode::Interactive,
         interactiveMaxCatchUpSteps,
-        1u,
+        visualValidationFixedStepMode ? visualValidationFixedStepsPerFrame : 1u,
         multiGpuAvailable,
         simulationFrameIndex,
         timestampHeapIndex,
@@ -1468,6 +1799,489 @@ void VoxelWaterfallApp::StopManualBenchmark()
     benchmarkController.StopManual(BuildBenchmarkControllerContext());
 }
 
+VoxelVisualValidationComparisonInput VoxelWaterfallApp::CaptureVisualValidationCase(
+    const VoxelVisualValidationConfig& config,
+    const VoxelVisualValidationCase& validationCase,
+    const std::filesystem::path& outputDirectory)
+{
+    using namespace PEPEngine::Graphics;
+
+    VoxelVisualValidationComparisonInput input{};
+    input.CaseId = validationCase.CaseId;
+    input.ActualSingleMode = validationCase.SingleMode;
+    input.ActualMultiMode = validationCase.MultiMode;
+    input.RenderWidth = config.Snapshot.RenderWidth;
+    input.RenderHeight = config.Snapshot.RenderHeight;
+    input.ConfigHash = BuildValidationConfigHash(validationCase, config.Snapshot);
+    input.CameraHash = BuildValidationCameraHash(config.Snapshot);
+    input.AdapterPairIdentity = visualValidationAdapterPairIdentity;
+    input.SingleColorReferencePath = RawPath(outputDirectory, validationCase.CaseId, "single_color");
+    input.SingleDepthReferencePath = RawPath(outputDirectory, validationCase.CaseId, "single_depth");
+    input.MultiColorReferencePath = RawPath(outputDirectory, validationCase.CaseId, "multi_color");
+    input.MultiDepthReferencePath = RawPath(outputDirectory, validationCase.CaseId, "multi_depth");
+    input.DiffReferencePath = RawPath(outputDirectory, validationCase.CaseId, "diff");
+
+    const auto graphicsQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Graphics) : nullptr;
+    const auto computeQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Compute) : nullptr;
+    if (!primeDevice || !graphicsQueue || !computeQueue || !antiAliasingPrimePath)
+    {
+        input.BlockedReason = "GPU capture unavailable: primary device, queues, or render targets are not initialized";
+        return input;
+    }
+
+    const auto createLinearDepth = [&](GTexture& primaryDepth,
+                                       GTexture& secondaryColor,
+                                       GTexture& secondaryDepth,
+                                       const bool useSecondary,
+                                       const std::wstring& name,
+                                       std::string& reason) -> GTexture
+    {
+        const auto desc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
+        auto output = CreateValidationTexture(
+            primeDevice,
+            static_cast<uint32_t>(desc.Width),
+            desc.Height,
+            DXGI_FORMAT_R32_FLOAT,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            name);
+
+        CD3DX12_DESCRIPTOR_RANGE srvRange;
+        srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+        CD3DX12_DESCRIPTOR_RANGE uavRange;
+        uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+        GRootSignature rootSignature;
+        rootSignature.AddConstantParameter(sizeof(ValidationDepthConstants) / sizeof(uint32_t), 0);
+        rootSignature.AddDescriptorParameter(&srvRange, 1);
+        rootSignature.AddDescriptorParameter(&uavRange, 1);
+        rootSignature.Initialize(primeDevice, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+        GShader shader(L"Shaders\\VoxelValidationDepthLinearize.hlsl", ComputeShader, nullptr, "CS", "cs_5_1");
+        shader.LoadAndCompile();
+        ComputePSO pso(rootSignature);
+        pso.SetShader(&shader);
+        pso.Initialize(primeDevice);
+
+        auto descriptors = primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4);
+        auto primaryDepthSrv = Texture2DSrvDesc(DXGI_FORMAT_R32_FLOAT);
+        primaryDepth.CreateShaderResourceView(&primaryDepthSrv, &descriptors, 0);
+        auto secondaryColorSrv = Texture2DSrvDesc(secondaryColor.GetD3D12ResourceDesc().Format);
+        secondaryColor.CreateShaderResourceView(&secondaryColorSrv, &descriptors, 1);
+        auto secondaryDepthSrv = Texture2DSrvDesc(DXGI_FORMAT_R32_FLOAT);
+        secondaryDepth.CreateShaderResourceView(&secondaryDepthSrv, &descriptors, 2);
+        auto outputUav = Texture2DUavDesc(DXGI_FORMAT_R32_FLOAT);
+        output.CreateUnorderedAccessView(&outputUav, &descriptors, 3);
+
+        ValidationDepthConstants constants{};
+        constants.RenderSize[0] = static_cast<uint32_t>(desc.Width);
+        constants.RenderSize[1] = desc.Height;
+        constants.NearZ = config.Snapshot.NearZ;
+        constants.FarZ = config.Snapshot.FarZ;
+        constants.DepthEpsilon = static_cast<float>(config.Tolerances.DepthTolerance);
+        constants.UseSecondary = useSecondary ? 1u : 0u;
+
+        const auto cmdList = computeQueue->GetCommandList();
+        cmdList->SetPipelineState(pso);
+        cmdList->SetDescriptorsHeap(&descriptors);
+        cmdList->TransitionBarrier(primaryDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(secondaryColor, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(secondaryDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->FlushResourceBarriers();
+        cmdList->SetRoot32BitConstants(0, sizeof(ValidationDepthConstants) / sizeof(uint32_t), &constants, 0);
+        cmdList->SetRootDescriptorTable(1, &descriptors, 0);
+        cmdList->SetRootDescriptorTable(2, &descriptors, 3);
+        cmdList->Dispatch((constants.RenderSize[0] + 7u) / 8u, (constants.RenderSize[1] + 7u) / 8u, 1);
+        cmdList->UAVBarrier(output, true);
+        const auto fence = computeQueue->ExecuteCommandList(cmdList);
+        computeQueue->WaitForFenceValue(fence);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        reason.clear();
+        return output;
+    };
+
+    const auto copyTexture = [&](GTexture& source, const std::wstring& name, std::string& reason) -> GTexture
+    {
+        const auto sourceDesc = source.GetD3D12ResourceDesc();
+        auto copy = CreateValidationTexture(
+            primeDevice,
+            static_cast<uint32_t>(sourceDesc.Width),
+            sourceDesc.Height,
+            sourceDesc.Format,
+            D3D12_RESOURCE_FLAG_NONE,
+            name);
+
+        const auto cmdList = graphicsQueue->GetCommandList();
+        cmdList->CopyResource(copy, source);
+        const auto fence = graphicsQueue->ExecuteCommandList(cmdList);
+        graphicsQueue->WaitForFenceValue(fence);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        reason.clear();
+        return copy;
+    };
+
+    const auto capturePath = [&](const VoxelExecutionMode mode,
+                                 const bool multiPath,
+                                 const wchar_t* label) -> ValidationCapturedPath
+    {
+        ValidationCapturedPath capture{};
+        capture.ActualMode = mode;
+        try
+        {
+            ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::MixedStaticAndDynamic);
+            ApplyRenderResolutionPreset(VoxelRenderResolutionPreset::R1920x1080);
+            ApplyResearchCameraMode(VoxelResearchCameraMode::FixedOverview);
+            ApplyResearchLightingPreset(VoxelResearchLightingPreset::BenchmarkNeutral);
+            ApplyBenchmarkSecondaryShare(config.Snapshot.SecondaryShare);
+            ApplyBenchmarkSpatialLodEnabled(validationCase.SpatialLodEnabled);
+            ApplyBenchmarkTemporalInterval(validationCase.TemporalInterval);
+            voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+            ApplyExecutionMode(mode);
+            ResetBenchmarkDeterministicState();
+            Flush();
+
+            auto* timerPtr = GetTimer();
+            timerPtr->Reset();
+            pumpFrameQuitRequested = false;
+            visualValidationFixedStepMode = true;
+            visualValidationFixedStepsPerFrame = 1;
+
+            bool presented = false;
+            uint64_t executedFixedSteps = 0;
+            const uint32_t maxAttempts =
+                static_cast<uint32_t>(std::max<uint64_t>(config.Snapshot.FixedStepCount * 120, 240));
+            for (uint32_t attempt = 0;
+                 attempt < maxAttempts && executedFixedSteps < config.Snapshot.FixedStepCount && !pumpFrameQuitRequested;
+                 ++attempt)
+            {
+                const bool framePresented = PumpOneFrame();
+                presented = presented || framePresented;
+                if (framePresented)
+                    executedFixedSteps += frameGraphTelemetry.ExecutedFixedSteps;
+                else
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+
+            visualValidationFixedStepMode = false;
+            visualValidationFixedStepsPerFrame = 1;
+            Flush();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+            capture.ActualMode = frameGraphTelemetry.ActualMode;
+            capture.FrameIndex = frameGraphTelemetry.FrameResourceIndex;
+            if (!presented)
+            {
+                capture.BlockedReason = "deterministic validation frame was not presented for " +
+                    std::string(multiPath ? "Multi" : "Single") + " path";
+                return capture;
+            }
+            if (executedFixedSteps != config.Snapshot.FixedStepCount)
+            {
+                capture.BlockedReason = "deterministic validation executed " +
+                    std::to_string(executedFixedSteps) +
+                    " fixed steps, expected " + std::to_string(config.Snapshot.FixedStepCount);
+                return capture;
+            }
+            if (capture.ActualMode != mode)
+            {
+                capture.BlockedReason = "deterministic validation actual mode " +
+                    GetExecutionModeName(capture.ActualMode) + " did not match requested " +
+                    GetExecutionModeName(mode);
+                return capture;
+            }
+
+            GTexture* colorSource = &antiAliasingPrimePath->GetRenderTarget();
+            GTexture* secondaryColor = colorSource;
+            GTexture* secondaryDepth = &antiAliasingPrimePath->GetDepthMap();
+            bool useSecondaryDepth = false;
+            if (multiPath)
+            {
+                if (!multiGpuVoxelRenderTargets.IsInitialized())
+                {
+                    capture.BlockedReason = "deterministic Multi capture unavailable: multi-GPU render targets are not initialized";
+                    return capture;
+                }
+                auto& frames = multiGpuVoxelRenderTargets.GetFrames();
+                if (capture.FrameIndex >= frames.size())
+                {
+                    capture.BlockedReason = "deterministic Multi capture unavailable: frame target index is out of range";
+                    return capture;
+                }
+                auto& targets = frames[capture.FrameIndex];
+                if (!frameGraphTelemetry.CompositeSubmitted || !targets.HasReceivedImage)
+                {
+                    capture.BlockedReason = "deterministic Multi capture unavailable: final depth-aware composite was not submitted";
+                    return capture;
+                }
+                colorSource = &targets.PrimaryCompositeColor;
+                secondaryColor = &targets.PrimaryReceivedSecondaryColor;
+                secondaryDepth = &targets.PrimaryReceivedSecondaryLinearDepth;
+                useSecondaryDepth = true;
+            }
+
+            std::string reason;
+            capture.Color = copyTexture(*colorSource, std::wstring(L"VoxelValidation") + label + L"Color", reason);
+            if (!reason.empty())
+            {
+                capture.BlockedReason = reason;
+                return capture;
+            }
+            capture.HardwareDepth = copyTexture(
+                antiAliasingPrimePath->GetDepthMap(),
+                std::wstring(L"VoxelValidation") + label + L"HardwareDepth",
+                reason);
+            if (!reason.empty())
+            {
+                capture.BlockedReason = reason;
+                return capture;
+            }
+            capture.UseSecondaryDepth = useSecondaryDepth;
+            if (useSecondaryDepth)
+            {
+                capture.SecondaryColor = copyTexture(
+                    *secondaryColor,
+                    std::wstring(L"VoxelValidation") + label + L"SecondaryColor",
+                    reason);
+                if (!reason.empty())
+                {
+                    capture.BlockedReason = reason;
+                    return capture;
+                }
+                capture.SecondaryLinearDepth = copyTexture(
+                    *secondaryDepth,
+                    std::wstring(L"VoxelValidation") + label + L"SecondaryLinearDepth",
+                    reason);
+                if (!reason.empty())
+                {
+                    capture.BlockedReason = reason;
+                    return capture;
+                }
+            }
+            capture.Available = true;
+        }
+        catch (const std::exception& ex)
+        {
+            visualValidationFixedStepMode = false;
+            visualValidationFixedStepsPerFrame = 1;
+            capture.BlockedReason = "deterministic " + std::string(multiPath ? "Multi" : "Single") +
+                " capture failed: " + ex.what();
+        }
+        catch (const DxException& ex)
+        {
+            visualValidationFixedStepMode = false;
+            visualValidationFixedStepsPerFrame = 1;
+            capture.BlockedReason = DxFailureReason(
+                multiPath ? "deterministic Multi capture D3D12 failure" : "deterministic Single capture D3D12 failure",
+                ex);
+        }
+        return capture;
+    };
+
+    auto single = capturePath(validationCase.SingleMode, false, L"Single");
+    input.ActualSingleMode = single.ActualMode;
+    if (!single.Available)
+    {
+        input.BlockedReason = single.BlockedReason.empty()
+                                  ? "deterministic Single capture failed without a detailed reason"
+                                  : single.BlockedReason;
+        return input;
+    }
+
+    auto multi = capturePath(validationCase.MultiMode, true, L"Multi");
+    input.ActualMultiMode = multi.ActualMode;
+    if (!multi.Available)
+    {
+        input.BlockedReason = multi.BlockedReason.empty()
+                                  ? "deterministic Multi capture failed without a detailed reason"
+                                  : multi.BlockedReason;
+        return input;
+    }
+
+    try
+    {
+        std::string reason;
+        single.LinearDepth = createLinearDepth(
+            single.HardwareDepth,
+            single.Color,
+            single.HardwareDepth,
+            false,
+            L"VoxelValidationSingleLinearDepth",
+            reason);
+        if (!reason.empty())
+        {
+            input.BlockedReason = reason;
+            return input;
+        }
+
+        GTexture& multiSecondaryColor = multi.UseSecondaryDepth ? multi.SecondaryColor : multi.Color;
+        GTexture& multiSecondaryDepth = multi.UseSecondaryDepth ? multi.SecondaryLinearDepth : multi.HardwareDepth;
+        multi.LinearDepth = createLinearDepth(
+            multi.HardwareDepth,
+            multiSecondaryColor,
+            multiSecondaryDepth,
+            multi.UseSecondaryDepth,
+            L"VoxelValidationMultiLinearDepth",
+            reason);
+        if (!reason.empty())
+        {
+            input.BlockedReason = reason;
+            return input;
+        }
+    }
+    catch (const DxException& ex)
+    {
+        input.BlockedReason = DxFailureReason("deterministic depth linearization D3D12 failure", ex);
+        return input;
+    }
+    catch (const std::exception& ex)
+    {
+        input.BlockedReason = std::string("deterministic depth linearization failed: ") + ex.what();
+        return input;
+    }
+
+    try
+    {
+        const uint32_t width = input.RenderWidth;
+        const uint32_t height = input.RenderHeight;
+        const uint32_t groupsX = (width + 7u) / 8u;
+        const uint32_t groupsY = (height + 7u) / 8u;
+        const uint32_t tileCount = groupsX * groupsY;
+        const UINT64 statsBytes = static_cast<UINT64>(tileCount) * sizeof(VoxelValidationTileStats);
+
+        GResource tileStats(
+            primeDevice,
+            CD3DX12_RESOURCE_DESC::Buffer(statsBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            L"VoxelValidationTileStats",
+            nullptr,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GResource statsReadback(
+            primeDevice,
+            CD3DX12_RESOURCE_DESC::Buffer(statsBytes),
+            L"VoxelValidationTileStatsReadback",
+            nullptr,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
+
+        auto diff = CreateValidationTexture(
+            primeDevice,
+            width,
+            height,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            L"VoxelValidationDiff");
+
+        CD3DX12_DESCRIPTOR_RANGE srvRange;
+        srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
+        CD3DX12_DESCRIPTOR_RANGE uavRange;
+        uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0);
+        GRootSignature rootSignature;
+        rootSignature.AddConstantParameter(sizeof(ValidationCompareConstants) / sizeof(uint32_t), 0);
+        rootSignature.AddDescriptorParameter(&srvRange, 1);
+        rootSignature.AddDescriptorParameter(&uavRange, 1);
+        rootSignature.Initialize(primeDevice, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+        GShader shader(L"Shaders\\VoxelValidationCompare.hlsl", ComputeShader, nullptr, "CS", "cs_5_1");
+        shader.LoadAndCompile();
+        ComputePSO pso(rootSignature);
+        pso.SetShader(&shader);
+        pso.Initialize(primeDevice);
+
+        auto descriptors = primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6);
+        auto colorSrv = Texture2DSrvDesc(single.Color.GetD3D12ResourceDesc().Format);
+        single.Color.CreateShaderResourceView(&colorSrv, &descriptors, 0);
+        auto depthSrv = Texture2DSrvDesc(DXGI_FORMAT_R32_FLOAT);
+        single.LinearDepth.CreateShaderResourceView(&depthSrv, &descriptors, 1);
+        colorSrv = Texture2DSrvDesc(multi.Color.GetD3D12ResourceDesc().Format);
+        multi.Color.CreateShaderResourceView(&colorSrv, &descriptors, 2);
+        multi.LinearDepth.CreateShaderResourceView(&depthSrv, &descriptors, 3);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC statsUav{};
+        statsUav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        statsUav.Format = DXGI_FORMAT_UNKNOWN;
+        statsUav.Buffer.NumElements = tileCount;
+        statsUav.Buffer.StructureByteStride = sizeof(VoxelValidationTileStats);
+        tileStats.CreateUnorderedAccessView(&statsUav, &descriptors, 4);
+        auto diffUav = Texture2DUavDesc(DXGI_FORMAT_R8G8B8A8_UNORM);
+        diff.CreateUnorderedAccessView(&diffUav, &descriptors, 5);
+
+        ValidationCompareConstants constants{};
+        constants.RenderSize[0] = width;
+        constants.RenderSize[1] = height;
+        constants.ColorTolerance = static_cast<float>(config.Tolerances.ColorTolerance);
+        constants.DepthTolerance = static_cast<float>(config.Tolerances.DepthTolerance);
+        constants.ValidDepthMax = static_cast<float>(config.Tolerances.ValidDepthMax);
+
+        const auto cmdList = computeQueue->GetCommandList();
+        cmdList->SetPipelineState(pso);
+        cmdList->SetDescriptorsHeap(&descriptors);
+        cmdList->TransitionBarrier(single.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(single.LinearDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(multi.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(multi.LinearDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->TransitionBarrier(tileStats, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->TransitionBarrier(diff, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->FlushResourceBarriers();
+        cmdList->SetRoot32BitConstants(0, sizeof(ValidationCompareConstants) / sizeof(uint32_t), &constants, 0);
+        cmdList->SetRootDescriptorTable(1, &descriptors, 0);
+        cmdList->SetRootDescriptorTable(2, &descriptors, 4);
+        cmdList->Dispatch(groupsX, groupsY, 1);
+        cmdList->UAVBarrier(tileStats);
+        cmdList->UAVBarrier(diff);
+        cmdList->CopyBufferRegion(
+            statsReadback.GetD3D12Resource(),
+            0,
+            tileStats.GetD3D12Resource(),
+            0,
+            static_cast<UINT>(statsBytes),
+            true);
+        const auto fence = computeQueue->ExecuteCommandList(cmdList);
+        computeQueue->WaitForFenceValue(fence);
+
+        void* mapped = nullptr;
+        const D3D12_RANGE readRange{0, static_cast<SIZE_T>(statsBytes)};
+        HRESULT hr = statsReadback.GetD3D12Resource()->Map(0, &readRange, &mapped);
+        if (FAILED(hr) || !mapped)
+        {
+            input.BlockedReason = "validation tile statistics readback Map failed with " + HResultToHex(hr);
+            return input;
+        }
+        input.TileStats.resize(tileCount);
+        std::memcpy(input.TileStats.data(), mapped, static_cast<size_t>(statsBytes));
+        const D3D12_RANGE emptyRange{0, 0};
+        statsReadback.GetD3D12Resource()->Unmap(0, &emptyRange);
+
+        input.CaptureAvailable = true;
+        input.CompareShaderDispatched = true;
+        input.ReadbackComplete = true;
+
+        std::string exportReason;
+        if (!ExportTextureRaw(primeDevice, graphicsQueue, single.Color, input.SingleColorReferencePath, exportReason) ||
+            !ExportTextureRaw(primeDevice, graphicsQueue, single.LinearDepth, input.SingleDepthReferencePath, exportReason) ||
+            !ExportTextureRaw(primeDevice, graphicsQueue, multi.Color, input.MultiColorReferencePath, exportReason) ||
+            !ExportTextureRaw(primeDevice, graphicsQueue, multi.LinearDepth, input.MultiDepthReferencePath, exportReason) ||
+            !ExportTextureRaw(primeDevice, graphicsQueue, diff, input.DiffReferencePath, exportReason))
+        {
+            input.BlockedReason = exportReason;
+            input.CaptureAvailable = false;
+            return input;
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        input.BlockedReason = std::string("VoxelValidationCompare.hlsl dispatch/readback failed: ") + ex.what();
+        input.CompareShaderDispatched = false;
+        input.ReadbackComplete = false;
+    }
+    catch (const DxException& ex)
+    {
+        input.BlockedReason = DxFailureReason("VoxelValidationCompare.hlsl dispatch/readback D3D12 failure", ex);
+        input.CompareShaderDispatched = false;
+        input.ReadbackComplete = false;
+    }
+
+    return input;
+}
+
 void VoxelWaterfallApp::RunVisualValidation()
 {
     VoxelVisualValidationConfig config{};
@@ -1509,8 +2323,9 @@ void VoxelWaterfallApp::RunVisualValidation()
     snapshot.Background = "BenchmarkNeutral";
     snapshot.BuildHash = benchmarkProvenanceCache.BuildHash;
     snapshot.ShaderHash = benchmarkProvenanceCache.ShaderHash;
+    snapshot.ShaderSetHash = benchmarkProvenanceCache.ShaderSetHash;
     visualValidationBuildHash = snapshot.BuildHash;
-    visualValidationShaderHash = snapshot.ShaderHash;
+    visualValidationShaderHash = snapshot.ShaderSetHash;
     visualValidationAdapterPairIdentity = twoAdapterVerificationHasResult
                                               ? twoAdapterVerificationResult.AdapterPairIdentity
                                               : "";
@@ -1528,20 +2343,125 @@ void VoxelWaterfallApp::RunVisualValidation()
     config.Cases = VoxelVisualValidationConfig::DefaultCases();
 
     const auto outputDirectory = GetExecutableDirectory() / "VoxelValidation";
+    const auto exportBlockedResults = [&](const std::string& reason)
+    {
+        for (const auto& validationCase : config.Cases)
+        {
+            const auto existing = std::find_if(
+                config.CompletedComparisons.begin(),
+                config.CompletedComparisons.end(),
+                [&](const VoxelVisualValidationComparisonInput& comparison)
+                {
+                    return comparison.CaseId == validationCase.CaseId;
+                });
+            if (existing != config.CompletedComparisons.end())
+                continue;
+
+            VoxelVisualValidationComparisonInput blocked{};
+            blocked.CaseId = validationCase.CaseId;
+            blocked.ActualSingleMode = validationCase.SingleMode;
+            blocked.ActualMultiMode = validationCase.MultiMode;
+            blocked.RenderWidth = snapshot.RenderWidth;
+            blocked.RenderHeight = snapshot.RenderHeight;
+            blocked.ConfigHash = BuildValidationConfigHash(validationCase, snapshot);
+            blocked.CameraHash = BuildValidationCameraHash(snapshot);
+            blocked.AdapterPairIdentity = visualValidationAdapterPairIdentity;
+            blocked.BlockedReason =
+                "deterministic GPU validation capture could not complete: " + reason;
+            config.CompletedComparisons.push_back(std::move(blocked));
+        }
+
+        visualValidationMetrics =
+            visualValidationRunner.RunDeterministicSuite(config, outputDirectory);
+    };
+
     try
     {
+        config.CompletedComparisons.clear();
+        config.CompletedComparisons.reserve(config.Cases.size());
+        for (size_t caseIndex = 0; caseIndex < config.Cases.size(); ++caseIndex)
+        {
+            const auto& validationCase = config.Cases[caseIndex];
+            auto comparison = CaptureVisualValidationCase(config, validationCase, outputDirectory);
+            const bool blocked = !comparison.BlockedReason.empty() ||
+                !comparison.CaptureAvailable ||
+                !comparison.CompareShaderDispatched ||
+                !comparison.ReadbackComplete ||
+                comparison.TileStats.empty();
+            const std::string abortReason = comparison.BlockedReason.empty()
+                                                ? "deterministic GPU validation capture did not produce complete compare evidence"
+                                                : comparison.BlockedReason;
+            config.CompletedComparisons.push_back(std::move(comparison));
+
+            if (blocked)
+            {
+                for (size_t remainingIndex = caseIndex + 1; remainingIndex < config.Cases.size(); ++remainingIndex)
+                {
+                    const auto& remainingCase = config.Cases[remainingIndex];
+                    VoxelVisualValidationComparisonInput remaining{};
+                    remaining.CaseId = remainingCase.CaseId;
+                    remaining.ActualSingleMode = remainingCase.SingleMode;
+                    remaining.ActualMultiMode = remainingCase.MultiMode;
+                    remaining.RenderWidth = snapshot.RenderWidth;
+                    remaining.RenderHeight = snapshot.RenderHeight;
+                    remaining.ConfigHash = BuildValidationConfigHash(remainingCase, snapshot);
+                    remaining.CameraHash = BuildValidationCameraHash(snapshot);
+                    remaining.AdapterPairIdentity = visualValidationAdapterPairIdentity;
+                    remaining.SingleColorReferencePath = RawPath(outputDirectory, remainingCase.CaseId, "single_color");
+                    remaining.SingleDepthReferencePath = RawPath(outputDirectory, remainingCase.CaseId, "single_depth");
+                    remaining.MultiColorReferencePath = RawPath(outputDirectory, remainingCase.CaseId, "multi_color");
+                    remaining.MultiDepthReferencePath = RawPath(outputDirectory, remainingCase.CaseId, "multi_depth");
+                    remaining.DiffReferencePath = RawPath(outputDirectory, remainingCase.CaseId, "diff");
+                    remaining.BlockedReason =
+                        "deterministic validation aborted after prior capture failure in case " +
+                        validationCase.CaseId + ": " + abortReason;
+                    config.CompletedComparisons.push_back(std::move(remaining));
+                }
+                break;
+            }
+        }
+
         visualValidationMetrics =
             visualValidationRunner.RunDeterministicSuite(config, outputDirectory);
         logQueue.Push(L"Visual validation exported to " +
                       visualValidationMetrics.CsvPath.wstring());
     }
+    catch (const DxException& ex)
+    {
+        try
+        {
+            exportBlockedResults(DxFailureReason("D3D12 failure during deterministic validation capture", ex));
+            logQueue.Push(L"Visual validation exported as BLOCKED to " +
+                          visualValidationMetrics.CsvPath.wstring());
+        }
+        catch (...)
+        {
+            visualValidationMetrics = {};
+            visualValidationMetrics.HasResult = false;
+            visualValidationMetrics.Passed = false;
+            visualValidationMetrics.FailReason = DxFailureReason(
+                "failed to export blocked deterministic validation artifacts after D3D12 failure",
+                ex);
+            logQueue.Push(L"Visual validation failed to export blocked results");
+        }
+    }
     catch (const std::exception& ex)
     {
-        visualValidationMetrics = {};
-        visualValidationMetrics.HasResult = true;
-        visualValidationMetrics.Passed = false;
-        visualValidationMetrics.FailReason = ex.what();
-        logQueue.Push(L"Visual validation failed to export results");
+        try
+        {
+            exportBlockedResults(ex.what());
+            logQueue.Push(L"Visual validation exported as BLOCKED to " +
+                          visualValidationMetrics.CsvPath.wstring());
+        }
+        catch (...)
+        {
+            visualValidationMetrics = {};
+            visualValidationMetrics.HasResult = false;
+            visualValidationMetrics.Passed = false;
+            visualValidationMetrics.FailReason =
+                std::string("failed to export blocked deterministic validation artifacts: ") + ex.what();
+            logQueue.Push(L"Visual validation failed to export blocked results");
+        }
     }
 }
 
@@ -1585,28 +2505,18 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce()
     auto* timerPtr = GetTimer();
     timerPtr->Reset();
     pumpFrameQuitRequested = false;
-    const auto targetPresentCount = totalSuccessfulPresentCount + 12u;
-    while (totalSuccessfulPresentCount < targetPresentCount && !pumpFrameQuitRequested)
-    {
-        PumpOneFrame();
-    }
-    Flush();
 
     TwoAdapterRuntimeEvidence runtime{};
     runtime.Attempted = true;
     runtime.FrameConfigId = result.VerificationRunId + ":MultiGpuFull:share0.5:lodOff:temporal1";
     runtime.RequestedMode = VoxelExecutionMode::MultiGpuFull;
-    runtime.ActualMode = frameGraphTelemetry.ActualMode;
-    runtime.Fallback = runtime.ActualMode != runtime.RequestedMode;
-    runtime.FallbackReason = runtime.Fallback ? "requested MultiGpuFull did not remain actual mode" : "";
+    runtime.ActualMode = VoxelExecutionMode::SingleGpuFull;
 
     for (const auto& partition : voxelWorkload.Partitions)
     {
         if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
         {
             runtime.SecondaryPartitionVoxels += partition.VoxelCount();
-            if (partition.SimulationDispatchedThisFrame)
-                ++runtime.SecondaryComputeDispatchCount;
         }
         else
         {
@@ -1614,23 +2524,98 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce()
         }
     }
 
-    runtime.SecondaryGraphicsDrawCount = frameGraphTelemetry.SecondaryDrawCalls;
-    runtime.SecondaryIndirectDrawCount = frameGraphTelemetry.SecondaryIndirectDrawCalls;
-    runtime.SecondaryRenderedVoxelCount = frameGraphTelemetry.SecondaryRenderedVoxelCount;
+    const auto isActualMultiMode = [](const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    };
+    const auto accumulateFrameEvidence = [&runtime, &isActualMultiMode, this]()
+    {
+        ++runtime.FramesObserved;
+        runtime.ActualMode = frameGraphTelemetry.ActualMode;
+        runtime.AnyActualMultiMode =
+            runtime.AnyActualMultiMode || isActualMultiMode(frameGraphTelemetry.ActualMode);
+        if (frameGraphTelemetry.SecondarySimulationDispatchedThisFrame ||
+            frameGraphTelemetry.SecondaryComputeSubmitted)
+        {
+            ++runtime.TotalSecondaryComputeDispatchCount;
+        }
+        runtime.MaxSecondaryGraphicsDrawCount =
+            std::max(runtime.MaxSecondaryGraphicsDrawCount, frameGraphTelemetry.SecondaryDrawCalls);
+        runtime.MaxSecondaryRenderedVoxelCount =
+            std::max(runtime.MaxSecondaryRenderedVoxelCount, frameGraphTelemetry.SecondaryRenderedVoxelCount);
+        runtime.SecondaryIndirectDrawCount =
+            std::max(runtime.SecondaryIndirectDrawCount, frameGraphTelemetry.SecondaryIndirectDrawCalls);
+        runtime.TotalColorTransferBytes += frameGraphTelemetry.ColorBytesTransferred;
+        runtime.TotalDepthTransferBytes += frameGraphTelemetry.DepthBytesTransferred;
+        runtime.ParticleTransferBytes += frameGraphTelemetry.ParticleTransferBytes;
+        runtime.AnyCompositeSubmitted =
+            runtime.AnyCompositeSubmitted || frameGraphTelemetry.CompositeSubmitted;
+
+        runtime.SecondaryComputeFenceValue =
+            std::max<uint64_t>(runtime.SecondaryComputeFenceValue,
+                               frameGraphTelemetry.SecondaryComputeFenceValue);
+        runtime.SecondaryGraphicsFenceValue =
+            std::max<uint64_t>(runtime.SecondaryGraphicsFenceValue,
+                               frameGraphTelemetry.SecondaryGraphicsFenceValue);
+        runtime.SecondaryLocalToSharedCopyFenceValue =
+            std::max<uint64_t>(runtime.SecondaryLocalToSharedCopyFenceValue,
+                               frameGraphTelemetry.SecondaryLocalToSharedCopyFenceValue);
+        runtime.CrossAdapterRenderReadyFenceValue =
+            std::max<uint64_t>(runtime.CrossAdapterRenderReadyFenceValue,
+                               frameGraphTelemetry.CrossAdapterRenderReadyFenceValue);
+        runtime.PrimarySharedToLocalCopyFenceValue =
+            std::max<uint64_t>(runtime.PrimarySharedToLocalCopyFenceValue,
+                               frameGraphTelemetry.PrimarySharedToLocalCopyFenceValue);
+        runtime.PrimarySecondaryImageReadyFenceValue =
+            std::max<uint64_t>(runtime.PrimarySecondaryImageReadyFenceValue,
+                               frameGraphTelemetry.PrimarySecondaryImageReadyFenceValue);
+        runtime.FinalPresentFenceValue =
+            std::max<uint64_t>(runtime.FinalPresentFenceValue,
+                               frameGraphTelemetry.FinalPresentFenceValue);
+
+        runtime.AnySecondaryComputeFenceValue =
+            runtime.AnySecondaryComputeFenceValue || frameGraphTelemetry.SecondaryComputeFenceValue != 0;
+        runtime.AnySecondaryGraphicsFenceValue =
+            runtime.AnySecondaryGraphicsFenceValue || frameGraphTelemetry.SecondaryGraphicsFenceValue != 0;
+        runtime.AnySecondaryLocalToSharedCopyFenceValue =
+            runtime.AnySecondaryLocalToSharedCopyFenceValue ||
+            frameGraphTelemetry.SecondaryLocalToSharedCopyFenceValue != 0;
+        runtime.AnyCrossAdapterRenderReadyFenceValue =
+            runtime.AnyCrossAdapterRenderReadyFenceValue ||
+            frameGraphTelemetry.CrossAdapterRenderReadyFenceValue != 0;
+        runtime.AnyPrimarySharedToLocalCopyFenceValue =
+            runtime.AnyPrimarySharedToLocalCopyFenceValue ||
+            frameGraphTelemetry.PrimarySharedToLocalCopyFenceValue != 0;
+        runtime.AnyPrimarySecondaryImageReadyFenceValue =
+            runtime.AnyPrimarySecondaryImageReadyFenceValue ||
+            frameGraphTelemetry.PrimarySecondaryImageReadyFenceValue != 0;
+        runtime.AnyFinalPresentFenceValue =
+            runtime.AnyFinalPresentFenceValue || frameGraphTelemetry.FinalPresentFenceValue != 0;
+    };
+
+    constexpr uint32_t verificationPresentFrames = 12;
+    const auto targetPresentCount = totalSuccessfulPresentCount + verificationPresentFrames;
+    while (totalSuccessfulPresentCount < targetPresentCount && !pumpFrameQuitRequested)
+    {
+        if (PumpOneFrame())
+            accumulateFrameEvidence();
+    }
+    Flush();
+
+    runtime.Fallback = !runtime.AnyActualMultiMode;
+    runtime.FallbackReason = runtime.Fallback
+                                 ? "requested MultiGpuFull was never observed as actual mode during verification interval"
+                                 : "";
+    runtime.SecondaryComputeDispatchCount = runtime.TotalSecondaryComputeDispatchCount;
+    runtime.SecondaryGraphicsDrawCount = runtime.MaxSecondaryGraphicsDrawCount;
+    runtime.SecondaryRenderedVoxelCount = runtime.MaxSecondaryRenderedVoxelCount;
     runtime.SecondaryPrimitiveEstimate = static_cast<uint64_t>(runtime.SecondaryRenderedVoxelCount) * 12u;
-    runtime.ColorLocalToSharedBytes = frameGraphTelemetry.ColorBytesTransferred;
-    runtime.DepthLocalToSharedBytes = frameGraphTelemetry.DepthBytesTransferred;
-    runtime.ColorSharedToLocalBytes = frameGraphTelemetry.ColorBytesTransferred;
-    runtime.DepthSharedToLocalBytes = frameGraphTelemetry.DepthBytesTransferred;
-    runtime.ParticleTransferBytes = frameGraphTelemetry.ParticleTransferBytes;
-    runtime.SecondaryComputeFenceValue = frameGraphTelemetry.SecondaryComputeFenceValue;
-    runtime.SecondaryGraphicsFenceValue = frameGraphTelemetry.SecondaryGraphicsFenceValue;
-    runtime.SecondaryLocalToSharedCopyFenceValue = frameGraphTelemetry.SecondaryLocalToSharedCopyFenceValue;
-    runtime.CrossAdapterRenderReadyFenceValue = frameGraphTelemetry.CrossAdapterRenderReadyFenceValue;
-    runtime.PrimarySharedToLocalCopyFenceValue = frameGraphTelemetry.PrimarySharedToLocalCopyFenceValue;
-    runtime.PrimarySecondaryImageReadyFenceValue = frameGraphTelemetry.PrimarySecondaryImageReadyFenceValue;
-    runtime.FinalPresentFenceValue = frameGraphTelemetry.FinalPresentFenceValue;
-    runtime.CompositeSubmitted = frameGraphTelemetry.CompositeSubmitted;
+    runtime.ColorLocalToSharedBytes = runtime.TotalColorTransferBytes;
+    runtime.DepthLocalToSharedBytes = runtime.TotalDepthTransferBytes;
+    runtime.ColorSharedToLocalBytes = runtime.TotalColorTransferBytes;
+    runtime.DepthSharedToLocalBytes = runtime.TotalDepthTransferBytes;
+    runtime.CompositeSubmitted = runtime.AnyCompositeSubmitted;
 
     runtime.QueueCalibrations.push_back(CollectQueueCalibration(
         "gpu0.compute", primeDevice->GetCommandQueue(GQueueType::Compute)));
@@ -1645,32 +2630,37 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce()
     runtime.QueueCalibrations.push_back(CollectQueueCalibration(
         "gpu1.copy", secondDevice->GetCommandQueue(GQueueType::Copy)));
 
+    if (runtime.FramesObserved == 0)
+        runtime.Reasons.push_back("no presented frames were observed during two-adapter verification interval");
     if (runtime.Fallback)
         runtime.Reasons.push_back(runtime.FallbackReason);
+    if (!runtime.AnyActualMultiMode)
+        runtime.Reasons.push_back("actual MultiGpuFull mode was not observed during verification interval");
     if (runtime.SecondaryPartitionVoxels == 0)
         runtime.Reasons.push_back("secondary partition is empty");
-    if (runtime.SecondaryComputeDispatchCount == 0)
+    if (runtime.TotalSecondaryComputeDispatchCount == 0)
         runtime.Reasons.push_back("GPU1 dynamic compute dispatch count is zero");
-    if (runtime.SecondaryGraphicsDrawCount == 0)
+    if (runtime.MaxSecondaryGraphicsDrawCount == 0)
         runtime.Reasons.push_back("GPU1 graphics draw count is zero");
     if (runtime.SecondaryPrimitiveEstimate == 0)
         runtime.Reasons.push_back("GPU1 submitted primitive estimate is zero");
-    if (runtime.ColorLocalToSharedBytes == 0 || runtime.DepthLocalToSharedBytes == 0)
+    if (runtime.TotalColorTransferBytes == 0 || runtime.TotalDepthTransferBytes == 0)
         runtime.Reasons.push_back("local-to-shared render output transfer bytes are zero");
-    if (runtime.ColorSharedToLocalBytes == 0 || runtime.DepthSharedToLocalBytes == 0)
+    if (runtime.TotalColorTransferBytes == 0 || runtime.TotalDepthTransferBytes == 0)
         runtime.Reasons.push_back("shared-to-local render output transfer bytes are zero");
     if (runtime.ParticleTransferBytes != 0)
         runtime.Reasons.push_back("particle transfer bytes are nonzero");
-    if (runtime.SecondaryComputeFenceValue == 0 ||
-        runtime.SecondaryGraphicsFenceValue == 0 ||
-        runtime.SecondaryLocalToSharedCopyFenceValue == 0 ||
-        runtime.CrossAdapterRenderReadyFenceValue == 0 ||
-        runtime.PrimarySharedToLocalCopyFenceValue == 0 ||
-        runtime.FinalPresentFenceValue == 0)
+    if (!runtime.AnySecondaryComputeFenceValue ||
+        !runtime.AnySecondaryGraphicsFenceValue ||
+        !runtime.AnySecondaryLocalToSharedCopyFenceValue ||
+        !runtime.AnyCrossAdapterRenderReadyFenceValue ||
+        !runtime.AnyPrimarySharedToLocalCopyFenceValue ||
+        !runtime.AnyPrimarySecondaryImageReadyFenceValue ||
+        !runtime.AnyFinalPresentFenceValue)
     {
-        runtime.Reasons.push_back("one or more required runtime fence values are zero");
+        runtime.Reasons.push_back("one or more required runtime fence values were never observed as nonzero");
     }
-    if (!runtime.CompositeSubmitted)
+    if (!runtime.AnyCompositeSubmitted)
         runtime.Reasons.push_back("final depth-aware composite was not submitted");
 
     for (const auto& calibration : runtime.QueueCalibrations)
@@ -2282,8 +3272,9 @@ void VoxelWaterfallApp::InitializeBenchmarkProvenanceCache()
 {
     benchmarkProvenanceCache.BuildHash =
         HashFileOrUnknown(GetExecutableDirectory() / L"MGPU-VoxelWaterfall.exe");
-    benchmarkProvenanceCache.ShaderHash =
-        HashFileOrUnknown(ResolveVoxelWaterfallAssetPath(L"Shaders\\VoxelValidationCompare.hlsl"));
+    benchmarkProvenanceCache.ShaderSetHash =
+        HashShaderSetOrUnknown(ResolveVoxelWaterfallAssetPath(L"Shaders"));
+    benchmarkProvenanceCache.ShaderHash = benchmarkProvenanceCache.ShaderSetHash;
     const auto gitStatus = RunCommandTrimmed("git status --porcelain=v2 --branch");
     if (gitStatus.rfind("Unknown:", 0) == 0)
     {
@@ -2521,7 +3512,7 @@ BenchmarkControllerContext VoxelWaterfallApp::BuildBenchmarkControllerContext()
         visualValidationMetrics.ValidationRunId,
         visualValidationMetrics.FailReason,
         benchmarkProvenanceCache.BuildHash,
-        benchmarkProvenanceCache.ShaderHash,
+        benchmarkProvenanceCache.ShaderSetHash,
         visualValidationBuildHash,
         visualValidationShaderHash,
         visualValidationAdapterPairIdentity,
@@ -2612,29 +3603,52 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
 
     Flush();
 
-    const int totalCount = static_cast<int>(config.TotalCount);
+    auto defaultDynamicBudgetForStaticBudget = [](const uint32_t staticBudget)
+    {
+        if (staticBudget <= 100000)
+            return 25000u;
+        if (staticBudget <= 250000)
+            return 100000u;
+        if (staticBudget <= 500000)
+            return 250000u;
+        return 500000u;
+    };
+    result.RequestedLabelCount =
+        config.RequestedLabelCount != 0 ? config.RequestedLabelCount : config.TotalCount;
+    result.RequestedStaticBudget =
+        config.RequestedStaticBudget != 0 ? config.RequestedStaticBudget : config.TotalCount;
     const auto activePreset = voxelResearchSceneManager.GetActivePreset();
-    if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment)
-        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
+    if (config.RequestedDynamicBudget != 0)
+    {
+        result.RequestedDynamicBudget = config.RequestedDynamicBudget;
+    }
     else if (activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
              activePreset == VoxelResearchScenePreset::DemoMixed)
     {
-        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
-        if (totalCount <= 100000)
-            voxelWorkload.DynamicVoxelBudget = 25000;
-        else if (totalCount <= 250000)
-            voxelWorkload.DynamicVoxelBudget = 100000;
-        else if (totalCount <= 500000)
-            voxelWorkload.DynamicVoxelBudget = 250000;
-        else
-            voxelWorkload.DynamicVoxelBudget = 500000;
+        result.RequestedDynamicBudget = defaultDynamicBudgetForStaticBudget(result.RequestedStaticBudget);
     }
     else if (activePreset == VoxelResearchScenePreset::DynamicWaterfall)
-        voxelWorkload.DynamicVoxelBudget = static_cast<uint32_t>(std::max(0, totalCount));
+    {
+        result.RequestedDynamicBudget = config.TotalCount;
+    }
+
+    const int requestedStaticBudget = static_cast<int>(result.RequestedStaticBudget);
+    const int requestedDynamicBudget = static_cast<int>(result.RequestedDynamicBudget);
+    if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment)
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, requestedStaticBudget));
+    else if (activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
+             activePreset == VoxelResearchScenePreset::DemoMixed)
+    {
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, requestedStaticBudget));
+        voxelWorkload.DynamicVoxelBudget = static_cast<uint32_t>(std::max(0, requestedDynamicBudget));
+    }
+    else if (activePreset == VoxelResearchScenePreset::DynamicWaterfall)
+        voxelWorkload.DynamicVoxelBudget = static_cast<uint32_t>(std::max(0, requestedDynamicBudget));
     else if (activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
-        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
+        voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, requestedStaticBudget));
     else
-        voxelWorkload.TotalVoxelCount = static_cast<uint32_t>(std::max(0, totalCount));
+        voxelWorkload.TotalVoxelCount =
+            static_cast<uint32_t>(std::max(0, static_cast<int>(result.RequestedLabelCount)));
 
     voxelWorkload.SecondaryShare = std::clamp(config.SecondaryShare, 0.0f, 1.0f);
     voxelWorkload.SpatialLod.Mode =
@@ -2678,7 +3692,9 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
         hash = Fnv1aAppendBytes(hash, &value, sizeof(value));
     };
     append(config.Mode);
-    append(config.TotalCount);
+    append(result.RequestedLabelCount);
+    append(result.RequestedStaticBudget);
+    append(result.RequestedDynamicBudget);
     append(config.SecondaryShare);
     append(config.SpatialLodEnabled);
     append(config.TemporalInterval);

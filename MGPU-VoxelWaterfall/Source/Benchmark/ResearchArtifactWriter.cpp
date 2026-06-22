@@ -302,6 +302,7 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
          << "  \"measured_frames\":" << context.MeasuredFrames << ",\n"
          << "  \"execution_count\":" << context.ExecutionCount << ",\n"
          << "  \"build_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
+         << "  \"shader_set_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
          << "  \"shader_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
          << "  \"validation_run_id\":\"" << EscapeJson(context.ValidationRunId) << "\",\n"
          << "  \"two_gpu_verification_run_id\":\"" << EscapeJson(context.TwoGpuVerificationRunId) << "\",\n"
@@ -318,10 +319,40 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
          << "    \"runs\":\"runs.csv\",\n"
          << "    \"paired_runs\":\"paired_runs.csv\",\n"
          << "    \"paired_summary\":\"paired_summary.csv\",\n"
-         << "    \"invalid_records\":\"invalid_records.csv\",\n"
-         << "    \"telemetry\":\"telemetry.csv\",\n"
-         << "    \"memory_timeline\":\"memory_timeline.csv\",\n"
+         << "    \"invalid_records\":\"invalid_records.csv\",\n";
+    if (context.GateStatus != "BLOCKED")
+    {
+        json << "    \"telemetry\":\"telemetry.csv\",\n";
+    }
+    json
+         << "    \"raw_frames\":\"raw_frames.csv\",\n"
          << "    \"raw_frames_glob\":\"VoxelBenchmark_*.csv\"\n"
+         << "  },\n"
+         << "  \"evidence_files\":[\n";
+    if (context.GateStatus == "BLOCKED")
+    {
+        json << "    \"invalid_records.csv\"\n";
+    }
+    else
+    {
+        json << "    \"environment.json\",\n"
+             << "    \"voxel_visual_validation.json\",\n"
+             << "    \"voxel_visual_validation.csv\",\n"
+             << "    \"runs.csv\",\n"
+             << "    \"paired_runs.csv\",\n"
+             << "    \"paired_summary.csv\",\n"
+             << "    \"raw_frames.csv\",\n"
+             << "    \"telemetry.csv\"\n";
+    }
+    json
+         << "  ],\n"
+         << "  \"optional_artifacts\":{\n";
+    if (context.GateStatus == "BLOCKED")
+    {
+        json << "    \"telemetry\":{\"status\":\"not_produced\",\"reason\":\"suite gate blocked before benchmark frames were measured\"},\n";
+    }
+    json
+         << "    \"memory_timeline\":{\"status\":\"not_produced\",\"reason\":\"automatic benchmark suites do not run memory soak/rebuild sampling; use --memory-soak-once or --memory-rebuild-stress-once for memory_timeline.csv\"}\n"
          << "  },\n"
          << "  \"configs\":[\n";
 
@@ -335,6 +366,9 @@ void ResearchArtifactWriter::WriteSuiteManifest(const BenchmarkResearchArtifactC
              << "\"mode\":\"" << config.ModeName << "\","
              << "\"preset\":\"" << config.Preset << "\","
              << "\"total_count\":" << config.TotalCount << ","
+             << "\"requested_label_count\":" << config.RequestedLabelCount << ","
+             << "\"requested_static_budget\":" << config.RequestedStaticBudget << ","
+             << "\"requested_dynamic_budget\":" << config.RequestedDynamicBudget << ","
              << "\"secondary_share\":" << config.SecondaryShare << ","
              << "\"spatial_lod\":\"" << (config.SpatialLodEnabled ? "ThreeLevel" : "Off") << "\","
              << "\"temporal_interval\":" << config.TemporalInterval << ","
@@ -365,6 +399,8 @@ void ResearchArtifactWriter::WriteEnvironment(const BenchmarkResearchArtifactCon
                         gitCommit.rfind("Unknown: ", 0) == 0 ? gitCommit.substr(9) : "git command failed");
     json << "  \"git_dirty_state\":\"" << EscapeJson(gitDirty) << "\",\n"
          << "  \"executable_hash\":\"" << EscapeJson(context.CurrentBuildHash) << "\",\n"
+         << "  \"shader_set_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
+         << "  \"shader_hash\":\"" << EscapeJson(context.CurrentShaderHash) << "\",\n"
          << "  \"compiler_version\":\"" << EscapeJson(CompilerVersion()) << "\",\n"
          << "  \"compiler_flags\":\"" << EscapeJson(CompilerFlags()) << "\",\n"
          << "  \"windows_build\":\"" << EscapeJson(WindowsVersion()) << "\",\n"
@@ -440,6 +476,8 @@ void ResearchArtifactWriter::WriteRunsCsv(
     std::ofstream csv(context.OutputDirectory / "runs.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
     csv << "schema,suite,run_id,session_id,pair_id,block_id,requested_mode,actual_mode,repetition,valid,reason,"
+        << "requested_label_count,requested_static_budget,requested_dynamic_budget,"
+        << "actual_total_count,actual_static_count,actual_dynamic_count,resolved_config_hash,"
         << "measured_frame_count,valid_frame_count,invalid_frame_count,"
         << "mean_cpu_frame_ms,median_cpu_frame_ms,p95_cpu_frame_ms,"
         << "p99_cpu_frame_ms,stddev_cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,"
@@ -459,6 +497,13 @@ void ResearchArtifactWriter::WriteRunsCsv(
             << row.Repetition << ','
             << (row.Valid && row.SkipReason.empty() ? "true" : "false") << ','
             << EscapeCsv(!row.SkipReason.empty() ? row.SkipReason : row.ValidityReason) << ','
+            << row.RequestedLabelCount << ','
+            << row.RequestedStaticBudget << ','
+            << row.RequestedDynamicBudget << ','
+            << row.TotalVoxelCount << ','
+            << row.ActualStaticVoxelCount << ','
+            << row.ActualDynamicVoxelCount << ','
+            << EscapeCsv(row.ResolvedConfigHash) << ','
             << row.MeasuredFrameCount << ','
             << row.ValidFrameCount << ','
             << row.InvalidFrameCount << ','
@@ -531,10 +576,12 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
     std::ofstream csv(context.OutputDirectory / "paired_runs.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
     csv << "schema,suite,run_id,session_id,pair_id,block_id,repetition,single_mode,multi_mode,"
+        << "actual_total_count,actual_static_count,actual_dynamic_count,"
         << "single_mean_cpu_frame_ms,multi_mean_cpu_frame_ms,paired_difference_ms,log_speedup,"
         << "speedup,two_device_nominal_efficiency,valid,reason\n";
 
-    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string>,
+    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string,
+                        uint32_t, uint32_t, uint32_t>,
              const VoxelBenchmarkProfiler::BenchmarkSummary*> singles;
     auto family = [](const std::string& mode)
     {
@@ -553,7 +600,8 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
     {
         if (!row.Valid || !row.SkipReason.empty() || !isSingle(row.RequestedMode))
             continue;
-        singles[{row.SessionId, row.PairId, row.BlockId, row.Repetition, family(row.RequestedMode)}] = &row;
+        singles[{row.SessionId, row.PairId, row.BlockId, row.Repetition, family(row.RequestedMode),
+                 row.TotalVoxelCount, row.ActualStaticVoxelCount, row.ActualDynamicVoxelCount}] = &row;
     }
 
     for (const auto& row : summaries)
@@ -561,7 +609,9 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
         if (!isMulti(row.RequestedMode))
             continue;
         const auto key = std::make_tuple(row.SessionId, row.PairId, row.BlockId,
-                                         row.Repetition, family(row.RequestedMode));
+                                         row.Repetition, family(row.RequestedMode),
+                                         row.TotalVoxelCount, row.ActualStaticVoxelCount,
+                                         row.ActualDynamicVoxelCount);
         const auto singleIt = singles.find(key);
         const bool valid = row.Valid && row.SkipReason.empty() &&
             singleIt != singles.end() && singleIt->second->AverageCpuFrameMs > 0.0 &&
@@ -576,6 +626,9 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
             << ',' << row.Repetition
             << ',' << (valid ? EscapeCsv(singleIt->second->RequestedMode) : "")
             << ',' << EscapeCsv(row.RequestedMode)
+            << ',' << row.TotalVoxelCount
+            << ',' << row.ActualStaticVoxelCount
+            << ',' << row.ActualDynamicVoxelCount
             << ',' << (valid ? singleIt->second->AverageCpuFrameMs : 0.0)
             << ',' << row.AverageCpuFrameMs
             << ',' << (valid ? singleIt->second->AverageCpuFrameMs - row.AverageCpuFrameMs : 0.0)
@@ -587,16 +640,59 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
     }
 }
 
-void ResearchArtifactWriter::WriteTelemetryCsv(const BenchmarkResearchArtifactContext& context)
+void ResearchArtifactWriter::WriteTelemetryCsv(
+    const BenchmarkResearchArtifactContext& context,
+    const std::vector<VoxelBenchmarkProfiler::BenchmarkSummary>& summaries)
 {
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "telemetry.csv", std::ios::out | std::ios::trunc);
-    csv << "schema,utc,run_id,config_id,frame_index,process_private_bytes,working_set_bytes,"
-        << "adapter_index,local_budget,local_current_usage,nonlocal_budget,nonlocal_current_usage,"
-        << "gpu_temperature_c,gpu_power_w,gpu_core_clock_mhz,gpu_memory_clock_mhz,throttling_reason,"
-        << "cpu_utilization_percent,cpu_clock_mhz,dropped_steps,lod_probe_overflow_count,"
-        << "lod_max_probe_count,descriptor_count,command_allocator_count,background_process_snapshot,"
-        << "power_plan_snapshot\n";
+    csv.imbue(std::locale::classic());
+    csv << "schema,utc,run_id,session_id,pair_id,block_id,repetition,requested_mode,actual_mode,"
+        << "valid,reason,measured_frame_count,valid_frame_count,invalid_frame_count,"
+        << "actual_total_count,actual_static_count,actual_dynamic_count,"
+        << "average_cpu_frame_ms,critical_path_gpu_ms,gpu_work_sum_ms,"
+        << "primary_compute_ms,primary_graphics_ms,secondary_compute_ms,secondary_graphics_ms,"
+        << "transfer_ms,composite_ms,total_transfer_bytes,color_transfer_bytes,depth_transfer_bytes,"
+        << "particle_transfer_bytes,render_output_transfer_bytes,total_executed_fixed_steps,"
+        << "total_logical_updated_voxels,visual_validation_passed\n";
+    const auto timestamp = UtcTimestamp();
+    for (const auto& row : summaries)
+    {
+        csv << "mgpu_voxel_run_telemetry.v1,"
+            << timestamp << ','
+            << EscapeCsv(context.RunId) << ','
+            << EscapeCsv(row.SessionId) << ','
+            << EscapeCsv(row.PairId) << ','
+            << EscapeCsv(row.BlockId) << ','
+            << row.Repetition << ','
+            << EscapeCsv(row.RequestedMode) << ','
+            << EscapeCsv(row.ActualMode) << ','
+            << (row.Valid && row.SkipReason.empty() ? "true" : "false") << ','
+            << EscapeCsv(!row.SkipReason.empty() ? row.SkipReason : row.ValidityReason) << ','
+            << row.MeasuredFrameCount << ','
+            << row.ValidFrameCount << ','
+            << row.InvalidFrameCount << ','
+            << row.TotalVoxelCount << ','
+            << row.ActualStaticVoxelCount << ','
+            << row.ActualDynamicVoxelCount << ','
+            << row.AverageCpuFrameMs << ','
+            << row.CriticalPathGpuMs << ','
+            << row.GpuWorkSumMs << ','
+            << row.PrimaryComputeMs << ','
+            << row.PrimaryGraphicsMs << ','
+            << row.SecondaryComputeMs << ','
+            << row.SecondaryGraphicsMs << ','
+            << row.TransferMs << ','
+            << row.CompositeMs << ','
+            << row.AverageTransferBytes << ','
+            << row.AverageColorTransferBytes << ','
+            << row.AverageDepthTransferBytes << ','
+            << row.AverageParticleTransferBytes << ','
+            << row.AverageRenderOutputTransferBytes << ','
+            << row.TotalExecutedFixedSteps << ','
+            << row.TotalLogicalUpdatedVoxelCount << ','
+            << (row.VisualValidationPassed ? "true" : "false") << '\n';
+    }
 }
 
 void ResearchArtifactWriter::WriteMemoryTimelineCsv(const BenchmarkResearchArtifactContext& context)
@@ -627,5 +723,8 @@ void ResearchArtifactWriter::WriteReproductionReadme(const BenchmarkResearchArti
            << "Offline analysis command:\n"
            << "python MGPU-VoxelWaterfall\\Tools\\analyze_benchmark.py --input \""
            << context.OutputDirectory.string() << "\"\n\n"
+           << "Telemetry evidence:\n"
+           << "- telemetry.csv contains one per-run row after benchmark frames are measured.\n"
+           << "- memory_timeline.csv is not produced by automatic benchmark suites; run memory soak or rebuild stress for memory snapshots.\n\n"
            << "The workload is a deterministic synthetic voxel waterfall, not a physically correct fluid simulation.\n";
 }

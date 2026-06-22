@@ -167,9 +167,13 @@ public:
         std::string SkipReason;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
+        uint32_t RequestedLabelCount = 0;
+        uint32_t RequestedStaticBudget = 0;
+        uint32_t RequestedDynamicBudget = 0;
         uint32_t TotalVoxelCount = 0;
         uint32_t ActualStaticVoxelCount = 0;
         uint32_t ActualDynamicVoxelCount = 0;
+        std::string ResolvedConfigHash;
         float SecondaryShare = 0.0f;
         uint32_t RenderWidth = 0;
         uint32_t RenderHeight = 0;

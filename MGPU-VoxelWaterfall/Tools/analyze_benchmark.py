@@ -64,6 +64,26 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def require_nonempty_evidence_file(root: Path, relative_path: str) -> None:
+    require(relative_path and not Path(relative_path).is_absolute(), f"invalid evidence path: {relative_path!r}")
+    path = root / relative_path
+    require(path.exists(), f"missing evidence file: {path}")
+    require(path.stat().st_size > 0, f"empty evidence file: {path}")
+    if path.suffix.lower() == ".csv":
+        require(read_csv(path), f"evidence CSV has no data rows: {path}")
+    elif path.suffix.lower() == ".json":
+        json.loads(path.read_text(encoding="utf-8"))
+
+
+def validate_evidence_files(root: Path, manifest: dict) -> None:
+    evidence_files = manifest.get("evidence_files", [])
+    require(isinstance(evidence_files, list), "manifest evidence_files must be a list")
+    require(evidence_files, "COMPLETE suite manifest must declare evidence_files")
+    for relative_path in evidence_files:
+        require(isinstance(relative_path, str), "manifest evidence_files entries must be strings")
+        require_nonempty_evidence_file(root, relative_path)
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
@@ -115,34 +135,44 @@ def is_multi(mode: str) -> bool:
     return mode in ("MultiGpuFull", "MultiGpuTemporalDecimation")
 
 
-def run_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+def count_key(row: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        row.get("actual_total_count") or row.get("total_voxels", ""),
+        row.get("actual_static_count") or row.get("actual_static_voxels", ""),
+        row.get("actual_dynamic_count") or row.get("actual_dynamic_voxels", ""),
+    )
+
+
+def run_key(row: dict[str, str]) -> tuple[str, str, str, str, str, str, str]:
     return (
         row.get("session_id", ""),
         row.get("pair_id", ""),
         row.get("requested_mode", ""),
         row.get("actual_mode", ""),
+        *count_key(row),
     )
 
 
-def block_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+def block_key(row: dict[str, str]) -> tuple[str, str, str, str, str, str, str]:
     block = row.get("block_id") or f"{row.get('pair_id', '')}:rep{row.get('repetition', '')}"
     return (
         row.get("session_id", ""),
         row.get("pair_id", ""),
         block,
         row.get("repetition", ""),
+        *count_key(row),
     )
 
 
 def aggregate_runs(runs: list[dict[str, str]]) -> list[dict[str, object]]:
     valid_runs = [row for row in runs if row.get("valid") == "true"]
-    groups: dict[tuple[str, str, str, str], list[dict[str, str]]] = {}
+    groups: dict[tuple[str, str, str, str, str, str, str], list[dict[str, str]]] = {}
     for row in valid_runs:
         key = run_key(row)
         groups.setdefault(key, []).append(row)
 
     aggregates: list[dict[str, object]] = []
-    for (session_id, pair_id, requested_mode, actual_mode), rows in sorted(groups.items()):
+    for (session_id, pair_id, requested_mode, actual_mode, actual_total, actual_static, actual_dynamic), rows in sorted(groups.items()):
         cpu = [float(row["mean_cpu_frame_ms"]) for row in rows]
         critical = [float(row["critical_path_gpu_ms"]) for row in rows]
         aggregates.append(
@@ -151,6 +181,9 @@ def aggregate_runs(runs: list[dict[str, str]]) -> list[dict[str, object]]:
                 "pair_id": pair_id,
                 "requested_mode": requested_mode,
                 "actual_mode": actual_mode,
+                "actual_total_count": actual_total,
+                "actual_static_count": actual_static,
+                "actual_dynamic_count": actual_dynamic,
                 "run_count": len(rows),
                 "mean_cpu_frame_ms": mean(cpu),
                 "median_cpu_frame_ms": statistics.median(cpu),
@@ -165,8 +198,8 @@ def aggregate_runs(runs: list[dict[str, str]]) -> list[dict[str, object]]:
             }
         )
 
-    singles_by_block: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
-    multis_by_block: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+    singles_by_block: dict[tuple[str, str, str, str, str, str, str, str], dict[str, str]] = {}
+    multis_by_block: dict[tuple[str, str, str, str, str, str, str, str], dict[str, str]] = {}
     for row in valid_runs:
         family = mode_family(row.get("requested_mode", ""))
         if not family:
@@ -234,8 +267,13 @@ def validate(root: Path) -> dict[str, object]:
             "invalid_count": len(invalid),
         }
 
+    require(
+        manifest.get("status") == "COMPLETE",
+        f"non-blocked suite manifest status must be COMPLETE, got {manifest.get('status')!r}",
+    )
     require(runs, "non-blocked suite has no runs.csv rows")
     require(raw, "non-blocked suite has no raw_frames.csv rows")
+    validate_evidence_files(root, manifest)
     aggregates = aggregate_runs(runs)
     require(aggregates, "non-blocked suite has no valid aggregate runs")
     return {
@@ -289,6 +327,22 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(multi["paired_run_count"], 1)
         self.assertAlmostEqual(multi["paired_speedup"], 2.0)
 
+    def test_pairing_requires_matching_actual_counts(self) -> None:
+        runs = [
+            {"session_id": "s", "pair_id": "p", "block_id": "b0", "repetition": "0",
+             "requested_mode": "SingleGpuFull", "actual_mode": "SingleGpuFull", "valid": "true",
+             "actual_total_count": "125000", "actual_static_count": "100000", "actual_dynamic_count": "25000",
+             "mean_cpu_frame_ms": "20", "critical_path_gpu_ms": "8"},
+            {"session_id": "s", "pair_id": "p", "block_id": "b0", "repetition": "0",
+             "requested_mode": "MultiGpuFull", "actual_mode": "MultiGpuFull", "valid": "true",
+             "actual_total_count": "123556", "actual_static_count": "98556", "actual_dynamic_count": "25000",
+             "mean_cpu_frame_ms": "10", "critical_path_gpu_ms": "4"},
+        ]
+        aggregates = aggregate_runs(runs)
+        multi = next(row for row in aggregates if row["requested_mode"] == "MultiGpuFull")
+        self.assertEqual(multi["paired_run_count"], 0)
+        self.assertIsNone(multi["paired_speedup"])
+
     def test_blocked_artifact_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -313,6 +367,74 @@ class AnalysisTests(unittest.TestCase):
             (root / "two_adapter_preflight.json").write_text("{}", encoding="utf-8")
             result = validate(root)
             self.assertEqual(result["status"], "BLOCKED")
+
+    def test_running_manifest_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.json").write_text(
+                json.dumps({"schema": "mgpu_voxel_benchmark_manifest.v1", "run_id": "r", "status": "RUNNING"}),
+                encoding="utf-8",
+            )
+            (root / "environment.json").write_text(
+                json.dumps({"schema": "mgpu_voxel_environment.v1", "run_id": "r"}),
+                encoding="utf-8",
+            )
+            (root / "runs.csv").write_text(
+                "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,valid,mean_cpu_frame_ms,critical_path_gpu_ms\n"
+                "mgpu_voxel_runs.v1,Smoke,r,p,SingleGpuFull,SingleGpuFull,0,true,10,8\n",
+                encoding="utf-8",
+            )
+            (root / "raw_frames.csv").write_text(
+                "frame_index,suite,run_id,requested_mode,actual_mode,cpu_frame_ms\n"
+                "0,Smoke,r,SingleGpuFull,SingleGpuFull,10\n",
+                encoding="utf-8",
+            )
+            (root / "invalid_records.csv").write_text(
+                "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,reason\n",
+                encoding="utf-8",
+            )
+            (root / "voxel_visual_validation.json").write_text("{}", encoding="utf-8")
+            (root / "voxel_visual_validation.csv").write_text("case,status\n", encoding="utf-8")
+            (root / "two_adapter_preflight.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "manifest status must be COMPLETE"):
+                validate(root)
+
+    def test_complete_manifest_rejects_empty_claimed_evidence_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.json").write_text(
+                json.dumps({
+                    "schema": "mgpu_voxel_benchmark_manifest.v1",
+                    "run_id": "r",
+                    "status": "COMPLETE",
+                    "evidence_files": ["telemetry.csv"],
+                }),
+                encoding="utf-8",
+            )
+            (root / "environment.json").write_text(
+                json.dumps({"schema": "mgpu_voxel_environment.v1", "run_id": "r"}),
+                encoding="utf-8",
+            )
+            (root / "runs.csv").write_text(
+                "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,valid,mean_cpu_frame_ms,critical_path_gpu_ms\n"
+                "mgpu_voxel_runs.v1,Smoke,r,p,SingleGpuFull,SingleGpuFull,0,true,10,8\n",
+                encoding="utf-8",
+            )
+            (root / "raw_frames.csv").write_text(
+                "frame_index,suite,run_id,requested_mode,actual_mode,cpu_frame_ms\n"
+                "0,Smoke,r,SingleGpuFull,SingleGpuFull,10\n",
+                encoding="utf-8",
+            )
+            (root / "invalid_records.csv").write_text(
+                "schema,suite,run_id,pair_id,requested_mode,actual_mode,repetition,reason\n",
+                encoding="utf-8",
+            )
+            (root / "voxel_visual_validation.json").write_text("{}", encoding="utf-8")
+            (root / "voxel_visual_validation.csv").write_text("case,status\nc,PASS\n", encoding="utf-8")
+            (root / "two_adapter_preflight.json").write_text("{}", encoding="utf-8")
+            (root / "telemetry.csv").write_text("schema,run_id\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "evidence CSV has no data rows"):
+                validate(root)
 
 
 def main() -> int:

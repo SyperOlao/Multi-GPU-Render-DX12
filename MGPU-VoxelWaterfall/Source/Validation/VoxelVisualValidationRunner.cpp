@@ -177,6 +177,15 @@ namespace
             maxDepth = std::max<double>(maxDepth, tile.DepthMaxAbsoluteError);
         }
 
+        if (result.ComparedPixelCount == 0)
+        {
+            result.Passed = false;
+            result.Blocked = true;
+            result.Status = "BLOCKED";
+            result.Reason = "validation tile statistics reported zero compared pixels";
+            return;
+        }
+
         const double pixelCount = std::max<double>(1.0, static_cast<double>(result.ComparedPixelCount));
         const double foregroundIntersection =
             std::max<double>(1.0, static_cast<double>(result.ForegroundIntersectionCount));
@@ -288,7 +297,7 @@ uint64_t VoxelVisualValidationRunner::ComputeSnapshotHash(const VoxelVisualValid
     hash = Fnv1aAppendValue(hash, snapshot.DynamicShadowsEnabled);
     hash = Fnv1aAppendString(hash, snapshot.Background);
     hash = Fnv1aAppendString(hash, snapshot.BuildHash);
-    hash = Fnv1aAppendString(hash, snapshot.ShaderHash);
+    hash = Fnv1aAppendString(hash, snapshot.ShaderSetHash);
     return hash;
 }
 
@@ -300,6 +309,10 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
 
     VoxelVisualValidationConfig resolvedConfig = config;
     auto& snapshot = resolvedConfig.Snapshot;
+    if (snapshot.ShaderSetHash == "unknown" && snapshot.ShaderHash != "unknown")
+        snapshot.ShaderSetHash = snapshot.ShaderHash;
+    if (snapshot.ShaderHash == "unknown" && snapshot.ShaderSetHash != "unknown")
+        snapshot.ShaderHash = snapshot.ShaderSetHash;
     snapshot.SnapshotHash = snapshot.SnapshotHash != 0
                                 ? snapshot.SnapshotHash
                                 : ComputeSnapshotHash(snapshot);
@@ -350,16 +363,46 @@ VoxelVisualValidationMetrics VoxelVisualValidationRunner::RunDeterministicSuite(
             result.MultiDepthReferencePath = comparison->MultiDepthReferencePath;
             result.DiffReferencePath = comparison->DiffReferencePath;
 
-            if (!comparison->CaptureAvailable)
+            const bool hasCompareEvidence =
+                comparison->CaptureAvailable &&
+                comparison->CompareShaderDispatched &&
+                comparison->ReadbackComplete &&
+                !comparison->TileStats.empty();
+            if (hasCompareEvidence)
+            {
+                AccumulateComparison(*comparison, resolvedConfig.Tolerances, result);
+                if (!comparison->BlockedReason.empty())
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = comparison->BlockedReason;
+                }
+                else if (comparison->ActualSingleMode != validationCase.SingleMode)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "deterministic Single path actual mode did not match requested mode";
+                }
+                else if (comparison->ActualMultiMode != validationCase.MultiMode)
+                {
+                    result.Passed = false;
+                    result.Blocked = true;
+                    result.Status = "BLOCKED";
+                    result.Reason = "deterministic Multi path actual mode did not match requested mode";
+                }
+            }
+            else if (!comparison->BlockedReason.empty())
+                result.Reason = comparison->BlockedReason;
+            else if (!comparison->CaptureAvailable)
                 result.Reason = "deterministic Single/Multi color/depth capture was not supplied";
             else if (!comparison->CompareShaderDispatched)
                 result.Reason = "VoxelValidationCompare.hlsl dispatch evidence was not supplied";
             else if (!comparison->ReadbackComplete)
                 result.Reason = "validation tile statistics readback is not complete";
-            else if (comparison->TileStats.empty())
-                result.Reason = "validation tile statistics are empty";
             else
-                AccumulateComparison(*comparison, resolvedConfig.Tolerances, result);
+                result.Reason = "validation tile statistics are empty";
         }
         else
         {
@@ -427,7 +470,7 @@ void VoxelVisualValidationRunner::ExportCsv(
         << "combined_mismatch_count,combined_mismatch_percent,coverage_mismatch_count,"
         << "coverage_mismatch_percent,config_hash,camera_hash,adapter_pair,single_color_reference,"
         << "single_depth_reference,multi_color_reference,multi_depth_reference,diff_reference,"
-        << "build_hash,shader_hash,view_matrix,projection_matrix,reason\n";
+        << "build_hash,shader_set_hash,shader_hash,view_matrix,projection_matrix,reason\n";
 
     for (const auto& result : metrics.CaseResults)
     {
@@ -493,6 +536,7 @@ void VoxelVisualValidationRunner::ExportCsv(
             << EscapeCsv(PathString(result.MultiDepthReferencePath)) << ','
             << EscapeCsv(PathString(result.DiffReferencePath)) << ','
             << EscapeCsv(snapshot.BuildHash) << ','
+            << EscapeCsv(snapshot.ShaderSetHash) << ','
             << EscapeCsv(snapshot.ShaderHash) << ','
             << EscapeCsv(MatrixCsv(snapshot.View)) << ','
             << EscapeCsv(MatrixCsv(snapshot.Projection)) << ','
@@ -540,6 +584,7 @@ void VoxelVisualValidationRunner::ExportJson(
     json << "    \"temporal_interval\": " << snapshot.TemporalInterval << ",\n";
     json << "    \"secondary_share\": " << snapshot.SecondaryShare << ",\n";
     json << "    \"build_hash\": \"" << EscapeJson(snapshot.BuildHash) << "\",\n";
+    json << "    \"shader_set_hash\": \"" << EscapeJson(snapshot.ShaderSetHash) << "\",\n";
     json << "    \"shader_hash\": \"" << EscapeJson(snapshot.ShaderHash) << "\",\n";
     WriteJsonMatrix(json, "view_matrix", snapshot.View, ",");
     WriteJsonMatrix(json, "projection_matrix", snapshot.Projection, "");

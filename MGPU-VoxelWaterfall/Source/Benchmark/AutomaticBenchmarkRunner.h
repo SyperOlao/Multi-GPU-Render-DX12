@@ -18,6 +18,9 @@ struct AutomaticBenchmarkConfig
     VoxelExecutionMode Mode = VoxelExecutionMode::SingleGpuFull;
     const char* ModeName = "SingleGpuFull";
     const char* Preset = "Low";
+    uint32_t RequestedLabelCount = 0;
+    uint32_t RequestedStaticBudget = 0;
+    uint32_t RequestedDynamicBudget = 0;
     uint32_t TotalCount = 0;
     float SecondaryShare = 0.25f;
     bool SpatialLodEnabled = false;
@@ -41,6 +44,9 @@ struct BenchmarkConfigurationApplyResult
     bool Passed = false;
     std::string Reason;
     std::string ResolvedConfigHash;
+    uint32_t RequestedLabelCount = 0;
+    uint32_t RequestedStaticBudget = 0;
+    uint32_t RequestedDynamicBudget = 0;
     uint32_t ActualStaticCount = 0;
     uint32_t ActualDynamicCount = 0;
     uint32_t ActualTotalCount = 0;

@@ -61,6 +61,8 @@ namespace
         std::string SpatialLodPolicy;
         std::string PairId;
         uint32_t TotalVoxelCount = 0;
+        uint32_t ActualStaticVoxelCount = 0;
+        uint32_t ActualDynamicVoxelCount = 0;
         int SecondarySharePermille = 0;
         uint32_t RenderWidth = 0;
         uint32_t RenderHeight = 0;
@@ -71,13 +73,15 @@ namespace
         {
             return std::tie(RequestedMode, ActualMode, Preset, ProfileName, PartitionStrategy,
                             LoadBalanceScenario, BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy,
-                            PairId, TotalVoxelCount, SecondarySharePermille, RenderWidth, RenderHeight,
-                            PrimaryAdapterName, SecondaryAdapterName) <
+                            PairId, TotalVoxelCount, ActualStaticVoxelCount, ActualDynamicVoxelCount,
+                            SecondarySharePermille, RenderWidth, RenderHeight, PrimaryAdapterName,
+                            SecondaryAdapterName) <
                 std::tie(other.RequestedMode, other.ActualMode, other.Preset, other.ProfileName,
                          other.PartitionStrategy, other.LoadBalanceScenario, other.BenchmarkConfigClass,
                          other.TemporalPolicy, other.SpatialLodPolicy, other.PairId, other.TotalVoxelCount,
-                         other.SecondarySharePermille, other.RenderWidth, other.RenderHeight, other.PrimaryAdapterName,
-                         other.SecondaryAdapterName);
+                         other.ActualStaticVoxelCount, other.ActualDynamicVoxelCount,
+                         other.SecondarySharePermille, other.RenderWidth, other.RenderHeight,
+                         other.PrimaryAdapterName, other.SecondaryAdapterName);
         }
     };
 
@@ -95,6 +99,8 @@ namespace
             summary.SpatialLodPolicy,
             summary.PairId,
             summary.TotalVoxelCount,
+            summary.ActualStaticVoxelCount,
+            summary.ActualDynamicVoxelCount,
             static_cast<int>(std::round(summary.SecondaryShare * 1000.0f)),
             summary.RenderWidth,
             summary.RenderHeight,
@@ -351,13 +357,16 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
     for (const auto& summary : summaries)
         groupedRows[KeyFor(summary)].push_back(summary);
 
-    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string>, Summary> singleRuns;
+    std::map<std::tuple<std::string, std::string, std::string, uint32_t, std::string,
+                        uint32_t, uint32_t, uint32_t>, Summary> singleRuns;
     for (const auto& summary : summaries)
     {
         if (!summary.Valid || !summary.SkipReason.empty() || !IsSingleMode(summary.RequestedMode))
             continue;
         singleRuns[{summary.SessionId, summary.PairId, summary.BlockId,
-                    summary.Repetition, ModeFamily(summary.RequestedMode)}] = summary;
+                    summary.Repetition, ModeFamily(summary.RequestedMode),
+                    summary.TotalVoxelCount, summary.ActualStaticVoxelCount,
+                    summary.ActualDynamicVoxelCount}] = summary;
     }
 
     std::map<AggregateKey, std::vector<double>> pairedLogSpeedups;
@@ -370,7 +379,8 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
         }
         const auto singleIt = singleRuns.find({
             summary.SessionId, summary.PairId, summary.BlockId, summary.Repetition,
-            ModeFamily(summary.RequestedMode)
+            ModeFamily(summary.RequestedMode), summary.TotalVoxelCount,
+            summary.ActualStaticVoxelCount, summary.ActualDynamicVoxelCount
         });
         if (singleIt == singleRuns.end() || singleIt->second.AverageCpuFrameMs <= 0.0)
             continue;
@@ -429,9 +439,12 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
 
     summary.imbue(std::locale::classic());
     summary << "requested_mode,actual_mode,primary_adapter,secondary_adapter,total_voxels,"
+        << "requested_label_count,requested_static_budget,requested_dynamic_budget,"
+        << "actual_total_count,"
         << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
         << "temporal_policy,spatial_lod_policy,pair_id,"
-        << "actual_static_voxels,actual_dynamic_voxels,render_width,render_height,"
+        << "actual_static_count,actual_dynamic_count,actual_static_voxels,actual_dynamic_voxels,"
+        << "resolved_config_hash,render_width,render_height,"
         << "repetition_count,measured_frame_count,valid_frame_count,invalid_frame_count,"
         << "preset,run_valid,validity_reason,speedup_statistic,"
         << "average_cpu_frame_ms,median_cpu_frame_ms,p95_cpu_frame_ms,p99_cpu_frame_ms,"
@@ -454,6 +467,10 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << EscapeCsv(row.PrimaryAdapterName) << ','
             << EscapeCsv(row.SecondaryAdapterName) << ','
             << row.TotalVoxelCount << ','
+            << row.RequestedLabelCount << ','
+            << row.RequestedStaticBudget << ','
+            << row.RequestedDynamicBudget << ','
+            << row.TotalVoxelCount << ','
             << row.SecondaryShare << ','
             << EscapeCsv(row.ProfileName) << ','
             << EscapeCsv(row.PartitionStrategy) << ','
@@ -464,6 +481,9 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << EscapeCsv(row.PairId) << ','
             << row.ActualStaticVoxelCount << ','
             << row.ActualDynamicVoxelCount << ','
+            << row.ActualStaticVoxelCount << ','
+            << row.ActualDynamicVoxelCount << ','
+            << EscapeCsv(row.ResolvedConfigHash) << ','
             << row.RenderWidth << ','
             << row.RenderHeight << ','
             << row.RepetitionCount << ','

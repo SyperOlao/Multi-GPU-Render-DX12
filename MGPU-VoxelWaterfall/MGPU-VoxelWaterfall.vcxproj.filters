@@ -160,6 +160,7 @@
     <None Include="Shaders\VoxelComposite.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\BuildLodRenderList.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VoxelValidationCompare.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VoxelValidationDepthLinearize.hlsl"><Filter>Shaders</Filter></None>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\ComputeParticle.hlsl"><Filter>Shaders</Filter></FxCompile>

@@ -24,6 +24,7 @@ struct ValidationTileStats
 };
 
 RWStructuredBuffer<ValidationTileStats> TileStats : register(u0);
+RWTexture2D<float4> DiffOutput : register(u1);
 
 cbuffer ValidationConstants : register(b0)
 {
@@ -110,6 +111,12 @@ void CS(uint3 groupId : SV_GroupID,
         }
 
         combinedMismatch = (colorMismatch != 0u || depthMismatch != 0u || coverageMismatch != 0u) ? 1u : 0u;
+
+        const float normalizedDepthError = saturate(depthAbsoluteError / max(DepthTolerance, 1.0e-6f));
+        const float normalizedColorError = saturate(rgbMaxAbsoluteError / max(ColorTolerance, 1.0e-6f));
+        DiffOutput[pixel] = coverageMismatch != 0u
+                                ? float4(1.0f, 0.0f, 1.0f, 1.0f)
+                                : float4(normalizedColorError, normalizedDepthError, 0.0f, 1.0f);
     }
 
     SharedPixelCount[lane] = inBounds ? 1u : 0u;
