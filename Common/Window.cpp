@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Window.h"
 
+#include <algorithm>
 #include <cassert>
 
 
@@ -56,12 +57,12 @@ namespace Common
 
     int Window::GetClientWidth() const
     {
-        return width;
+        return static_cast<int>(actualClientWidth);
     }
 
     int Window::GetClientHeight() const
     {
-        return height;
+        return static_cast<int>(actualClientHeight);
     }
 
     bool Window::IsVSync() const
@@ -81,13 +82,13 @@ namespace Common
     }
 
     // Set the fullscreen state of the window.
-    void Window::SetFullscreen(bool fullscreen)
+    void Window::SetFullscreen(const bool fullscreen)
     {
-        if (fullscreen != fullscreen)
+        if (fullscreen != this->fullscreen)
         {
-            fullscreen = fullscreen;
+            this->fullscreen = fullscreen;
 
-            if (fullscreen) // Switching to fullscreen.
+            if (this->fullscreen) // Switching to fullscreen.
             {
                 // Store the current window dimensions so they can be restored 
                 // when switching out of fullscreen state.
@@ -153,16 +154,18 @@ namespace Common
     void Window::SetHeight(const int height)
     {
         this->height = height;
+        this->actualClientHeight = static_cast<UINT>(std::max(0, height));
     }
 
     void Window::SetWidth(const int width)
     {
         this->width = width;
+        this->actualClientWidth = static_cast<UINT>(std::max(0, width));
     }
 
     float Window::AspectRatio() const
     {
-        return static_cast<float>(width) / height;
+        return height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
     }
 
     GTexture& Window::GetBackBuffer(const UINT i)
@@ -234,6 +237,9 @@ namespace Common
           , fullscreen(false)
           , device(device)
     {
+        actualClientWidth = static_cast<UINT>(std::max(0, clientWidth));
+        actualClientHeight = static_cast<UINT>(std::max(0, clientHeight));
+
         RECT R = {0, 0, clientWidth, clientHeight};
         AdjustWindowRect(&R, WS_OVERLAPPEDWINDOW, FALSE);
         int width = R.right - R.left;
@@ -302,16 +308,24 @@ namespace Common
     {
         assert(swapChain);
 
+        RECT clientRect{};
+        if (!GetClientRect(hWnd, &clientRect))
+            return;
+        const UINT clientWidth = static_cast<UINT>(std::max<LONG>(0, clientRect.right - clientRect.left));
+        const UINT clientHeight = static_cast<UINT>(std::max<LONG>(0, clientRect.bottom - clientRect.top));
+        if (clientWidth == 0 || clientHeight == 0)
+            return;
+
+        actualClientWidth = clientWidth;
+        actualClientHeight = clientHeight;
+        width = static_cast<int>(clientWidth);
+        height = static_cast<int>(clientHeight);
+
         device->Flush();
 
         for (int i = 0; i < globalCountFrameResources; ++i)
         {
             GResourceStateTracker::RemoveGlobalResourceState(backBuffers[i].GetD3D12Resource().Get());
-            backBuffers[i].Reset();
-        }
-
-        for (int i = 0; i < globalCountFrameResources; ++i)
-        {
             backBuffers[i].Reset();
         }
 
@@ -321,7 +335,7 @@ namespace Common
 
         ThrowIfFailed(swapChain->ResizeBuffers(
             desc.BufferCount,
-            width, height,
+            actualClientWidth, actualClientHeight,
             desc.BufferDesc.Format,
             desc.Flags));
 
@@ -349,8 +363,16 @@ namespace Common
     ComPtr<IDXGISwapChain4> Window::CreateSwapChain()
     {
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.Width = width;
-        swapChainDesc.Height = height;
+        RECT clientRect{};
+        if (GetClientRect(hWnd, &clientRect))
+        {
+            actualClientWidth = static_cast<UINT>(std::max<LONG>(1, clientRect.right - clientRect.left));
+            actualClientHeight = static_cast<UINT>(std::max<LONG>(1, clientRect.bottom - clientRect.top));
+            width = static_cast<int>(actualClientWidth);
+            height = static_cast<int>(actualClientHeight);
+        }
+        swapChainDesc.Width = actualClientWidth;
+        swapChainDesc.Height = actualClientHeight;
         swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc = {1, 0};

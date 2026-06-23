@@ -92,6 +92,8 @@ namespace Common
         std::wstring windowName;
         int width;
         int height;
+        UINT actualClientWidth = 0;
+        UINT actualClientHeight = 0;
         bool vSync;
         bool fullscreen;
 

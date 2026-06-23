@@ -463,6 +463,14 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetric("Temporal policy", TemporalPolicyName(context.Workload.TemporalPolicy));
         DrawMetricU32("simulation update interval", telemetry ? telemetry->SecondaryEffectiveUpdateInterval : context.Workload.TemporalDecimationInterval);
         DrawMetric("debug view", CompositeViewName(context.CompositeDebugView));
+        DrawMetricU32("actual client width", telemetry ? telemetry->ActualClientWidth : 0);
+        DrawMetricU32("actual client height", telemetry ? telemetry->ActualClientHeight : 0);
+        DrawMetricU32("swapchain width", telemetry ? telemetry->SwapchainWidth : 0);
+        DrawMetricU32("swapchain height", telemetry ? telemetry->SwapchainHeight : 0);
+        DrawMetricU32("render width", telemetry ? telemetry->RenderWidth : context.Workload.RenderResolutionWidth);
+        DrawMetricU32("render height", telemetry ? telemetry->RenderHeight : context.Workload.RenderResolutionHeight);
+        DrawMetricU32("SSAA width", telemetry ? telemetry->SsaaWidth : 0);
+        DrawMetricU32("SSAA height", telemetry ? telemetry->SsaaHeight : 0);
     }
 
     if (ImGui::CollapsingHeader("Spawn Grid", ImGuiTreeNodeFlags_DefaultOpen))

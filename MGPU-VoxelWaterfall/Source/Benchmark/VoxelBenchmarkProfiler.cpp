@@ -187,7 +187,8 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "logical_updated_voxel_count,"
         << "wall_delta_ms,accepted_simulation_delta_ms,frame_resource_backpressure_poll_count,"
         << "drained_message_count,successful_present_count,simulation_steps_per_wall_second,"
-        << "seed,render_width,render_height,resolved_config_hash,"
+        << "seed,actual_client_width,actual_client_height,swapchain_width,swapchain_height,"
+        << "render_width,render_height,ssaa_width,ssaa_height,resolved_config_hash,"
         << "render_resolution_preset,camera_path,camera_fov_degrees,camera_near_plane,camera_far_plane,"
         << "lighting_preset,dynamic_shadows_enabled,"
         << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
@@ -648,8 +649,14 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.SuccessfulPresentCount << ','
         << frame.Metadata.SimulationStepsPerWallSecond << ','
         << frame.Metadata.Seed << ','
+        << frame.Metadata.ActualClientWidth << ','
+        << frame.Metadata.ActualClientHeight << ','
+        << frame.Metadata.SwapchainWidth << ','
+        << frame.Metadata.SwapchainHeight << ','
         << frame.Metadata.RenderWidth << ','
         << frame.Metadata.RenderHeight << ','
+        << frame.Metadata.SsaaWidth << ','
+        << frame.Metadata.SsaaHeight << ','
         << EscapeCsv(frame.Metadata.ResolvedConfigHash) << ','
         << EscapeCsv(frame.Metadata.RenderResolutionPreset) << ','
         << EscapeCsv(frame.Metadata.CameraPath) << ','

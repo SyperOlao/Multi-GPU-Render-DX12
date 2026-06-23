@@ -107,12 +107,15 @@ protected:
     void ValidateVoxelWorkloadGlobalIdsSlow() const;
     std::string GetExecutionModeName() const;
     std::string GetExecutionModeName(VoxelExecutionMode mode) const;
+    float RenderAspectRatio() const;
     VoxelBenchmarkProfiler::FrameMetadata BuildBenchmarkMetadata() const;
     void RefreshBenchmarkFrameTelemetry(VoxelBenchmarkProfiler::FrameMetadata& metadata) const;
     BenchmarkControllerContext BuildBenchmarkControllerContext();
     void InitializeBenchmarkProvenanceCache();
     void PumpOneMemoryAuditFrame();
     void ServiceDeferredResourceLifetime();
+    void RetireOffscreenRenderPaths(std::shared_ptr<SSAO> ambientPath,
+                                    std::shared_ptr<SSAA> antiAliasingPath);
     void RetireCurrentMultiGpuVoxelRenderTargets();
     void RetireVoxelGpuPartitions(std::vector<std::shared_ptr<VoxelGpuPartition>> partitions);
     void RetireDescriptorOwner(PEPEngine::Graphics::GDescriptor descriptor);
@@ -132,6 +135,7 @@ protected:
     void InitSRVMemoryAndMaterials();
     void InitRenderPaths();
     MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc() const;
+    void RebuildOffscreenVoxelRenderTargets();
     void RebuildMultiGpuVoxelRenderTargets();
     void DisableMultiGpu(const std::wstring& reason);
     void LoadStudyTexture();
@@ -229,6 +233,8 @@ protected:
     {
         MultiGpuVoxelRenderTargets RenderTargets;
         std::vector<std::shared_ptr<VoxelGpuPartition>> PartitionResources;
+        std::shared_ptr<SSAO> AmbientPath;
+        std::shared_ptr<SSAA> AntiAliasingPath;
         std::vector<PEPEngine::Graphics::GDescriptor> DescriptorOwners;
         UINT64 RequiredPrimaryRenderFenceValue = 0;
         UINT64 RequiredSecondaryRenderFenceValue = 0;
@@ -247,7 +253,6 @@ protected:
     uint32_t currentFramePumpDepth = 0;
     uint32_t maximumObservedFramePumpDepth = 0;
     uint64_t rejectedRecursiveFrameRequests = 0;
-    bool suppressResizeFlushForPendingRuntimeChanges = false;
     bool multiGpuAvailable = false;
     CrossAdapterTransferMode crossAdapterTransferMode = CrossAdapterTransferMode::Unavailable;
     bool multiGpuPublicationEligible = false;

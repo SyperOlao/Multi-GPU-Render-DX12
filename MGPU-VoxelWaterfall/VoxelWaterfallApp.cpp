@@ -1589,6 +1589,19 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.CurrentFramePumpDepth = currentFramePumpDepth;
     frameGraphTelemetry.MaximumObservedFramePumpDepth = maximumObservedFramePumpDepth;
     frameGraphTelemetry.RejectedRecursiveFrameRequests = rejectedRecursiveFrameRequests;
+    frameGraphTelemetry.ActualClientWidth = static_cast<uint32_t>(std::max(0, MainWindow->GetClientWidth()));
+    frameGraphTelemetry.ActualClientHeight = static_cast<uint32_t>(std::max(0, MainWindow->GetClientHeight()));
+    const auto backBufferDesc = MainWindow->GetCurrentBackBuffer().GetD3D12ResourceDesc();
+    frameGraphTelemetry.SwapchainWidth = static_cast<uint32_t>(backBufferDesc.Width);
+    frameGraphTelemetry.SwapchainHeight = backBufferDesc.Height;
+    frameGraphTelemetry.RenderWidth = voxelWorkload.RenderResolutionWidth;
+    frameGraphTelemetry.RenderHeight = voxelWorkload.RenderResolutionHeight;
+    if (antiAliasingPrimePath)
+    {
+        const auto ssaaDesc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
+        frameGraphTelemetry.SsaaWidth = static_cast<uint32_t>(ssaaDesc.Width);
+        frameGraphTelemetry.SsaaHeight = ssaaDesc.Height;
+    }
     frameGraphTelemetry.RequestedMode = requestedExecutionMode;
     frameGraphTelemetry.ActualMode = simulationResult.UsedMultiGpuMode
                                           ? executionMode
@@ -3989,17 +4002,13 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         voxelWorkload.DynamicShadowsEnabled = false;
     }
 
-    bool resolutionChanged = false;
-    uint32_t requestedWidth = voxelWorkload.RenderResolutionWidth;
-    uint32_t requestedHeight = voxelWorkload.RenderResolutionHeight;
+    bool renderResolutionChanged = false;
     if (changes.RenderResolutionPreset)
     {
         const auto [width, height] = ResolutionForPreset(*changes.RenderResolutionPreset);
-        requestedWidth = width;
-        requestedHeight = height;
-        resolutionChanged =
-            MainWindow->GetClientWidth() != static_cast<int>(width) ||
-            MainWindow->GetClientHeight() != static_cast<int>(height);
+        renderResolutionChanged =
+            voxelWorkload.RenderResolutionWidth != width ||
+            voxelWorkload.RenderResolutionHeight != height;
         voxelWorkload.ResolutionPreset = *changes.RenderResolutionPreset;
         voxelWorkload.RenderResolutionWidth = width;
         voxelWorkload.RenderResolutionHeight = height;
@@ -4017,21 +4026,17 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         requestsMultiGpu && multiGpuAvailable && !multiGpuVoxelRenderTargets.IsInitialized();
     const bool commonFlushRequired =
         sceneNeedsRebuild ||
-        resolutionChanged ||
+        renderResolutionChanged ||
         voxelSettingsRequested ||
         targetRebuildNeededForMode ||
         (executionRequested && executionMode != requestedMode);
     if (commonFlushRequired)
         Flush();
 
-    if (resolutionChanged)
+    if (renderResolutionChanged)
     {
-        MainWindow->SetWidth(static_cast<int>(requestedWidth));
-        MainWindow->SetHeight(static_cast<int>(requestedHeight));
-        suppressResizeFlushForPendingRuntimeChanges = true;
-        OnResize();
-        suppressResizeFlushForPendingRuntimeChanges = false;
-        renderTargetsRebuilt = multiGpuAvailable;
+        RebuildOffscreenVoxelRenderTargets();
+        renderTargetsRebuilt = multiGpuAvailable && multiGpuVoxelRenderTargets.IsInitialized();
     }
 
     if (requestsMultiGpu && !multiGpuAvailable)
@@ -4091,7 +4096,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             gameObjects,
             typedRenderer,
             voxelWorkload,
-            AspectRatio()
+            RenderAspectRatio()
         };
         voxelResearchSceneManager.RebuildScene(sceneContext);
         ++sceneGeneration;
@@ -4190,7 +4195,7 @@ void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkload
         gameObjects,
         typedRenderer,
         voxelWorkload,
-        AspectRatio()
+        RenderAspectRatio()
     };
     assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
@@ -4234,22 +4239,10 @@ void VoxelWaterfallApp::ApplyRenderResolutionPreset(const VoxelRenderResolutionP
 {
     assert(!isDrawingFrame && "ApplyRenderResolutionPreset must not be called during DrawFrame");
     const auto [width, height] = ResolutionForPreset(preset);
-    if (MainWindow->GetClientWidth() == static_cast<int>(width) &&
-        MainWindow->GetClientHeight() == static_cast<int>(height))
-    {
-        voxelWorkload.ResolutionPreset = preset;
-        voxelWorkload.RenderResolutionWidth = width;
-        voxelWorkload.RenderResolutionHeight = height;
-        return;
-    }
-
-    Flush();
     voxelWorkload.ResolutionPreset = preset;
     voxelWorkload.RenderResolutionWidth = width;
     voxelWorkload.RenderResolutionHeight = height;
-    MainWindow->SetWidth(static_cast<int>(width));
-    MainWindow->SetHeight(static_cast<int>(height));
-    OnResize();
+    RebuildOffscreenVoxelRenderTargets();
 }
 
 bool VoxelWaterfallApp::HandleDemoPresetHotkey(const WPARAM key)
@@ -4339,6 +4332,13 @@ std::string VoxelWaterfallApp::GetExecutionModeName(const VoxelExecutionMode mod
     return "SingleGpuFull";
 }
 
+float VoxelWaterfallApp::RenderAspectRatio() const
+{
+    const auto width = std::max(1u, voxelWorkload.RenderResolutionWidth);
+    const auto height = std::max(1u, voxelWorkload.RenderResolutionHeight);
+    return static_cast<float>(width) / static_cast<float>(height);
+}
+
 void VoxelWaterfallApp::InitializeBenchmarkProvenanceCache()
 {
     benchmarkProvenanceCache.BuildHash =
@@ -4426,6 +4426,14 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.DrainedMessageCount = frameGraphTelemetry.DrainedMessageCount;
     metadata.SuccessfulPresentCount = frameGraphTelemetry.SuccessfulPresentCount;
     metadata.SimulationStepsPerWallSecond = frameGraphTelemetry.SimulationStepsPerWallSecond;
+    metadata.ActualClientWidth = frameGraphTelemetry.ActualClientWidth;
+    metadata.ActualClientHeight = frameGraphTelemetry.ActualClientHeight;
+    metadata.SwapchainWidth = frameGraphTelemetry.SwapchainWidth;
+    metadata.SwapchainHeight = frameGraphTelemetry.SwapchainHeight;
+    metadata.RenderWidth = frameGraphTelemetry.RenderWidth;
+    metadata.RenderHeight = frameGraphTelemetry.RenderHeight;
+    metadata.SsaaWidth = frameGraphTelemetry.SsaaWidth;
+    metadata.SsaaHeight = frameGraphTelemetry.SsaaHeight;
     metadata.CpuWaitMs = currentPrimaryWaitMs;
     metadata.PresentToPresentMs = currentPresentToPresentMs;
     metadata.TotalCrossAdapterBytes = frameGraphTelemetry.TotalCrossAdapterBytes;
@@ -4580,11 +4588,17 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
             : voxelWorkload.Parameters.Seed;
     metadata.SecondaryShare = voxelWorkload.SecondaryShare;
     metadata.TemporalDecimationInterval = voxelWorkload.TemporalDecimationInterval;
+    metadata.ActualClientWidth = frameGraphTelemetry.ActualClientWidth;
+    metadata.ActualClientHeight = frameGraphTelemetry.ActualClientHeight;
+    metadata.SwapchainWidth = frameGraphTelemetry.SwapchainWidth;
+    metadata.SwapchainHeight = frameGraphTelemetry.SwapchainHeight;
+    metadata.RenderWidth = voxelWorkload.RenderResolutionWidth;
+    metadata.RenderHeight = voxelWorkload.RenderResolutionHeight;
     if (antiAliasingPrimePath)
     {
         const auto desc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
-        metadata.RenderWidth = static_cast<uint32_t>(desc.Width);
-        metadata.RenderHeight = desc.Height;
+        metadata.SsaaWidth = static_cast<uint32_t>(desc.Width);
+        metadata.SsaaHeight = desc.Height;
     }
     metadata.PrimaryAdapterName = benchmarkProvenanceCache.PrimaryAdapterName;
     metadata.SecondaryAdapterName = benchmarkProvenanceCache.SecondaryAdapterName;
@@ -5573,15 +5587,16 @@ void VoxelWaterfallApp::InitRenderPaths()
 {
     auto commandQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
     auto cmdList = commandQueue->GetCommandList();
+    const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
+    const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
 
     ambientPrimePath = (std::make_shared<SSAO>(
         primeDevice,
         cmdList,
-        MainWindow->GetClientWidth(), MainWindow->GetClientHeight()));
+        renderWidth, renderHeight));
 
-    antiAliasingPrimePath = (std::make_shared<SSAA>(primeDevice, 4, MainWindow->GetClientWidth(),
-                                                    MainWindow->GetClientHeight()));
-    antiAliasingPrimePath->OnResize(MainWindow->GetClientWidth(), MainWindow->GetClientHeight());
+    antiAliasingPrimePath = (std::make_shared<SSAA>(primeDevice, 4, renderWidth, renderHeight));
+    antiAliasingPrimePath->OnResize(renderWidth, renderHeight);
 
     commandQueue->WaitForFenceValue(commandQueue->ExecuteCommandList(cmdList));
 
@@ -5609,11 +5624,36 @@ MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetD
     }
     else if (MainWindow)
     {
-        desc.Width = MainWindow->GetClientWidth();
-        desc.Height = MainWindow->GetClientHeight();
+        desc.Width = std::max(1u, voxelWorkload.RenderResolutionWidth);
+        desc.Height = std::max(1u, voxelWorkload.RenderResolutionHeight);
     }
 
     return desc;
+}
+
+void VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
+{
+    assert(!isDrawingFrame && "Offscreen voxel render target rebuild must not run during DrawFrame");
+    const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
+    const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
+
+    RetireOffscreenRenderPaths(std::move(ambientPrimePath), std::move(antiAliasingPrimePath));
+    ++renderTargetGeneration;
+    ++descriptorGeneration;
+    if (camera)
+        camera->SetAspectRatio(RenderAspectRatio());
+
+    auto commandQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
+    auto cmdList = commandQueue->GetCommandList();
+
+    ambientPrimePath = std::make_shared<SSAO>(primeDevice, cmdList, renderWidth, renderHeight);
+    antiAliasingPrimePath = std::make_shared<SSAA>(primeDevice, 4, renderWidth, renderHeight);
+
+    const auto initFence = commandQueue->ExecuteCommandList(cmdList);
+    commandQueue->WaitForFenceValue(initFence);
+
+    if (multiGpuAvailable)
+        RebuildMultiGpuVoxelRenderTargets();
 }
 
 void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
@@ -5810,7 +5850,7 @@ void VoxelWaterfallApp::CreateGO()
         gameObjects,
         typedRenderer,
         voxelWorkload,
-        AspectRatio()
+        RenderAspectRatio()
     };
     assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
@@ -6164,7 +6204,25 @@ void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
                     fenceComplete(primaryComputeQueue, release.RequiredPrimaryComputeFenceValue) &&
                     fenceComplete(secondaryComputeQueue, release.RequiredSecondaryComputeFenceValue);
             }),
-        deferredGpuResourceReleases.end());
+    deferredGpuResourceReleases.end());
+}
+
+void VoxelWaterfallApp::RetireOffscreenRenderPaths(std::shared_ptr<SSAO> ambientPath,
+                                                   std::shared_ptr<SSAA> antiAliasingPath)
+{
+    if (!ambientPath && !antiAliasingPath)
+        return;
+
+    DeferredGpuResourceRelease release{};
+    release.AmbientPath = std::move(ambientPath);
+    release.AntiAliasingPath = std::move(antiAliasingPath);
+    release.RequiredPrimaryRenderFenceValue = graphicsPassFenceValue;
+    release.RequiredSecondaryRenderFenceValue = lastSecondaryPartitionGraphicsFenceOwner == VoxelAdapterOwner::Secondary
+                                                   ? lastSecondaryPartitionGraphicsFenceValue
+                                                   : 0;
+    release.RequiredPrimaryComputeFenceValue = primaryComputeQueueFenceValue;
+    release.RequiredSecondaryComputeFenceValue = secondaryComputeQueueFenceValue;
+    deferredGpuResourceReleases.push_back(std::move(release));
 }
 
 void VoxelWaterfallApp::RetireCurrentMultiGpuVoxelRenderTargets()
@@ -6596,8 +6654,9 @@ void VoxelWaterfallApp::UpdateMainPassCB(const GameTimer& gt)
     mainPassCB.ShadowTransform = shadowTransform.Transpose();
     mainPassCB.EyePosW = camera->gameObject->GetTransform()->GetWorldPosition();
     mainPassCB.debugMap = voxelWorkload.DynamicShadowsEnabled ? 1.0f : 0.0f;
-    mainPassCB.RenderTargetSize = Vector2(static_cast<float>(MainWindow->GetClientWidth()),
-                                          static_cast<float>(MainWindow->GetClientHeight()));
+    const float renderWidth = static_cast<float>(std::max(1u, voxelWorkload.RenderResolutionWidth));
+    const float renderHeight = static_cast<float>(std::max(1u, voxelWorkload.RenderResolutionHeight));
+    mainPassCB.RenderTargetSize = Vector2(renderWidth, renderHeight);
     mainPassCB.InvRenderTargetSize = Vector2(1.0f / mainPassCB.RenderTargetSize.x,
                                              1.0f / mainPassCB.RenderTargetSize.y);
     mainPassCB.NearZ = camera->GetNearZ();
@@ -6700,9 +6759,8 @@ bool VoxelWaterfallApp::InitMainWindow()
 void VoxelWaterfallApp::OnResize()
 {
     D3DApp::OnResize();
-    ++renderTargetGeneration;
-    voxelWorkload.RenderResolutionWidth = static_cast<uint32_t>(MainWindow->GetClientWidth());
-    voxelWorkload.RenderResolutionHeight = static_cast<uint32_t>(MainWindow->GetClientHeight());
+    if (MainWindow->GetClientWidth() <= 0 || MainWindow->GetClientHeight() <= 0)
+        return;
 
     fullViewport.Height = static_cast<float>(MainWindow->GetClientHeight());
     fullViewport.Width = static_cast<float>(MainWindow->GetClientWidth());
@@ -6722,29 +6780,6 @@ void VoxelWaterfallApp::OnResize()
         MainWindow->GetBackBuffer(i).CreateRenderTargetView(&rtvDesc, &frameResources[i]->BackBufferRTVMemory);
     }
 
-
-    if (camera != nullptr)
-    {
-        camera->SetAspectRatio(AspectRatio());
-    }
-
-    if (ambientPrimePath != nullptr)
-    {
-        ambientPrimePath->OnResize(MainWindow->GetClientWidth(), MainWindow->GetClientHeight());
-        ambientPrimePath->RebuildDescriptors();
-    }
-
-    if (antiAliasingPrimePath != nullptr)
-    {
-        antiAliasingPrimePath->OnResize(MainWindow->GetClientWidth(), MainWindow->GetClientHeight());
-    }
-
-    if (multiGpuAvailable)
-    {
-        if (!suppressResizeFlushForPendingRuntimeChanges)
-            Flush();
-        RebuildMultiGpuVoxelRenderTargets();
-    }
 
     currentFrameResourceIndex = MainWindow->GetCurrentBackBufferIndex();
 }

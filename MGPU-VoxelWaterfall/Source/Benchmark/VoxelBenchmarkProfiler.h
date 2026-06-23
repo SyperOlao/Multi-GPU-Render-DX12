@@ -95,8 +95,14 @@ public:
         uint32_t Seed = 0;
         float SecondaryShare = 0.0f;
         uint32_t TemporalDecimationInterval = 1;
+        uint32_t ActualClientWidth = 0;
+        uint32_t ActualClientHeight = 0;
+        uint32_t SwapchainWidth = 0;
+        uint32_t SwapchainHeight = 0;
         uint32_t RenderWidth = 0;
         uint32_t RenderHeight = 0;
+        uint32_t SsaaWidth = 0;
+        uint32_t SsaaHeight = 0;
         std::string ResolvedConfigHash;
         std::wstring PrimaryAdapterName;
         std::wstring SecondaryAdapterName;
