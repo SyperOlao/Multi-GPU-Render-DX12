@@ -99,6 +99,14 @@ struct TwoAdapterRuntimeEvidence
     std::string ColorSharedToLocalDestination;
     std::string DepthSharedToLocalSource;
     std::string DepthSharedToLocalDestination;
+    std::string CopyOperation = "CopyResource";
+    std::string LocalToSharedPath = "texture_to_shared_texture";
+    std::string SharedToLocalPath = "shared_texture_to_texture";
+    std::string BridgeResourceDimension = "TEXTURE2D";
+    uint64_t BridgeColorBytes = 0;
+    uint64_t BridgeDepthBytes = 0;
+    uint64_t BridgeColorRowPitch = 0;
+    uint64_t BridgeDepthRowPitch = 0;
     uint32_t SecondaryGraphicsTimestampBeginQuery = 0;
     uint32_t SecondaryGraphicsTimestampEndQuery = 0;
     uint32_t LocalToSharedTimestampBeginQuery = 0;

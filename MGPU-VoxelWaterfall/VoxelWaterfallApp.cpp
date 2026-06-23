@@ -3175,6 +3175,14 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
             runtime.DepthSharedToLocalSource = frameGraphTelemetry.SharedToLocalDepthSource;
             runtime.DepthSharedToLocalDestination = frameGraphTelemetry.SharedToLocalDepthDestination;
         }
+        runtime.CopyOperation = frameGraphTelemetry.CopyOperation;
+        runtime.LocalToSharedPath = frameGraphTelemetry.LocalToSharedPath;
+        runtime.SharedToLocalPath = frameGraphTelemetry.SharedToLocalPath;
+        runtime.BridgeResourceDimension = frameGraphTelemetry.BridgeResourceDimension;
+        runtime.BridgeColorBytes = std::max(runtime.BridgeColorBytes, frameGraphTelemetry.BridgeColorBytes);
+        runtime.BridgeDepthBytes = std::max(runtime.BridgeDepthBytes, frameGraphTelemetry.BridgeDepthBytes);
+        runtime.BridgeColorRowPitch = std::max(runtime.BridgeColorRowPitch, frameGraphTelemetry.BridgeColorRowPitch);
+        runtime.BridgeDepthRowPitch = std::max(runtime.BridgeDepthRowPitch, frameGraphTelemetry.BridgeDepthRowPitch);
         runtime.SecondaryIndirectArgumentMaxCommandCount =
             std::max(runtime.SecondaryIndirectArgumentMaxCommandCount,
                      frameGraphTelemetry.SecondaryIndirectArgumentMaxCommandCount);

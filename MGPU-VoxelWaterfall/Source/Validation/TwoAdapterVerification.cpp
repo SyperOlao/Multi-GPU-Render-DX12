@@ -177,6 +177,11 @@ namespace
         return desc;
     }
 
+    D3D12_RESOURCE_DESC LocalTextureDesc(const UINT width, const UINT height, const DXGI_FORMAT format)
+    {
+        return CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1);
+    }
+
     struct CreationRecord
     {
         std::string Name;
@@ -248,6 +253,74 @@ namespace
 
         ComPtr<ID3D12Resource> secondaryResource;
         hr = secondary->GetDXDevice()->CreatePlacedResource(secondaryHeap.Get(), 0, &desc,
+                                                            D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                            IID_PPV_ARGS(&secondaryResource));
+        record.SecondaryPlacedResourceHResult = HResultText(hr);
+        record.Passed = SUCCEEDED(hr);
+        return record;
+    }
+
+    CreationRecord VerifySharedCopyOnlyBuffer(const std::shared_ptr<GDevice>& primary,
+                                              const std::shared_ptr<GDevice>& secondary,
+                                              const std::string& name,
+                                              const DXGI_FORMAT format)
+    {
+        CreationRecord record{};
+        record.Name = name;
+        record.Format = FormatName(format);
+        record.Width = VerificationWidth;
+        record.Height = VerificationHeight;
+        record.Attempted = primary != nullptr && secondary != nullptr;
+        if (!record.Attempted)
+            return record;
+
+        auto textureDesc = LocalTextureDesc(VerificationWidth, VerificationHeight, format);
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+        UINT numRows = 0;
+        UINT64 rowSizeInBytes = 0;
+        UINT64 totalBytes = 0;
+        primary->GetDXDevice()->GetCopyableFootprints(
+            &textureDesc, 0, 1, 0, &layout, &numRows, &rowSizeInBytes, &totalBytes);
+        record.RowPitch = layout.Footprint.RowPitch;
+        record.HeapBytes = Align64K(totalBytes);
+
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(totalBytes);
+        bufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+
+        CD3DX12_HEAP_DESC heapDesc(record.HeapBytes,
+                                   D3D12_HEAP_TYPE_DEFAULT,
+                                   0,
+                                   D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER);
+        ComPtr<ID3D12Heap> primaryHeap;
+        HRESULT hr = primary->GetDXDevice()->CreateHeap(&heapDesc, IID_PPV_ARGS(&primaryHeap));
+        record.CreateHResult = HResultText(hr);
+        if (FAILED(hr))
+            return record;
+
+        HANDLE sharedHandle = nullptr;
+        hr = primary->GetDXDevice()->CreateSharedHandle(primaryHeap.Get(), nullptr, GENERIC_ALL, nullptr,
+                                                        &sharedHandle);
+        record.SharedHandleHResult = HResultText(hr);
+        if (FAILED(hr) || sharedHandle == nullptr)
+            return record;
+
+        ComPtr<ID3D12Heap> secondaryHeap;
+        hr = secondary->GetDXDevice()->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(&secondaryHeap));
+        CloseHandle(sharedHandle);
+        record.OpenHandleHResult = HResultText(hr);
+        if (FAILED(hr))
+            return record;
+
+        ComPtr<ID3D12Resource> primaryResource;
+        hr = primary->GetDXDevice()->CreatePlacedResource(primaryHeap.Get(), 0, &bufferDesc,
+                                                          D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                          IID_PPV_ARGS(&primaryResource));
+        record.PrimaryPlacedResourceHResult = HResultText(hr);
+        if (FAILED(hr))
+            return record;
+
+        ComPtr<ID3D12Resource> secondaryResource;
+        hr = secondary->GetDXDevice()->CreatePlacedResource(secondaryHeap.Get(), 0, &bufferDesc,
                                                             D3D12_RESOURCE_STATE_COMMON, nullptr,
                                                             IID_PPV_ARGS(&secondaryResource));
         record.SecondaryPlacedResourceHResult = HResultText(hr);
@@ -467,6 +540,15 @@ namespace
              << "\",\"destination\":\"" << EscapeJson(result.Runtime.ColorSharedToLocalDestination) << "\"},"
              << "\"depth_shared_to_local\":{\"source\":\"" << EscapeJson(result.Runtime.DepthSharedToLocalSource)
              << "\",\"destination\":\"" << EscapeJson(result.Runtime.DepthSharedToLocalDestination) << "\"}},\n"
+             << "    \"copy_operation\":\"" << EscapeJson(result.Runtime.CopyOperation) << "\",\n"
+             << "    \"local_to_shared_path\":\"" << EscapeJson(result.Runtime.LocalToSharedPath) << "\",\n"
+             << "    \"shared_to_local_path\":\"" << EscapeJson(result.Runtime.SharedToLocalPath) << "\",\n"
+             << "    \"bridge_resource_dimension\":\"" << EscapeJson(result.Runtime.BridgeResourceDimension)
+             << "\",\n"
+             << "    \"bridge_color_bytes\":" << result.Runtime.BridgeColorBytes << ",\n"
+             << "    \"bridge_depth_bytes\":" << result.Runtime.BridgeDepthBytes << ",\n"
+             << "    \"bridge_color_row_pitch\":" << result.Runtime.BridgeColorRowPitch << ",\n"
+             << "    \"bridge_depth_row_pitch\":" << result.Runtime.BridgeDepthRowPitch << ",\n"
              << "    \"timestamp_query_ranges\":{"
              << "\"secondary_graphics\":[" << result.Runtime.SecondaryGraphicsTimestampBeginQuery << ","
              << result.Runtime.SecondaryGraphicsTimestampEndQuery << "],"
@@ -535,6 +617,14 @@ namespace
                  << "runtime.secondaryDraws=" << result.Runtime.SecondaryGraphicsDrawCount << "\n"
                  << "runtime.renderOutputBytes="
                  << (result.Runtime.ColorLocalToSharedBytes + result.Runtime.DepthLocalToSharedBytes) << "\n"
+                 << "runtime.copyOperation=" << result.Runtime.CopyOperation << "\n"
+                 << "runtime.localToSharedPath=" << result.Runtime.LocalToSharedPath << "\n"
+                 << "runtime.sharedToLocalPath=" << result.Runtime.SharedToLocalPath << "\n"
+                 << "runtime.bridgeResourceDimension=" << result.Runtime.BridgeResourceDimension << "\n"
+                 << "runtime.bridgeColorBytes=" << result.Runtime.BridgeColorBytes << "\n"
+                 << "runtime.bridgeDepthBytes=" << result.Runtime.BridgeDepthBytes << "\n"
+                 << "runtime.bridgeColorRowPitch=" << result.Runtime.BridgeColorRowPitch << "\n"
+                 << "runtime.bridgeDepthRowPitch=" << result.Runtime.BridgeDepthRowPitch << "\n"
                  << "runtime.particleBytes=" << result.Runtime.ParticleTransferBytes << "\n"
                  << "runtime.passed=" << (result.Runtime.Passed ? "true" : "false") << "\n";
             for (const auto& reason : result.Runtime.Reasons)
@@ -656,19 +746,32 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
     }
 
     const auto fenceRecord = VerifySharedFence(selectedDevices.Primary, selectedDevices.Secondary);
-    const auto colorRecord = VerifySharedTexture(selectedDevices.Primary, selectedDevices.Secondary,
-                                                 "shared_color", DXGI_FORMAT_R8G8B8A8_UNORM);
-    const auto depthRecord = VerifySharedTexture(selectedDevices.Primary, selectedDevices.Secondary,
-                                                 "shared_linear_depth", DXGI_FORMAT_R32_FLOAT);
+    const bool copyOnlyTransfer = selectedDevices.TransferMode == CrossAdapterTransferMode::CopyOnlyCrossAdapter;
+    const auto colorRecord = copyOnlyTransfer
+                                 ? VerifySharedCopyOnlyBuffer(selectedDevices.Primary, selectedDevices.Secondary,
+                                                              "shared_color_copy_only_buffer",
+                                                              DXGI_FORMAT_R8G8B8A8_UNORM)
+                                 : VerifySharedTexture(selectedDevices.Primary, selectedDevices.Secondary,
+                                                       "shared_color", DXGI_FORMAT_R8G8B8A8_UNORM);
+    const auto depthRecord = copyOnlyTransfer
+                                 ? VerifySharedCopyOnlyBuffer(selectedDevices.Primary, selectedDevices.Secondary,
+                                                              "shared_linear_depth_copy_only_buffer",
+                                                              DXGI_FORMAT_R32_FLOAT)
+                                 : VerifySharedTexture(selectedDevices.Primary, selectedDevices.Secondary,
+                                                       "shared_linear_depth", DXGI_FORMAT_R32_FLOAT);
 
     if (preconditionMet)
     {
         if (!fenceRecord.Passed)
             result.Reasons.push_back("Shared fence create/open verification failed");
         if (!colorRecord.Passed)
-            result.Reasons.push_back("Shared color resource create/open verification failed");
+            result.Reasons.push_back(copyOnlyTransfer
+                                         ? "Shared color copy-only buffer create/open verification failed"
+                                         : "Shared color resource create/open verification failed");
         if (!depthRecord.Passed)
-            result.Reasons.push_back("Shared linear depth resource create/open verification failed");
+            result.Reasons.push_back(copyOnlyTransfer
+                                         ? "Shared linear depth copy-only buffer create/open verification failed"
+                                         : "Shared linear depth resource create/open verification failed");
 
         const bool pass = distinctLuid &&
             colorFormatSupported &&
