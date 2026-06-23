@@ -492,34 +492,6 @@ namespace
         }
     }
 
-    const char* PartitionStrategyName(const VoxelPartitionStrategy strategy)
-    {
-        switch (strategy)
-        {
-        case VoxelPartitionStrategy::HashedChunks:
-            return "HashedChunks";
-        case VoxelPartitionStrategy::SpatialPlane:
-            return "SpatialPlane";
-        default:
-            return "Unknown";
-        }
-    }
-
-    const char* LoadBalanceScenarioName(const VoxelLoadBalanceScenario scenario)
-    {
-        switch (scenario)
-        {
-        case VoxelLoadBalanceScenario::Balanced:
-            return "Balanced";
-        case VoxelLoadBalanceScenario::PrimaryHeavy:
-            return "PrimaryHeavy";
-        case VoxelLoadBalanceScenario::SecondaryHeavy:
-            return "SecondaryHeavy";
-        default:
-            return "Unknown";
-        }
-    }
-
     const char* TemporalPolicyName(const VoxelTemporalPolicy policy)
     {
         return policy == VoxelTemporalPolicy::Decimated ? "Decimated" : "Full";
@@ -1357,7 +1329,6 @@ namespace
         record.Fields["workload.actual_dynamic_count"] = std::to_string(metadata.ActualDynamicVoxelCount);
         record.Fields["workload.temporal_interval"] = std::to_string(metadata.TemporalDecimationInterval);
         record.Fields["workload.spatial_lod"] = metadata.SpatialLodPolicy;
-        record.Fields["workload.partition_strategy"] = metadata.PartitionStrategy;
         record.Fields["workload.chunk_size"] =
             std::to_string(metadata.ChunkSizeX) + "x" +
             std::to_string(metadata.ChunkSizeY) + "x" +
@@ -1399,7 +1370,6 @@ namespace
         if (workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
             workload.Profile == VoxelResearchWorkloadProfile::DemoMixed ||
             workload.CameraMode == VoxelResearchCameraMode::Interactive ||
-            workload.PartitionStrategy == VoxelPartitionStrategy::SpatialPlane ||
             workload.SpatialLod.FreezeCamera ||
             workload.SecondaryShare <= 0.0f ||
             workload.SecondaryShare >= 1.0f ||
@@ -2550,6 +2520,7 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         [this] { StartAutomaticBenchmark(); },
         [this] { StopAutomaticBenchmark(); },
         [this] { RequestApplyVoxelWorkloadSettings(); },
+        [this](const float secondaryShare) { RequestSecondaryShare(secondaryShare); },
         [this](const ResearchRunnerRequest& request) { RequestResearchRunner(request); },
         [this] { CancelResearchRunner(); }
     };
@@ -3188,8 +3159,6 @@ void VoxelWaterfallApp::RunVisualValidation(const std::filesystem::path& request
         target.TemporalPolicy = voxelWorkload.TemporalPolicy;
         target.TemporalInterval = voxelWorkload.TemporalDecimationInterval;
         target.SecondaryShare = voxelWorkload.SecondaryShare;
-        target.PartitionStrategy = voxelWorkload.PartitionStrategy;
-        target.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
         target.ChunkSize = voxelWorkload.ChunkSize;
         target.RequestedExecutionMode = validationCase.CandidateMode;
         target.NearZ = camera ? camera->GetNearZ() : 0.0f;
@@ -4690,6 +4659,11 @@ void VoxelWaterfallApp::RequestApplyVoxelWorkloadSettings()
     pendingRuntimeChanges.VoxelWorkloadSettings = true;
 }
 
+void VoxelWaterfallApp::RequestSecondaryShare(const float secondaryShare)
+{
+    pendingRuntimeChanges.SecondaryShare = std::clamp(secondaryShare, 0.0f, 1.0f);
+}
+
 void VoxelWaterfallApp::RequestVisualValidation(const std::filesystem::path& outputDirectory,
                                                 const BenchmarkSuite suite,
                                                 const uint32_t seedOverride)
@@ -4710,14 +4684,27 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     const PendingRuntimeChanges changes = pendingRuntimeChanges;
     pendingRuntimeChanges = {};
 
-    const bool voxelSettingsRequested = changes.VoxelWorkloadSettings.value_or(false);
+    bool voxelSettingsRequested = changes.VoxelWorkloadSettings.value_or(false);
     bool sceneNeedsRebuild = false;
     bool renderTargetsRebuilt = false;
+    std::optional<float> secondaryShareOverride;
+
+    if (changes.SecondaryShare)
+    {
+        const float requestedSecondaryShare = std::clamp(*changes.SecondaryShare, 0.0f, 1.0f);
+        if (voxelWorkload.SecondaryShare != requestedSecondaryShare)
+        {
+            secondaryShareOverride = requestedSecondaryShare;
+            voxelResearchSceneManager.ForceRebuildActivePreset();
+            sceneNeedsRebuild = true;
+        }
+    }
 
     if (changes.WorkloadProfile)
     {
-        sceneNeedsRebuild =
+        const bool profileNeedsRebuild =
             voxelResearchSceneManager.RequestPreset(ScenePresetForProfile(*changes.WorkloadProfile));
+        sceneNeedsRebuild = sceneNeedsRebuild || profileNeedsRebuild;
     }
 
     if (changes.CameraMode)
@@ -4823,6 +4810,8 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             voxelResearchSceneManager.ForceRebuildActivePreset();
             sceneNeedsRebuild = true;
         }
+        if (!changes.WorkloadProfile && !secondaryShareOverride)
+            secondaryShareOverride = voxelWorkload.SecondaryShare;
     }
 
     if (sceneNeedsRebuild)
@@ -4842,7 +4831,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             voxelWorkload,
             RenderAspectRatio()
         };
-        voxelResearchSceneManager.RebuildScene(sceneContext);
+        voxelResearchSceneManager.RebuildScene(sceneContext, secondaryShareOverride);
         ++sceneGeneration;
         SortGO();
     }
@@ -4864,8 +4853,6 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             settings.StorageMode = voxelWorkload.StaticStorageMode;
             settings.VoxelSize = voxelWorkload.StaticVoxelSize;
             settings.SecondaryShare = voxelWorkload.SecondaryShare;
-            settings.PartitionStrategy = voxelWorkload.PartitionStrategy;
-            settings.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
             settings.ChunkSize = voxelWorkload.ChunkSize;
             settings.SpatialLod = voxelWorkload.SpatialLod;
             auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);
@@ -5306,8 +5293,6 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
         voxelWorkload.SpatialLod.Mode == VoxelSpatialLodMode::ThreeLevel
             ? "ThreeLevel"
             : "Off";
-    metadata.PartitionStrategy = PartitionStrategyName(voxelWorkload.PartitionStrategy);
-    metadata.LoadBalanceScenario = LoadBalanceScenarioName(voxelWorkload.LoadBalanceScenario);
     metadata.CameraPath =
         researchCameraController ? researchCameraController->GetCameraPathName() : voxelWorkload.CameraPath;
     metadata.LightingPreset = LightingPresetName(voxelWorkload.LightingMode);
@@ -5802,8 +5787,6 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         settings.StorageMode = voxelWorkload.StaticStorageMode;
         settings.VoxelSize = voxelWorkload.StaticVoxelSize;
         settings.SecondaryShare = voxelWorkload.SecondaryShare;
-        settings.PartitionStrategy = voxelWorkload.PartitionStrategy;
-        settings.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
         settings.ChunkSize = voxelWorkload.ChunkSize;
         settings.SpatialLod = voxelWorkload.SpatialLod;
         auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);

@@ -75,6 +75,7 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void()> StartAutomaticBenchmark;
     std::function<void()> StopAutomaticBenchmark;
     std::function<void()> RequestApplyWorkloadSettings;
+    std::function<void(float)> ApplySecondaryShare;
     std::function<void(const ResearchRunnerRequest&)> RequestResearchRunner;
     std::function<void()> CancelResearchRunner;
 };

@@ -34,29 +34,6 @@ namespace
         return x % 10000u;
     }
 
-    VoxelAdapterPartitionId OwnerFromNormalizedPlane(
-        const float coordinate,
-        const float secondaryShare,
-        const bool secondaryFirst)
-    {
-        const float share = std::clamp(secondaryShare, 0.0f, 1.0f);
-        if (share <= 0.0f)
-            return VoxelAdapterPartitionId::PrimaryPartition;
-        if (share >= 1.0f)
-            return VoxelAdapterPartitionId::SecondaryPartition;
-
-        if (secondaryFirst)
-        {
-            return coordinate < share
-                       ? VoxelAdapterPartitionId::SecondaryPartition
-                       : VoxelAdapterPartitionId::PrimaryPartition;
-        }
-
-        return coordinate < (1.0f - share)
-                   ? VoxelAdapterPartitionId::PrimaryPartition
-                   : VoxelAdapterPartitionId::SecondaryPartition;
-    }
-
 }
 
 VoxelGlobalId VoxelSceneWorkloadBuilder::EncodeSequenceGlobalVoxelId(
@@ -80,16 +57,7 @@ VoxelChunkId VoxelSceneWorkloadBuilder::EncodeChunkId(
 }
 
 VoxelAdapterPartitionId VoxelSceneWorkloadBuilder::ChooseChunkOwner(
-    const VoxelPartitionStrategy strategy,
-    const VoxelLoadBalanceScenario scenario,
-    const VoxelChunkId,
     const uint32_t chunkLinearIndex,
-    const uint32_t chunkX,
-    const uint32_t,
-    const uint32_t chunkZ,
-    const uint32_t chunkGridX,
-    const uint32_t,
-    const uint32_t chunkGridZ,
     const float secondaryShare)
 {
     const float share = std::clamp(secondaryShare, 0.0f, 1.0f);
@@ -97,28 +65,6 @@ VoxelAdapterPartitionId VoxelSceneWorkloadBuilder::ChooseChunkOwner(
         return VoxelAdapterPartitionId::PrimaryPartition;
     if (share >= 1.0f)
         return VoxelAdapterPartitionId::SecondaryPartition;
-
-    if (scenario == VoxelLoadBalanceScenario::PrimaryHeavy ||
-        scenario == VoxelLoadBalanceScenario::SecondaryHeavy)
-    {
-        const float zPlane =
-            chunkGridZ > 1
-                ? (static_cast<float>(chunkZ) + 0.5f) / static_cast<float>(chunkGridZ)
-                : 0.0f;
-        return OwnerFromNormalizedPlane(
-            zPlane,
-            share,
-            scenario == VoxelLoadBalanceScenario::SecondaryHeavy);
-    }
-
-    if (strategy == VoxelPartitionStrategy::SpatialPlane)
-    {
-        const float xPlane =
-            chunkGridX > 1
-                ? (static_cast<float>(chunkX) + 0.5f) / static_cast<float>(chunkGridX)
-                : 0.0f;
-        return OwnerFromNormalizedPlane(xPlane, share, false);
-    }
 
     const uint32_t secondaryThreshold = static_cast<uint32_t>(share * 10000.0f);
     return StableChunkSample(chunkLinearIndex) < secondaryThreshold
@@ -181,16 +127,7 @@ VoxelSceneLayer VoxelSceneWorkloadBuilder::BuildDynamicWaterfallLayer(const Voxe
         const auto globalId = EncodeSequenceGlobalVoxelId(layer.LayerId, sequenceId);
         const auto chunkId = EncodeChunkId(layer.LayerId, chunkX, chunkY, chunkZ);
         const auto owner = ChooseChunkOwner(
-            workload.PartitionStrategy,
-            workload.LoadBalanceScenario,
-            chunkId,
             chunkLinearIndex,
-            chunkX,
-            chunkY,
-            chunkZ,
-            chunkGridX,
-            chunkGridY,
-            chunkGridZ,
             workload.SecondaryShare);
 
         layer.GlobalVoxelIds.push_back(globalId);

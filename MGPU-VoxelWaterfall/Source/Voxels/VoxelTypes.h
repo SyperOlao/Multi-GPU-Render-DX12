@@ -103,19 +103,6 @@ enum class VoxelResearchWorkloadProfile : uint32_t
     DemoMixed
 };
 
-enum class VoxelPartitionStrategy : uint32_t
-{
-    HashedChunks,
-    SpatialPlane
-};
-
-enum class VoxelLoadBalanceScenario : uint32_t
-{
-    Balanced,
-    PrimaryHeavy,
-    SecondaryHeavy
-};
-
 enum class VoxelTemporalPolicy : uint32_t
 {
     Full,
@@ -516,9 +503,7 @@ struct VoxelSceneWorkload
     DynamicVoxelBudgetPreset DynamicBudgetPreset = DynamicVoxelBudgetPreset::Small;
     uint32_t ActualStaticVoxelCount = 0;
     uint32_t ActualDynamicVoxelCount = 0;
-    VoxelPartitionStrategy PartitionStrategy = VoxelPartitionStrategy::HashedChunks;
-    VoxelLoadBalanceScenario LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
-    float SecondaryShare = 0.35f;
+    float SecondaryShare = 0.1f;
     VoxelTemporalPolicy TemporalPolicy = VoxelTemporalPolicy::Full;
     uint32_t TemporalDecimationInterval = 2;
     VoxelSpatialLodSettings SpatialLod{};

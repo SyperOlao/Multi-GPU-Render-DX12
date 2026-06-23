@@ -333,16 +333,7 @@ VoxelResearchEnvironmentGenerator::Result VoxelResearchEnvironmentGenerator::Gen
         const auto chunkId = VoxelSceneWorkloadBuilder::EncodeChunkId(layer.LayerId, chunkX, chunkY, chunkZ);
         const uint32_t chunkLinearIndex = chunkX + chunkGridX * (chunkY + chunkGridY * chunkZ);
         const auto owner = VoxelSceneWorkloadBuilder::ChooseChunkOwner(
-            settings.PartitionStrategy,
-            settings.LoadBalanceScenario,
-            chunkId,
             chunkLinearIndex,
-            chunkX,
-            chunkY,
-            chunkZ,
-            chunkGridX,
-            chunkGridY,
-            chunkGridZ,
             settings.SecondaryShare);
         const auto globalId = VoxelSceneWorkloadBuilder::EncodeSequenceGlobalVoxelId(layer.LayerId, sequenceId);
 

@@ -10,16 +10,7 @@ public:
     static VoxelGlobalId EncodeSequenceGlobalVoxelId(VoxelLayerId layerId, DWORD sequenceId);
     static VoxelChunkId EncodeChunkId(VoxelLayerId layerId, uint32_t chunkX, uint32_t chunkY, uint32_t chunkZ);
     static VoxelAdapterPartitionId ChooseChunkOwner(
-        VoxelPartitionStrategy strategy,
-        VoxelLoadBalanceScenario scenario,
-        VoxelChunkId chunkId,
         uint32_t chunkLinearIndex,
-        uint32_t chunkX,
-        uint32_t chunkY,
-        uint32_t chunkZ,
-        uint32_t chunkGridX,
-        uint32_t chunkGridY,
-        uint32_t chunkGridZ,
         float secondaryShare);
 
 private:

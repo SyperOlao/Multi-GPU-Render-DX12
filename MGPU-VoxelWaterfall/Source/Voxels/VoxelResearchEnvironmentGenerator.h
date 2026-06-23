@@ -12,9 +12,7 @@ public:
         StaticVoxelBudgetPreset BudgetPreset = StaticVoxelBudgetPreset::Small;
         StaticVoxelStorageMode StorageMode = StaticVoxelStorageMode::SurfaceOnly;
         float VoxelSize = 0.65f;
-        float SecondaryShare = 0.35f;
-        VoxelPartitionStrategy PartitionStrategy = VoxelPartitionStrategy::HashedChunks;
-        VoxelLoadBalanceScenario LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
+        float SecondaryShare = 0.1f;
         VoxelChunkSize ChunkSize{};
         VoxelSpatialLodSettings SpatialLod{};
     };

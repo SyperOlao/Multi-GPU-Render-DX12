@@ -47,8 +47,6 @@ struct VoxelVisualValidationSnapshot
     VoxelTemporalPolicy TemporalPolicy = VoxelTemporalPolicy::Decimated;
     uint32_t TemporalInterval = 2;
     float SecondaryShare = 0.5f;
-    VoxelPartitionStrategy PartitionStrategy = VoxelPartitionStrategy::HashedChunks;
-    VoxelLoadBalanceScenario LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
     VoxelChunkSize ChunkSize{};
     VoxelExecutionMode RequestedExecutionMode = VoxelExecutionMode::MultiGpuFull;
     float View[16] = {};

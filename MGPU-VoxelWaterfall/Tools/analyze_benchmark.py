@@ -977,7 +977,6 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
                                                "spatial_lod_enabled"),
             "temporal_interval": int(config_value(config, "temporal_interval", default=1)),
             "temporal_policy": str(config_value(config, "temporal_policy", "temporal_mode", default="")),
-            "partition_strategy": str(config_value(config, "partition_strategy", default="")),
             "partition_chunk_size": str(config_value(config, "partition_chunk_size", "chunk_size", default="")),
             "resolved_config_hash": resolved_hash,
             "randomization_seed": randomization_seed,
@@ -1069,8 +1068,7 @@ def pair_key(run: dict[str, Any]) -> tuple[Any, ...]:
         run["requested_static_budget_label"], run["requested_static_budget"],
         run["requested_dynamic_budget"], run["secondary_share"], run["spatial_lod_enabled"],
         run["spatial_lod"], run["temporal_interval"], run["temporal_policy"],
-        run["partition_strategy"], run["partition_chunk_size"],
-        run["render_width"], run["render_height"],
+        run["partition_chunk_size"], run["render_width"], run["render_height"],
         run["actual_total_count"], run["actual_static_count"], run["actual_dynamic_count"],
         run["total_logical_updated_voxels"], run["total_executed_fixed_steps"],
         run["validation_protocol_hash"], run["validation_camera_hash"],
@@ -1094,8 +1092,8 @@ def validate_single_multi_pair(single: dict[str, Any], multi: dict[str, Any]) ->
         "run_id", "session_id", "pair_id", "block_id", "repetition", "randomization_seed",
         "mode_family", "preset", "requested_static_budget_label", "requested_static_budget",
         "requested_dynamic_budget", "secondary_share", "spatial_lod_enabled", "spatial_lod",
-        "temporal_interval", "temporal_policy", "partition_strategy", "partition_chunk_size",
-        "render_width", "render_height", "actual_total_count", "actual_static_count",
+        "temporal_interval", "temporal_policy", "partition_chunk_size", "render_width", "render_height",
+        "actual_total_count", "actual_static_count",
         "actual_dynamic_count", "total_logical_updated_voxels", "total_executed_fixed_steps",
         "validation_protocol_hash", "validation_camera_hash",
     )
@@ -1230,8 +1228,8 @@ H1_MATCH_FIELDS = (
     "run_id", "session_id", "repetition", "randomization_seed", "preset",
     "requested_static_budget_label", "requested_static_budget", "requested_dynamic_budget",
     "secondary_share", "spatial_lod_enabled", "spatial_lod", "temporal_interval",
-    "temporal_policy", "partition_strategy", "partition_chunk_size", "render_width",
-    "render_height", "actual_total_count", "actual_static_count", "actual_dynamic_count",
+    "temporal_policy", "partition_chunk_size", "render_width", "render_height",
+    "actual_total_count", "actual_static_count", "actual_dynamic_count",
     "total_logical_updated_voxels", "total_executed_fixed_steps", "validation_protocol_hash",
     "validation_camera_hash",
 )
@@ -1239,8 +1237,8 @@ H1_MATCH_FIELDS = (
 H2_MATCH_FIELDS = (
     "run_id", "session_id", "repetition", "randomization_seed", "preset",
     "requested_static_budget_label", "requested_static_budget", "requested_dynamic_budget",
-    "secondary_share", "spatial_lod_enabled", "spatial_lod", "partition_strategy",
-    "partition_chunk_size", "render_width", "render_height", "actual_total_count",
+    "secondary_share", "spatial_lod_enabled", "spatial_lod", "partition_chunk_size",
+    "render_width", "render_height", "actual_total_count",
     "actual_static_count", "actual_dynamic_count", "validation_protocol_hash",
     "validation_camera_hash",
 )
@@ -1249,8 +1247,8 @@ H3_MATCH_FIELDS = (
     "run_id", "session_id", "repetition", "randomization_seed", "requested_mode",
     "preset", "requested_static_budget_label", "requested_static_budget",
     "requested_dynamic_budget", "secondary_share", "temporal_interval", "temporal_policy",
-    "partition_strategy", "partition_chunk_size", "render_width", "render_height",
-    "validation_protocol_hash", "validation_camera_hash",
+    "partition_chunk_size", "render_width", "render_height", "validation_protocol_hash",
+    "validation_camera_hash",
 )
 
 
@@ -2256,7 +2254,6 @@ class AnalysisTests(unittest.TestCase):
             "spatial_lod": "Off",
             "temporal_interval": 1,
             "temporal_policy": "",
-            "partition_strategy": "",
             "partition_chunk_size": "",
             "render_width": 1920,
             "render_height": 1080,

@@ -53,8 +53,6 @@ public:
         std::string TransferMode = "unavailable";
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
-        std::string PartitionStrategy;
-        std::string LoadBalanceScenario;
         std::string CameraPath;
         std::string LightingPreset;
         std::string RenderResolutionPreset;
@@ -171,8 +169,6 @@ public:
         std::string TransferMode = "unavailable";
         std::string Preset;
         std::string ProfileName;
-        std::string PartitionStrategy;
-        std::string LoadBalanceScenario;
         std::string BenchmarkConfigClass;
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;

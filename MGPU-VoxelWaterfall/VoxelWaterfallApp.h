@@ -88,6 +88,7 @@ protected:
     void CancelResearchRunner();
     void AdvanceResearchRunner(bool presentedFrame);
     void RequestApplyVoxelWorkloadSettings();
+    void RequestSecondaryShare(float secondaryShare);
     void RequestVisualValidation(const std::filesystem::path& outputDirectory = {},
                                  BenchmarkSuite suite = BenchmarkSuite::Smoke,
                                  uint32_t seedOverride = 0);
@@ -227,6 +228,7 @@ protected:
         std::optional<VoxelRenderResolutionPreset> RenderResolutionPreset;
         std::optional<VoxelExecutionMode> ExecutionMode;
         std::optional<bool> VoxelWorkloadSettings;
+        std::optional<float> SecondaryShare;
         std::optional<FinalResolveSource> FinalResolve;
         std::optional<VisualValidationRequest> RunVisualValidation;
 
@@ -238,6 +240,7 @@ protected:
                 RenderResolutionPreset.has_value() ||
                 ExecutionMode.has_value() ||
                 VoxelWorkloadSettings.has_value() ||
+                SecondaryShare.has_value() ||
                 FinalResolve.has_value() ||
                 RunVisualValidation.has_value();
         }

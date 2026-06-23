@@ -65,8 +65,6 @@ namespace
         settings.StorageMode = workload.StaticStorageMode;
         settings.VoxelSize = workload.StaticVoxelSize;
         settings.SecondaryShare = workload.SecondaryShare;
-        settings.PartitionStrategy = workload.PartitionStrategy;
-        settings.LoadBalanceScenario = workload.LoadBalanceScenario;
         settings.ChunkSize = workload.ChunkSize;
         settings.SpatialLod = workload.SpatialLod;
         auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);
@@ -148,14 +146,16 @@ bool VoxelResearchSceneManager::RequiresRebuild() const
     return rebuildPending;
 }
 
-void VoxelResearchSceneManager::RebuildScene(const VoxelResearchSceneContext& context)
+void VoxelResearchSceneManager::RebuildScene(
+    const VoxelResearchSceneContext& context,
+    const std::optional<float> secondaryShareOverride)
 {
     if (!rebuildPending)
         return;
 
     ClearScene(context);
     activePreset = requestedPreset;
-    context.Workload = CreateLogicalWorkload(activePreset);
+    context.Workload = CreateLogicalWorkload(activePreset, secondaryShareOverride);
 
     switch (activePreset)
     {
@@ -215,7 +215,9 @@ void VoxelResearchSceneManager::CreateOcclusionPrimitives(const VoxelResearchSce
     createBox("OcclusionVoxelFrameSection", Vector3(-8.5f, 7.0f, -13.0f), Vector3(2.0f, 8.0f, 7.0f));
 }
 
-VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelResearchScenePreset preset)
+VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
+    const VoxelResearchScenePreset preset,
+    const std::optional<float> secondaryShareOverride)
 {
     VoxelSceneWorkload workload{};
     workload.Profile = ProfileForPreset(preset);
@@ -224,9 +226,9 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelR
     workload.Rotation = Vector3::Zero;
     workload.TotalVoxelCount = 0;
     workload.DynamicVoxelBudget = 0;
-    workload.PartitionStrategy = VoxelPartitionStrategy::HashedChunks;
-    workload.LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
-    workload.SecondaryShare = 0.5f;
+    workload.SecondaryShare = 0.1f;
+    if (secondaryShareOverride)
+        workload.SecondaryShare = std::clamp(*secondaryShareOverride, 0.0f, 1.0f);
     workload.TemporalPolicy = VoxelTemporalPolicy::Full;
     workload.TemporalDecimationInterval = 1;
     workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
@@ -303,9 +305,7 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(const VoxelR
         workload.Profile = VoxelResearchWorkloadProfile::OcclusionValidation;
         workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
         workload.StaticVoxelBudget = 25000;
-        workload.SecondaryShare = 0.5f;
-        workload.PartitionStrategy = VoxelPartitionStrategy::SpatialPlane;
-        workload.LoadBalanceScenario = VoxelLoadBalanceScenario::Balanced;
+        workload.SecondaryShare = 0.1f;
         workload.BenchmarkConfigClass = VoxelBenchmarkConfigClass::Diagnostic;
         workload.BenchmarkConfigReason = "OcclusionValidation is a visual composition diagnostic";
         workload.CameraMode = VoxelResearchCameraMode::FixedOcclusion;

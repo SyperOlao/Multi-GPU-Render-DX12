@@ -35,6 +35,12 @@ namespace
         }
     }
 
+    bool UsesMultiGpuExecution(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
     const char* ProfileName(const VoxelResearchWorkloadProfile profile)
     {
         switch (profile)
@@ -54,11 +60,6 @@ namespace
         default:
             return "Unknown";
         }
-    }
-
-    const char* PartitionStrategyName(const VoxelPartitionStrategy strategy)
-    {
-        return strategy == VoxelPartitionStrategy::SpatialPlane ? "SpatialPlane" : "HashedChunks";
     }
 
     const char* TemporalPolicyName(const VoxelTemporalPolicy policy)
@@ -178,7 +179,6 @@ namespace
             workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
             workload.Profile == VoxelResearchWorkloadProfile::DemoMixed ||
             workload.CameraMode == VoxelResearchCameraMode::Interactive ||
-            workload.PartitionStrategy == VoxelPartitionStrategy::SpatialPlane ||
             workload.SpatialLod.FreezeCamera ||
             workload.SecondaryShare <= 0.0f ||
             workload.SecondaryShare >= 1.0f ||
@@ -491,8 +491,16 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetric("publication eligible", context.PublicationEligible ? "true" : "false");
         DrawMetricU32("primary-owned voxels", primaryOwnedVoxels);
         DrawMetricU32("secondary-owned voxels", secondaryOwnedVoxels);
-        DrawMetricF32("secondary share", context.Workload.SecondaryShare);
-        DrawMetric("partition strategy", PartitionStrategyName(context.Workload.PartitionStrategy));
+        if (UsesMultiGpuExecution(context.RequestedExecutionMode) || UsesMultiGpuExecution(actualMode))
+        {
+            float secondaryShare = context.Workload.SecondaryShare;
+            if (ImGui::SliderFloat("secondary share", &secondaryShare, 0.0f, 1.0f, "%.2f",
+                                   ImGuiSliderFlags_AlwaysClamp) &&
+                context.ApplySecondaryShare)
+            {
+                context.ApplySecondaryShare(secondaryShare);
+            }
+        }
         ImGui::TextWrapped("Status: %S", context.MultiGpuStatus.c_str());
     }
 

@@ -93,7 +93,7 @@ The benchmark gate compares compatible provenance records across suite manifest,
 - `render.resolution`, `render.color_format`, `render.depth_format`, `render.sample_count`;
 - `workload.static_seed`, `workload.dynamic_seed`;
 - requested and actual static/dynamic counts;
-- `workload.temporal_interval`, `workload.spatial_lod`, `workload.partition_strategy`, `workload.chunk_size`;
+- `workload.temporal_interval`, `workload.spatial_lod`, `workload.chunk_size`;
 - `runtime.toolchain`.
 
 Stale camera/config/protocol/build/shader/adapter evidence blocks the suite. Missing visual validation or missing two-adapter preflight blocks the suite. Placeholder evidence is invalid.

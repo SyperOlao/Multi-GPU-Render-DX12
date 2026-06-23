@@ -55,8 +55,6 @@ namespace
         std::string TransferMode;
         std::string Preset;
         std::string ProfileName;
-        std::string PartitionStrategy;
-        std::string LoadBalanceScenario;
         std::string BenchmarkConfigClass;
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
@@ -72,15 +70,13 @@ namespace
 
         bool operator<(const AggregateKey& other) const
         {
-            return std::tie(RequestedMode, ActualMode, TransferMode, Preset, ProfileName, PartitionStrategy,
-                            LoadBalanceScenario, BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy,
-                            PairId, TotalVoxelCount, ActualStaticVoxelCount, ActualDynamicVoxelCount,
-                            SecondarySharePermille, RenderWidth, RenderHeight, PrimaryAdapterName,
-                            SecondaryAdapterName) <
+            return std::tie(RequestedMode, ActualMode, TransferMode, Preset, ProfileName,
+                            BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy, PairId, TotalVoxelCount,
+                            ActualStaticVoxelCount, ActualDynamicVoxelCount, SecondarySharePermille, RenderWidth,
+                            RenderHeight, PrimaryAdapterName, SecondaryAdapterName) <
                 std::tie(other.RequestedMode, other.ActualMode, other.TransferMode, other.Preset, other.ProfileName,
-                         other.PartitionStrategy, other.LoadBalanceScenario, other.BenchmarkConfigClass,
-                         other.TemporalPolicy, other.SpatialLodPolicy, other.PairId, other.TotalVoxelCount,
-                         other.ActualStaticVoxelCount, other.ActualDynamicVoxelCount,
+                         other.BenchmarkConfigClass, other.TemporalPolicy, other.SpatialLodPolicy, other.PairId,
+                         other.TotalVoxelCount, other.ActualStaticVoxelCount, other.ActualDynamicVoxelCount,
                          other.SecondarySharePermille, other.RenderWidth, other.RenderHeight,
                          other.PrimaryAdapterName, other.SecondaryAdapterName);
         }
@@ -94,8 +90,6 @@ namespace
             summary.TransferMode,
             summary.Preset,
             summary.ProfileName,
-            summary.PartitionStrategy,
-            summary.LoadBalanceScenario,
             summary.BenchmarkConfigClass,
             summary.TemporalPolicy,
             summary.SpatialLodPolicy,
@@ -455,7 +449,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
     summary << "requested_mode,actual_mode,transfer_mode,primary_adapter,secondary_adapter,total_voxels,"
         << "requested_static_budget_label,requested_static_budget,requested_dynamic_budget,"
         << "actual_total_count,"
-        << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
+        << "secondary_share,profile,benchmark_config_class,"
         << "temporal_policy,spatial_lod_policy,pair_id,"
         << "actual_static_count,actual_dynamic_count,actual_static_voxels,actual_dynamic_voxels,"
         << "resolved_config_hash,render_width,render_height,"
@@ -489,8 +483,6 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
             << row.TotalVoxelCount << ','
             << row.SecondaryShare << ','
             << EscapeCsv(row.ProfileName) << ','
-            << EscapeCsv(row.PartitionStrategy) << ','
-            << EscapeCsv(row.LoadBalanceScenario) << ','
             << EscapeCsv(row.BenchmarkConfigClass) << ','
             << EscapeCsv(row.TemporalPolicy) << ','
             << EscapeCsv(row.SpatialLodPolicy) << ','

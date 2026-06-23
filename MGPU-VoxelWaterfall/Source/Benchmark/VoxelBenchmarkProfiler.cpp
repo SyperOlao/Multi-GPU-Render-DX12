@@ -178,7 +178,7 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "randomized_order_index,block_order_index,pair_member_order,randomization_seed,"
         << "profile,scene_preset,requested_mode,actual_mode,transfer_mode,fallback_reason,"
         << "benchmark_config_class,benchmark_config_reason,temporal_policy,spatial_lod_policy,"
-        << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
+        << "total_voxels,actual_static_voxels,actual_dynamic_voxels,"
         << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
         << "primary_partition_voxels,secondary_partition_voxels,visible_primary_count,visible_secondary_count,"
         << "updated_voxels,simulation_steps,simulation_dispatches,secondary_compute_submitted,"
@@ -615,8 +615,6 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << EscapeCsv(frame.Metadata.BenchmarkConfigReason) << ','
         << EscapeCsv(frame.Metadata.TemporalPolicy) << ','
         << EscapeCsv(frame.Metadata.SpatialLodPolicy) << ','
-        << EscapeCsv(frame.Metadata.PartitionStrategy) << ','
-        << EscapeCsv(frame.Metadata.LoadBalanceScenario) << ','
         << frame.Metadata.TotalVoxelCount << ','
         << frame.Metadata.ActualStaticVoxelCount << ','
         << frame.Metadata.ActualDynamicVoxelCount << ','
@@ -935,8 +933,6 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
             ? currentPresetName
             : (lastWritten ? lastWritten->Metadata.ScenePreset : "");
     completedSummary.ProfileName = lastWritten ? lastWritten->Metadata.ProfileName : "";
-    completedSummary.PartitionStrategy = lastWritten ? lastWritten->Metadata.PartitionStrategy : "";
-    completedSummary.LoadBalanceScenario = lastWritten ? lastWritten->Metadata.LoadBalanceScenario : "";
     completedSummary.BenchmarkConfigClass = lastWritten ? lastWritten->Metadata.BenchmarkConfigClass : "";
     completedSummary.TemporalPolicy = lastWritten ? lastWritten->Metadata.TemporalPolicy : "";
     completedSummary.SpatialLodPolicy = lastWritten ? lastWritten->Metadata.SpatialLodPolicy : "";

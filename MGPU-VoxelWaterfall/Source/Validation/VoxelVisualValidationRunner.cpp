@@ -364,7 +364,6 @@ uint64_t VoxelVisualValidationRunner::ComputeSnapshotHash(const VoxelVisualValid
            << ',' << snapshot.SpatialLod.Lod1Distance
            << ',' << snapshot.SpatialLod.Hysteresis << ']'
            << ",\"near_z\":" << snapshot.NearZ
-           << ",\"partition_strategy\":" << static_cast<uint32_t>(snapshot.PartitionStrategy)
            << ",\"projection\":[";
     for (uint32_t i = 0; i < 16; ++i)
         stream << (i == 0 ? "" : ",") << snapshot.Projection[i];

@@ -139,7 +139,6 @@ namespace
             "workload.actual_dynamic_count",
             "workload.temporal_interval",
             "workload.spatial_lod",
-            "workload.partition_strategy",
             "workload.chunk_size",
             "runtime.toolchain"
         };
