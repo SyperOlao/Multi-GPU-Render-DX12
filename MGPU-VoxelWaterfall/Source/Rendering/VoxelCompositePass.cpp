@@ -152,5 +152,9 @@ void VoxelCompositePass::Record(const std::shared_ptr<GCommandList>& cmdList,
 
     cmdList->TransitionBarrier(context.FrameTargets.PrimaryCompositeColor,
                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmdList->TransitionBarrier(context.FrameTargets.PrimaryReceivedSecondaryColor,
+                               D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(context.FrameTargets.PrimaryReceivedSecondaryLinearDepth,
+                               D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
 }

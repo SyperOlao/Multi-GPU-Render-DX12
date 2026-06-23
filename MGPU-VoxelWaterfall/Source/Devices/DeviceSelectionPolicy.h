@@ -25,6 +25,9 @@ struct AdapterSelectionInfo
     bool ComputeQueue = false;
     bool CopyQueue = false;
     bool CrossAdapterTexture = false;
+    bool CopyQueueTimestampQueriesSupported = false;
+    std::string CopyQueueTimestampHeapType;
+    uint64_t CopyQueueTimestampFrequency = 0;
     bool SelectedPrimary = false;
     bool SelectedSecondary = false;
     std::wstring Status;

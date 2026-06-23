@@ -14,6 +14,7 @@
 #include "GDescriptorHeap.h"
 #include "GBuffer.h"
 #include "GRenderTarger.h"
+#include "d3dUtil.h"
 
 namespace PEPEngine::Graphics
 {
@@ -70,16 +71,22 @@ namespace PEPEngine::Graphics
 
     void GCommandList::BeginQuery(const UINT index) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         BeginQuery(queue->timestampQueryHeap.value().Get(), index);
     }
 
     void GCommandList::EndQuery(const UINT index) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         EndQuery(queue->timestampQueryHeap.value().Get(), index);
     }
 
     void GCommandList::ResolveQuery(const UINT index, const UINT quriesCount, const UINT64 aligned) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         ResolveQuery(queue->timestampQueryHeap.value().Get(),
                      queue->timestampResultBuffer.value().GetD3D12Resource().Get(), index,
                      quriesCount, aligned);
@@ -867,7 +874,7 @@ namespace PEPEngine::Graphics
         // Flush any remaining barriers.
         FlushResourceBarriers();
 
-        cmdList->Close();
+        ThrowIfFailed(cmdList->Close());
 
         uint32_t numPendingBarriers = 0;
 
@@ -887,7 +894,7 @@ namespace PEPEngine::Graphics
     void GCommandList::Close() const
     {
         FlushResourceBarriers();
-        cmdList->Close();
+        ThrowIfFailed(cmdList->Close());
     }
 
     void GCommandList::SetPrimitiveTopology(const D3D_PRIMITIVE_TOPOLOGY primitiveTopology)

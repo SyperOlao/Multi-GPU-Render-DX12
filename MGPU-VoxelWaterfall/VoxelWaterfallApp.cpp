@@ -3246,7 +3246,7 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
     };
 
     constexpr uint32_t verificationPresentFrames = 12;
-    constexpr uint32_t maxVerificationPumpAttempts = verificationPresentFrames * 240;
+    constexpr uint32_t maxVerificationPumpAttempts = verificationPresentFrames * 2000;
     const auto targetPresentCount = totalSuccessfulPresentCount + verificationPresentFrames;
     uint32_t verificationPumpAttempts = 0;
     while (totalSuccessfulPresentCount < targetPresentCount &&
@@ -3256,6 +3256,8 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
         ++verificationPumpAttempts;
         if (PumpOneFrame())
             accumulateFrameEvidence();
+        else
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     if (totalSuccessfulPresentCount < targetPresentCount)
     {
@@ -4752,6 +4754,7 @@ VoxelRenderWorkload VoxelWaterfallApp::BuildVoxelRenderWorkload() const
     VoxelRenderWorkload renderWorkload{};
     for (const auto& partition : voxelWorkload.Partitions)
     {
+        renderWorkload.LogicalVoxelCount += partition.VoxelCount();
         if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
             renderWorkload.SecondaryOwnedPartitions.push_back(&partition);
         else
@@ -4840,9 +4843,7 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
-    uint32_t expectedPartitionVoxelCount = 0;
-    for (const auto& partition : voxelWorkload.Partitions)
-        expectedPartitionVoxelCount += partition.VoxelCount();
+    const uint32_t expectedPartitionVoxelCount = renderWorkload.LogicalVoxelCount;
 
     uint32_t logicalDrawListVoxelCount = 0;
     for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)

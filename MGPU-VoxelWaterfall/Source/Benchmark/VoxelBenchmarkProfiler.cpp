@@ -94,18 +94,17 @@ void VoxelBenchmarkProfiler::Initialize(const std::shared_ptr<GDevice>& primaryD
 
     for (auto& queue : queues)
     {
-        if (queue.Device && queue.Queue)
+        if (queue.Device && queue.Queue && queue.Queue->SupportsTimestampQueries())
         {
-            queue.Frequency = std::max<uint64_t>(1, queue.Queue->GetTimestampFreq());
+            queue.Frequency = queue.Queue->GetTimestampFreq();
             CreateQueueResources(queue);
-            queue.Valid = true;
+            queue.Valid = queue.Frequency > 0;
         }
     }
 
     CalibrateQueues();
     initialized = queues[ToIndex(QueueId::PrimaryCompute)].Valid &&
-        queues[ToIndex(QueueId::PrimaryGraphics)].Valid &&
-        queues[ToIndex(QueueId::PrimaryCopy)].Valid;
+        queues[ToIndex(QueueId::PrimaryGraphics)].Valid;
 }
 
 float VoxelBenchmarkProfiler::GetProgress() const
@@ -756,7 +755,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
 void VoxelBenchmarkProfiler::CreateQueueResources(QueueContext& context)
 {
     D3D12_QUERY_HEAP_DESC heapDesc{};
-    heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    heapDesc.Type = context.Queue->GetTimestampQueryHeapType();
     heapDesc.Count = QueryCountPerQueue;
     heapDesc.NodeMask = context.Device->GetNodeMask();
     ThrowIfFailed(context.Device->GetDXDevice()->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&context.QueryHeap)));

@@ -438,6 +438,7 @@ struct VoxelRenderWorkload
 {
     std::vector<const VoxelAdapterPartition*> PrimaryOwnedPartitions;
     std::vector<const VoxelAdapterPartition*> SecondaryOwnedPartitions;
+    uint32_t LogicalVoxelCount = 0;
 };
 
 struct VoxelSceneLayer

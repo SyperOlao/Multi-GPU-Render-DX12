@@ -36,8 +36,9 @@ namespace
             &bridge.RowSizeInBytes,
             &bridge.TotalBytes);
 
-        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bridge.TotalBytes);
-        bufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+        auto bridgeDesc = textureDesc;
+        bridgeDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+        bridgeDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         const UINT64 heapBytes = (bridge.TotalBytes + D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1) &
             ~(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1);
         const CD3DX12_HEAP_DESC heapDesc(
@@ -66,16 +67,16 @@ namespace
 
         bridge.PrimeBuffer = GResource(
             primaryDevice,
-            bufferDesc,
+            bridgeDesc,
             bridge.PrimeHeap,
-            name + L".PrimeCopyBuffer",
+            name + L".PrimeCopyTexture",
             nullptr,
             D3D12_RESOURCE_STATE_COMMON);
         bridge.SharedBuffer = GResource(
             secondaryDevice,
-            bufferDesc,
+            bridgeDesc,
             bridge.SharedHeap,
-            name + L".SecondaryCopyBuffer",
+            name + L".SecondaryCopyTexture",
             nullptr,
             D3D12_RESOURCE_STATE_COMMON);
 

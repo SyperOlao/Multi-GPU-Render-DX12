@@ -333,6 +333,12 @@ namespace
              << ",\"copy\":" << (info.CopyQueue ? "true" : "false") << "},"
              << "\"cross_adapter_row_major_texture_supported\":"
              << (info.CrossAdapterTexture ? "true" : "false") << ","
+             << "\"copy_queue_timestamp_queries_supported\":"
+             << (info.CopyQueueTimestampQueriesSupported ? "true" : "false") << ","
+             << "\"copy_queue_timestamp_heap_type\":\""
+             << EscapeJson(info.CopyQueueTimestampHeapType) << "\","
+             << "\"copy_queue_timestamp_frequency\":"
+             << info.CopyQueueTimestampFrequency << ","
              << "\"selected_role\":\""
              << (info.SelectedPrimary ? "primary" : (info.SelectedSecondary ? "secondary" : "none")) << "\","
              << "\"status\":\"" << EscapeJson(WideToUtf8(info.Status)) << "\""
@@ -593,6 +599,12 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
              << " luidHigh=" << selectedDevices.Adapters[i].LuidHighPart
              << " luidLow=" << selectedDevices.Adapters[i].LuidLowPart
              << " featureLevel=" << selectedDevices.Adapters[i].FeatureLevel
+             << " copyQueueTimestampSupported="
+             << (selectedDevices.Adapters[i].CopyQueueTimestampQueriesSupported ? "true" : "false")
+             << " copyQueueTimestampHeapType="
+             << selectedDevices.Adapters[i].CopyQueueTimestampHeapType
+             << " copyQueueTimestampFrequency="
+             << selectedDevices.Adapters[i].CopyQueueTimestampFrequency
              << " role="
              << (selectedDevices.Adapters[i].SelectedPrimary
                      ? "primary"

@@ -10,6 +10,26 @@
 
 namespace PEPEngine::Graphics
 {
+    namespace
+    {
+        class ResourceStateTrackerLockGuard
+        {
+        public:
+            ResourceStateTrackerLockGuard()
+            {
+                GResourceStateTracker::Lock();
+            }
+
+            ~ResourceStateTrackerLockGuard()
+            {
+                GResourceStateTracker::Unlock();
+            }
+
+            ResourceStateTrackerLockGuard(const ResourceStateTrackerLockGuard&) = delete;
+            ResourceStateTrackerLockGuard& operator=(const ResourceStateTrackerLockGuard&) = delete;
+        };
+    }
+
     GCommandQueue::GCommandQueue(const std::shared_ptr<GDevice>& device, const D3D12_COMMAND_LIST_TYPE type) :
         type(type)
         , device(device)
@@ -50,6 +70,25 @@ namespace PEPEngine::Graphics
             break;
         }
 
+        if (this->type == D3D12_COMMAND_LIST_TYPE_DIRECT || this->type == D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        {
+            timestampQueriesSupported = true;
+            timestampQueryHeapType = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        }
+        else if (this->type == D3D12_COMMAND_LIST_TYPE_COPY)
+        {
+            D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3{};
+            if (SUCCEEDED(device->GetDXDevice()->CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS3,
+                    &options3,
+                    sizeof(options3))) &&
+                options3.CopyQueueTimestampQueriesSupported)
+            {
+                timestampQueriesSupported = true;
+                timestampQueryHeapType = D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP;
+            }
+        }
+
         GetTimestampFreq();
 
         // Two timestamps for each frame.
@@ -67,7 +106,7 @@ namespace PEPEngine::Graphics
         timestampQueryHeap = Lazy<ComPtr<ID3D12QueryHeap>>([this, resultCount]
         {
             D3D12_QUERY_HEAP_DESC timestampHeapDesc = {};
-            timestampHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            timestampHeapDesc.Type = this->timestampQueryHeapType;
             timestampHeapDesc.Count = resultCount;
             timestampHeapDesc.NodeMask = this->device->GetNodeMask();
 
@@ -82,9 +121,7 @@ namespace PEPEngine::Graphics
 
     UINT64 GCommandQueue::GetTimestamp(const UINT index)
     {
-        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&
-            type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
-            type != D3D12_COMMAND_LIST_TYPE_COPY)
+        if (!SupportsTimestampQueries())
         {
             return 0;
         }
@@ -92,7 +129,7 @@ namespace PEPEngine::Graphics
         readRange.Begin = 2 * index * sizeof(UINT64);
         readRange.End = readRange.Begin + 2 * sizeof(UINT64);
 
-        (timestampResultBuffer.value().GetD3D12Resource()->Map(0, &readRange, &mappedData));
+        ThrowIfFailed(timestampResultBuffer.value().GetD3D12Resource()->Map(0, &readRange, &mappedData));
 
         const UINT64* pTimestamps = reinterpret_cast<UINT64*>(static_cast<UINT8*>(mappedData) + readRange.Begin);
         const UINT64 timeStampDelta = pTimestamps[1] - pTimestamps[0];
@@ -101,7 +138,8 @@ namespace PEPEngine::Graphics
         timestampResultBuffer.value().GetD3D12Resource()->Unmap(0, &emptyRange);
 
         // Calculate the GPU execution time in microseconds.
-        return (timeStampDelta * 1000000) / GetTimestampFreq();
+        const auto frequency = GetTimestampFreq();
+        return frequency == 0 ? 0 : (timeStampDelta * 1000000) / frequency;
     }
 
     ComPtr<ID3D12Fence> GCommandQueue::GetFence() const
@@ -124,7 +162,7 @@ namespace PEPEngine::Graphics
 
     void GCommandQueue::Signal(const ComPtr<ID3D12Fence>& otherFence, const UINT64 fenceValue) const
     {
-        commandQueue->Signal(otherFence.Get(), fenceValue);
+        ThrowIfFailed(commandQueue->Signal(otherFence.Get(), fenceValue));
     }
 
     void GCommandQueue::SignalWithNewFenceValue(const UINT64 newFenceValue)
@@ -146,7 +184,7 @@ namespace PEPEngine::Graphics
         auto event = ::CreateEvent(nullptr, FALSE, FALSE, nullptr);
         assert(event && "Failed to create fence event handle.");
 
-        fence->SetEventOnCompletion(fenceValue, event);
+        ThrowIfFailed(fence->SetEventOnCompletion(fenceValue, event));
         WaitForSingleObject(event, DWORD_MAX);
         CloseHandle(event);
     }
@@ -181,7 +219,7 @@ namespace PEPEngine::Graphics
 
     uint64_t GCommandQueue::ExecuteCommandLists(const std::shared_ptr<GCommandList>* commandLists, const size_t size)
     {
-        GResourceStateTracker::Lock();
+        ResourceStateTrackerLockGuard stateTrackerLock;
 
         // Command lists that need to put back on the command list queue.
         std::vector<std::shared_ptr<GCommandList>> toBeQueued;
@@ -219,8 +257,6 @@ namespace PEPEngine::Graphics
         commandQueue->ExecuteCommandLists(count, d3d12CommandLists.data());
         const uint64_t fenceValue = Signal();
 
-        GResourceStateTracker::Unlock();
-
         // Queue command lists for reuse.
         for (const auto& commandList : toBeQueued)
         {
@@ -232,17 +268,17 @@ namespace PEPEngine::Graphics
 
     void GCommandQueue::Wait(const GCommandQueue& other) const
     {
-        commandQueue->Wait(other.fence.Get(), other.FenceValue);
+        ThrowIfFailed(commandQueue->Wait(other.fence.Get(), other.FenceValue));
     }
 
     void GCommandQueue::Wait(const std::shared_ptr<GCommandQueue>& other) const
     {
-        commandQueue->Wait(other->fence.Get(), other->FenceValue);
+        ThrowIfFailed(commandQueue->Wait(other->fence.Get(), other->FenceValue));
     }
 
     void GCommandQueue::Wait(const ComPtr<ID3D12Fence>& otherFence, const UINT64 otherFenceValue) const
     {
-        commandQueue->Wait(otherFence.Get(), otherFenceValue);
+        ThrowIfFailed(commandQueue->Wait(otherFence.Get(), otherFenceValue));
     }
 
     ComPtr<ID3D12CommandQueue>& GCommandQueue::GetD3D12CommandQueue()
@@ -283,25 +319,28 @@ namespace PEPEngine::Graphics
 
     UINT64 GCommandQueue::GetTimestampFreq()
     {
-        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&
-            type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
-            type != D3D12_COMMAND_LIST_TYPE_COPY)
+        if (!SupportsTimestampQueries())
         {
             return 0;
         }
 
         if (queueTimestampFrequencies == 0)
         {
-            (commandQueue->GetTimestampFrequency(&queueTimestampFrequencies));
-
-            if (queueTimestampFrequencies == 0)
-            {
-                queueTimestampFrequencies = 1;
-            }
+            ThrowIfFailed(commandQueue->GetTimestampFrequency(&queueTimestampFrequencies));
         }
 
 
         return queueTimestampFrequencies;
+    }
+
+    bool GCommandQueue::SupportsTimestampQueries() const noexcept
+    {
+        return timestampQueriesSupported;
+    }
+
+    D3D12_QUERY_HEAP_TYPE GCommandQueue::GetTimestampQueryHeapType() const noexcept
+    {
+        return timestampQueryHeapType;
     }
 
     void GCommandQueue::HardStop()

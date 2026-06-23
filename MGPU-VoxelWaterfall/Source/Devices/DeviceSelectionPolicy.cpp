@@ -1,5 +1,7 @@
 #include "Source/Devices/DeviceSelectionPolicy.h"
 
+#include "GCommandQueue.h"
+
 #include <algorithm>
 #include <array>
 
@@ -236,6 +238,17 @@ namespace
         info.ComputeQueue = HasQueue(device, GQueueType::Compute);
         info.CopyQueue = HasQueue(device, GQueueType::Copy);
         info.CrossAdapterTexture = device->IsCrossAdapterTextureSupported();
+        if (info.CopyQueue)
+        {
+            const auto& copyQueue = device->GetCommandQueue(GQueueType::Copy);
+            info.CopyQueueTimestampQueriesSupported = copyQueue && copyQueue->SupportsTimestampQueries();
+            info.CopyQueueTimestampHeapType = info.CopyQueueTimestampQueriesSupported
+                                                  ? "COPY_QUEUE_TIMESTAMP"
+                                                  : "unsupported";
+            info.CopyQueueTimestampFrequency = info.CopyQueueTimestampQueriesSupported
+                                                   ? copyQueue->GetTimestampFreq()
+                                                   : 0;
+        }
 
         info.Status = BaseStatusForDevice(device);
 
