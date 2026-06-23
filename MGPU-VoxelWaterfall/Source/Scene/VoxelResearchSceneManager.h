@@ -47,6 +47,7 @@ class VoxelResearchSceneManager
 public:
     VoxelResearchScenePreset GetActivePreset() const;
     bool RequestPreset(VoxelResearchScenePreset preset);
+    void ForceRebuildActivePreset();
     bool RequiresRebuild() const;
     void RebuildScene(const VoxelResearchSceneContext& context);
 

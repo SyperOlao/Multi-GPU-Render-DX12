@@ -100,6 +100,7 @@ protected:
     void ResetBenchmarkDeterministicState();
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
+    void ResetVoxelRuntimeAfterPartitionRebuild(bool resetTimeline);
     void RebuildGpuPartitionsForMode();
     VoxelFrameRenderPlan BuildVoxelFrameRenderPlan() const;
     void ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan& renderPlan) const;

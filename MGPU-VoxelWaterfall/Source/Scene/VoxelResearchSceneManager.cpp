@@ -137,6 +137,12 @@ bool VoxelResearchSceneManager::RequestPreset(const VoxelResearchScenePreset pre
     return true;
 }
 
+void VoxelResearchSceneManager::ForceRebuildActivePreset()
+{
+    requestedPreset = activePreset;
+    rebuildPending = true;
+}
+
 bool VoxelResearchSceneManager::RequiresRebuild() const
 {
     return rebuildPending;

@@ -4818,6 +4818,11 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         else
             multiGpuStatus = L"SingleGpuFull active";
         logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
+        if (!sceneNeedsRebuild)
+        {
+            voxelResearchSceneManager.ForceRebuildActivePreset();
+            sceneNeedsRebuild = true;
+        }
     }
 
     if (sceneNeedsRebuild)
@@ -4885,14 +4890,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     if (sceneNeedsRebuild || voxelSettingsRequested || executionModeChanged)
     {
         RebuildGpuPartitionsForMode();
-        voxelSimulationAccumulator = 0.0;
-        voxelSimulationTime = 0.0;
-        voxelSimulationStepsThisFrame = 0;
-        voxelInterpolationAlpha = 0.0f;
-        voxelRecycledCount = 0;
-        voxelAliveCount = 0;
-        voxelExpectedCount = voxelWorkload.TotalVoxelCount;
-        simulationFrameIndex = 0;
+        ResetVoxelRuntimeAfterPartitionRebuild(sceneNeedsRebuild || voxelSettingsRequested);
     }
 
     if (changes.CameraMode)
@@ -5720,17 +5718,65 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
     {
         multiGpuStatus = L"SingleGpuFull active";
     }
+    Flush();
+    voxelResearchSceneManager.ForceRebuildActivePreset();
+    lights.clear();
+    camera.reset();
+    researchCameraController.reset();
+    VoxelResearchSceneContext sceneContext{
+        primeDevice,
+        secondDevice,
+        *assets,
+        models,
+        srvTexturesMemory,
+        gameObjects,
+        typedRenderer,
+        voxelWorkload,
+        RenderAspectRatio()
+    };
+    assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
+    voxelResearchSceneManager.RebuildScene(sceneContext);
+    ++sceneGeneration;
+    SortGO();
     RebuildGpuPartitionsForMode();
+    ResetVoxelRuntimeAfterPartitionRebuild(true);
+    spatialLodCameraInitialized = false;
+    logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
+}
+
+void VoxelWaterfallApp::ResetVoxelRuntimeAfterPartitionRebuild(const bool resetTimeline)
+{
     voxelSimulationAccumulator = 0.0;
-    voxelSimulationTime = 0.0;
     voxelSimulationStepsThisFrame = 0;
     voxelInterpolationAlpha = 0.0f;
     voxelRecycledCount = 0;
     voxelAliveCount = 0;
     voxelExpectedCount = voxelWorkload.TotalVoxelCount;
-    simulationFrameIndex = 0;
-    spatialLodCameraInitialized = false;
-    logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
+
+    if (resetTimeline)
+    {
+        simulationFrameIndex = 0;
+        voxelSimulationTime = 0.0;
+    }
+    else
+    {
+        voxelSimulationTime = static_cast<double>(simulationFrameIndex) / 60.0;
+    }
+
+    for (auto& partition : voxelWorkload.Partitions)
+    {
+        partition.StepsSinceLastUpdate = 0;
+        partition.InterpolationPhase = 0.0f;
+        partition.UpdatedThisFrame = false;
+        partition.SimulationDispatchedThisFrame = false;
+        partition.UpdatedVoxelCount = 0;
+        partition.LastSimulationFrame = resetTimeline ? 0 : simulationFrameIndex;
+        if (partition.GpuPartition)
+        {
+            partition.GpuPartition->SetLastSimulationFrame(partition.LastSimulationFrame);
+            partition.GpuPartition->SetInterpolationAlpha(0.0f);
+        }
+    }
 }
 
 void VoxelWaterfallApp::ApplyPendingVoxelSettings()
@@ -5776,14 +5822,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
     ++sceneGeneration;
     AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
     RebuildGpuPartitionsForMode();
-    voxelSimulationAccumulator = 0.0;
-    voxelSimulationTime = 0.0;
-    voxelSimulationStepsThisFrame = 0;
-    voxelInterpolationAlpha = 0.0f;
-    voxelRecycledCount = 0;
-    voxelAliveCount = 0;
-    voxelExpectedCount = voxelWorkload.TotalVoxelCount;
-    simulationFrameIndex = 0;
+    ResetVoxelRuntimeAfterPartitionRebuild(true);
     spatialLodCameraInitialized = false;
     pendingRuntimeChanges.VoxelWorkloadSettings.reset();
 }
