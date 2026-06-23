@@ -3,7 +3,9 @@
 #include "GCommandList.h"
 #include "GDescriptor.h"
 #include "GDevice.h"
+#include "GResource.h"
 #include "GRootSignature.h"
+#include "GResourceStateTracker.h"
 #include "GraphicPSO.h"
 #include "GShader.h"
 #include "GTexture.h"
@@ -11,6 +13,7 @@
 #include "d3dx12.h"
 
 #include <cassert>
+#include <sstream>
 
 using namespace PEPEngine::Graphics;
 
@@ -45,6 +48,52 @@ namespace
         assert(context.NearZ > 0.0f && context.FarZ > context.NearZ &&
                "Depth linearization requires explicit non-reversed near/far plane convention");
     }
+
+    void AssertTrackedResourceState(const GResource& resource,
+                                    const D3D12_RESOURCE_STATES expected,
+                                    const char* label)
+    {
+        D3D12_RESOURCE_STATES actual = D3D12_RESOURCE_STATE_COMMON;
+        const bool hasState = GResourceStateTracker::TryGetCurrentState(resource.GetD3D12Resource(), actual);
+        assert(hasState && "CopyOnly composite state contract requires a tracked resource state");
+        assert(actual == expected && "CopyOnly composite resource state contract mismatch");
+        (void)label;
+    }
+
+    void EmitCopyOnlyCompositeLabel(const wchar_t* phase, const MultiGpuVoxelFrameRenderTargets& targets)
+    {
+#if defined(_DEBUG)
+        if (targets.TransferMode != CrossAdapterTransferMode::CopyOnlyCrossAdapter)
+            return;
+
+        std::wostringstream stream;
+        const auto colorDesc = targets.PrimaryReceivedSecondaryColor.GetD3D12ResourceDesc();
+        const auto depthDesc = targets.PrimaryReceivedSecondaryLinearDepth.GetD3D12ResourceDesc();
+        stream << L"[CopyOnlyStateContract]"
+               << L" phase=" << phase
+               << L" receivedColor=" << colorDesc.Width << L"x" << colorDesc.Height
+               << L":fmt" << colorDesc.Format
+               << L" receivedDepth=" << depthDesc.Width << L"x" << depthDesc.Height
+               << L":fmt" << depthDesc.Format
+               << L"\n";
+        OutputDebugStringW(stream.str().c_str());
+#endif
+    }
+
+    void AssertCopyOnlyBeforeCompositeSampling(const VoxelCompositePassContext& context)
+    {
+        if (context.FrameTargets.TransferMode != CrossAdapterTransferMode::CopyOnlyCrossAdapter)
+            return;
+
+        EmitCopyOnlyCompositeLabel(L"before composite sampling", context.FrameTargets);
+        AssertTrackedResourceState(context.FrameTargets.PrimaryReceivedSecondaryColor,
+                                   D3D12_RESOURCE_STATE_COMMON,
+                                   "PrimaryReceivedSecondaryColor before composite sampling");
+        AssertTrackedResourceState(context.FrameTargets.PrimaryReceivedSecondaryLinearDepth,
+                                   D3D12_RESOURCE_STATE_COMMON,
+                                   "PrimaryReceivedSecondaryLinearDepth before composite sampling");
+    }
+
 }
 
 void VoxelCompositePass::Initialize(const std::shared_ptr<GDevice>& inDevice, const DXGI_FORMAT inOutputFormat)
@@ -134,6 +183,7 @@ void VoxelCompositePass::Record(const std::shared_ptr<GCommandList>& cmdList,
     cmdList->SetViewports(&context.Viewport, 1);
     cmdList->SetScissorRects(&context.ScissorRect, 1);
 
+    AssertCopyOnlyBeforeCompositeSampling(context);
     cmdList->TransitionBarrier(context.PrimaryBaseColor, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(context.PrimaryDepth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(context.FrameTargets.PrimaryReceivedSecondaryColor,

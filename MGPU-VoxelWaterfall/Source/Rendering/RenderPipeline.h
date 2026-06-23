@@ -234,6 +234,7 @@ struct FinalCompositeAndPresentPassContext
 class RenderPipeline
 {
 public:
+    void ValidateCopyOnlyFrameStateBeforePrimaryRender(const MultiGpuVoxelFrameRenderTargets& targets) const;
     void SubmitPrimaryBasePass(const PrimaryBasePassContext& context) const;
     void SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassContext& context) const;
     void SubmitSecondaryLocalToSharedCopyPass(const SecondaryLocalToSharedCopyPassContext& context) const;

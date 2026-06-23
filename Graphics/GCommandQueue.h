@@ -46,6 +46,7 @@ namespace PEPEngine::Graphics
         void Wait(const ComPtr<ID3D12Fence>& otherFence, UINT64 otherFenceValue) const;
 
         ComPtr<ID3D12CommandQueue>& GetD3D12CommandQueue();
+        D3D12_COMMAND_LIST_TYPE GetType() const noexcept { return type; }
 
         void StartPixEvent(const std::wstring& message) const;
 

@@ -68,6 +68,11 @@ struct MultiGpuVoxelFrameRenderTargets
         UINT NumRows = 0;
         UINT64 RowSizeInBytes = 0;
         UINT64 TotalBytes = 0;
+        std::wstring DebugLabel;
+        DXGI_FORMAT SourceFormat = DXGI_FORMAT_UNKNOWN;
+        UINT SourceWidth = 0;
+        UINT SourceHeight = 0;
+        UINT SourceSubresourceCount = 0;
 
         bool IsValid() const
         {

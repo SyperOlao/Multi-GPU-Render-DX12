@@ -51,6 +51,8 @@ namespace
         {
             throw std::runtime_error("copy-only bridge footprint row pitch is invalid");
         }
+        if (textureDesc.MipLevels != 1 || textureDesc.DepthOrArraySize != 1)
+            throw std::runtime_error("copy-only bridge expects exactly one texture subresource");
     }
 
     void DumpCopyOnlyBridgeDescriptor(const std::wstring& name,
@@ -93,6 +95,11 @@ namespace
         const std::wstring& name)
     {
         MultiGpuVoxelFrameRenderTargets::CopyOnlyBridge bridge{};
+        bridge.DebugLabel = name;
+        bridge.SourceFormat = textureDesc.Format;
+        bridge.SourceWidth = static_cast<UINT>(textureDesc.Width);
+        bridge.SourceHeight = textureDesc.Height;
+        bridge.SourceSubresourceCount = textureDesc.MipLevels * textureDesc.DepthOrArraySize;
         primaryDevice->GetDXDevice()->GetCopyableFootprints(
             &textureDesc,
             0,
@@ -135,6 +142,12 @@ namespace
         assert(bridgeDesc.Format == DXGI_FORMAT_UNKNOWN);
         assert(bridgeDesc.Height == 1);
         assert(bridgeDesc.Width >= bridge.TotalBytes);
+        assert(bridge.SourceSubresourceCount == 1 && "CopyOnly bridge supports exactly one subresource");
+        assert(bridge.SourceFormat == bridge.Footprint.Footprint.Format &&
+               "CopyOnly bridge footprint format must match source texture format");
+        assert(bridge.SourceWidth == bridge.Footprint.Footprint.Width &&
+               bridge.SourceHeight == bridge.Footprint.Footprint.Height &&
+               "CopyOnly bridge footprint dimensions must match source texture dimensions");
         DumpCopyOnlyBridgeDescriptor(name, textureDesc, bridgeDesc, bridge);
 
         const UINT64 heapBytes = Align64K(bridge.TotalBytes);

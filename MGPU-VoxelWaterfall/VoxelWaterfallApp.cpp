@@ -1867,6 +1867,12 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         {
             return partition.GpuPartition && partition.LogicalVoxelCount > 0;
         });
+    if (multiGpuVoxelRenderTargets.IsInitialized() &&
+        currentFrameResourceIndex < multiGpuVoxelRenderTargets.GetFrames().size())
+    {
+        renderPipeline.ValidateCopyOnlyFrameStateBeforePrimaryRender(
+            multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex]);
+    }
 
     PrimaryBasePassContext primaryBaseContext{
         renderQueue,
