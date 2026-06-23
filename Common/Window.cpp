@@ -185,6 +185,7 @@ namespace Common
         
         //ThrowIfFailed(swapChain->Present(syncInterval, presentFlags));
         HRESULT hr = swapChain->Present(syncInterval, presentFlags);
+        lastPresentResult = hr;
 
         if (FAILED(hr))
         {

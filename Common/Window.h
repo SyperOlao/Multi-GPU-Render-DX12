@@ -43,6 +43,7 @@ namespace Common
         UINT GetCurrentBackBufferIndex() const;
 
         UINT Present();
+        HRESULT GetLastPresentResult() const noexcept { return lastPresentResult; }
         void Initialize();
 
         GTexture& GetCurrentBackBuffer();
@@ -106,6 +107,7 @@ namespace Common
 
 
         UINT currentBackBufferIndex;
+        HRESULT lastPresentResult = S_OK;
 
         RECT windowRect;
     };

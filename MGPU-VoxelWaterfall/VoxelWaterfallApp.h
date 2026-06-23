@@ -115,6 +115,16 @@ protected:
     void PumpOneMemoryAuditFrame();
     void ServiceDeferredResourceLifetime();
     void DrainD3D12InfoQueues(uint64_t frameIndex, const std::wstring& phase);
+    bool ShouldCaptureFinalOutputDiagnostics() const;
+    void RecordFinalOutputDiagnosticReadbacks(
+        const std::shared_ptr<PEPEngine::Graphics::GCommandList>& cmdList,
+        PEPEngine::Graphics::GTexture* primaryCompositeSource,
+        PEPEngine::Graphics::GTexture& backBuffer,
+        FinalResolveSource resolveSource,
+        uint64_t sourceGeneration);
+    void AttachFinalOutputDiagnosticFence(uint64_t frameIndex, UINT64 fenceValue);
+    void AttachFinalOutputDiagnosticPresentResult(uint64_t frameIndex, HRESULT presentResult);
+    void ProcessCompletedFinalOutputDiagnostics();
     void RetireOffscreenRenderPaths(std::shared_ptr<SSAO> ambientPath,
                                     std::shared_ptr<SSAA> antiAliasingPath);
     void RetireCurrentMultiGpuVoxelRenderTargets();
@@ -248,6 +258,46 @@ protected:
         UINT64 RequiredSecondaryComputeFenceValue = 0;
     };
     std::vector<DeferredGpuResourceRelease> deferredGpuResourceReleases;
+    struct DiagnosticTextureReadback
+    {
+        PEPEngine::Graphics::GResource Readback;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout{};
+        UINT NumRows = 0;
+        UINT64 RowSizeInBytes = 0;
+        UINT64 TotalBytes = 0;
+        UINT Width = 0;
+        UINT Height = 0;
+        DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
+        bool Captured = false;
+    };
+    struct PendingFinalOutputDiagnosticReadback
+    {
+        uint64_t FrameIndex = 0;
+        UINT FrameResourceIndex = 0;
+        FinalResolveSource ResolveSource = FinalResolveSource::PrimaryComposite;
+        uint64_t SourceGeneration = 0;
+        UINT64 RequiredPrimaryFenceValue = 0;
+        HRESULT PresentResult = S_OK;
+        bool PresentResultRecorded = false;
+        DiagnosticTextureReadback Source;
+        DiagnosticTextureReadback BackBuffer;
+    };
+    struct FinalOutputDiagnosticMeasurement
+    {
+        uint64_t FrameIndex = 0;
+        FinalResolveSource ResolveSource = FinalResolveSource::PrimaryComposite;
+        uint64_t SourceGeneration = 0;
+        uint64_t SourceHash = 0;
+        double SourceNonBlackRatio = 0.0;
+        uint64_t BackBufferHash = 0;
+        double BackBufferNonBlackRatio = 0.0;
+        HRESULT PresentResult = S_OK;
+        std::string Interpretation;
+    };
+    std::vector<PendingFinalOutputDiagnosticReadback> pendingFinalOutputDiagnosticReadbacks;
+    std::ofstream finalOutputDiagnosticCsv;
+    bool finalOutputDiagnosticCsvHeaderWritten = false;
+    uint32_t consecutiveBlackBackbufferWithNonBlackComposite = 0;
     uint64_t sceneGeneration = 0;
     uint64_t partitionGeneration = 0;
     uint64_t renderTargetGeneration = 0;

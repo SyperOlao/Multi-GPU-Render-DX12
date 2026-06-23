@@ -2125,6 +2125,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             {
                 selectPrimaryBase();
             }
+            GTexture* diagnosticPrimaryCompositeSource = nullptr;
             if (shouldComposeSecondaryImage)
             {
                 auto& targets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
@@ -2147,6 +2148,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 voxelCompositePass.Record(cmdList, compositeContext);
                 assert(targets.RenderTargetGeneration == frameRenderTargetGeneration &&
                        "final resolve source must match composite renderTargetGeneration");
+                diagnosticPrimaryCompositeSource = &targets.PrimaryCompositeColor;
                 benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                            VoxelBenchmarkProfiler::RangeId::Composite);
                 benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
@@ -2190,6 +2192,12 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                     finalPassContext.ResolveSourceMetadata != nullptr) &&
                    "final resolve metadata must be ready before RecordFinalPresent");
             voxelRenderPasses.RecordFinalPresent(cmdList, finalPassContext);
+            RecordFinalOutputDiagnosticReadbacks(
+                cmdList,
+                diagnosticPrimaryCompositeSource,
+                MainWindow->GetCurrentBackBuffer(),
+                finalPassContext.ResolveSource,
+                frameGraphTelemetry.FinalResolveSourceGeneration);
             if (!benchmarkController.IsAutomaticActive())
                 DrawUserInterface(cmdList);
             cmdList->TransitionBarrier(MainWindow->GetCurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT);
@@ -2215,6 +2223,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     };
     assertFrameGenerationStable();
     renderPipeline.SubmitFinalCompositeAndPresentPass(finalPassContext);
+    AttachFinalOutputDiagnosticFence(frameSerial, currentFrameResource->PrimeRenderFenceValue);
     DrainD3D12InfoQueues(frameSerial, L"composite submission and final resolve");
     assertFrameGenerationStable();
     if (currentFrameResource && currentFrameResource->PrimeRenderFenceValue != 0)
@@ -2246,6 +2255,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.VisualValidationFailReason = visualValidationMetrics.FailReason;
 
     currentFrameResourceIndex = MainWindow->Present();
+    AttachFinalOutputDiagnosticPresentResult(frameSerial, MainWindow->GetLastPresentResult());
     DrainD3D12InfoQueues(frameSerial, L"Present");
     const auto presentTime = std::chrono::steady_clock::now();
     currentPresentToPresentMs = hasSuccessfulPresentTime
@@ -6724,6 +6734,351 @@ bool VoxelWaterfallApp::AdvanceRuntimeWorkOutsideFrame(const bool presentedFrame
     return wasActive || researchRunnerActive;
 }
 
+bool VoxelWaterfallApp::ShouldCaptureFinalOutputDiagnostics() const
+{
+    if (!primeDevice || !MainWindow)
+        return false;
+
+    if (researchRunnerActive || benchmarkController.IsAutomaticActive() || visualValidationFixedStepMode)
+        return true;
+
+    constexpr uint64_t InteractiveDiagnosticFrameInterval = 30;
+    return frameSerial % InteractiveDiagnosticFrameInterval == 0;
+}
+
+void VoxelWaterfallApp::RecordFinalOutputDiagnosticReadbacks(
+    const std::shared_ptr<GCommandList>& cmdList,
+    GTexture* primaryCompositeSource,
+    GTexture& backBuffer,
+    const FinalResolveSource resolveSource,
+    const uint64_t sourceGeneration)
+{
+    if (!ShouldCaptureFinalOutputDiagnostics() || !cmdList || !primeDevice)
+        return;
+
+    auto createReadback = [&](GTexture& texture,
+                              const std::wstring& label,
+                              DiagnosticTextureReadback& readback)
+    {
+        const auto resource = texture.GetD3D12Resource();
+        if (!resource)
+            return false;
+
+        const auto desc = resource->GetDesc();
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            desc.MipLevels != 1 ||
+            desc.DepthOrArraySize != 1)
+        {
+            return false;
+        }
+
+        primeDevice->GetDXDevice()->GetCopyableFootprints(
+            &desc,
+            0,
+            1,
+            0,
+            &readback.Layout,
+            &readback.NumRows,
+            &readback.RowSizeInBytes,
+            &readback.TotalBytes);
+        if (readback.TotalBytes == 0 || readback.NumRows == 0)
+            return false;
+
+        readback.Readback = GResource(
+            primeDevice,
+            CD3DX12_RESOURCE_DESC::Buffer(readback.TotalBytes),
+            label,
+            nullptr,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
+        readback.Width = static_cast<UINT>(desc.Width);
+        readback.Height = desc.Height;
+        readback.Format = desc.Format;
+        readback.Captured = true;
+        return true;
+    };
+
+    PendingFinalOutputDiagnosticReadback pending{};
+    pending.FrameIndex = frameSerial;
+    pending.FrameResourceIndex = currentFrameResourceIndex;
+    pending.ResolveSource = resolveSource;
+    pending.SourceGeneration = sourceGeneration;
+
+    const bool sourceAvailable =
+        primaryCompositeSource && primaryCompositeSource->IsValid() &&
+        createReadback(*primaryCompositeSource,
+                       L"FinalOutputDiagnostic.PrimaryCompositeReadback",
+                       pending.Source);
+    const bool backBufferAvailable =
+        backBuffer.IsValid() &&
+        createReadback(backBuffer,
+                       L"FinalOutputDiagnostic.BackBufferReadback",
+                       pending.BackBuffer);
+    if (!sourceAvailable && !backBufferAvailable)
+        return;
+
+    if (sourceAvailable)
+    {
+        cmdList->TransitionBarrier(*primaryCompositeSource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->FlushResourceBarriers();
+
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = pending.Source.Readback.GetD3D12Resource().Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = pending.Source.Layout;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = primaryCompositeSource->GetD3D12Resource().Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        cmdList->TransitionBarrier(*primaryCompositeSource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->FlushResourceBarriers();
+    }
+
+    if (backBufferAvailable)
+    {
+        cmdList->TransitionBarrier(backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->FlushResourceBarriers();
+
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = pending.BackBuffer.Readback.GetD3D12Resource().Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = pending.BackBuffer.Layout;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = backBuffer.GetD3D12Resource().Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        cmdList->TransitionBarrier(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        cmdList->FlushResourceBarriers();
+    }
+
+    pendingFinalOutputDiagnosticReadbacks.push_back(std::move(pending));
+}
+
+void VoxelWaterfallApp::AttachFinalOutputDiagnosticFence(const uint64_t frameIndex, const UINT64 fenceValue)
+{
+    for (auto& pending : pendingFinalOutputDiagnosticReadbacks)
+    {
+        if (pending.FrameIndex == frameIndex && pending.RequiredPrimaryFenceValue == 0)
+            pending.RequiredPrimaryFenceValue = fenceValue;
+    }
+}
+
+void VoxelWaterfallApp::AttachFinalOutputDiagnosticPresentResult(const uint64_t frameIndex,
+                                                                 const HRESULT presentResult)
+{
+    for (auto& pending : pendingFinalOutputDiagnosticReadbacks)
+    {
+        if (pending.FrameIndex == frameIndex && !pending.PresentResultRecorded)
+        {
+            pending.PresentResult = presentResult;
+            pending.PresentResultRecorded = true;
+        }
+    }
+}
+
+void VoxelWaterfallApp::ProcessCompletedFinalOutputDiagnostics()
+{
+    if (!primeDevice || pendingFinalOutputDiagnosticReadbacks.empty())
+        return;
+
+    const auto renderQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
+    if (!renderQueue)
+        return;
+
+    auto measureTexture = [](const DiagnosticTextureReadback& texture,
+                             uint64_t& hash,
+                             double& nonBlackRatio)
+    {
+        hash = 1469598103934665603ull;
+        nonBlackRatio = 0.0;
+        if (!texture.Captured || !texture.Readback.IsValid() || texture.Width == 0 || texture.Height == 0)
+            return false;
+
+        const uint32_t bytesPerPixel = BytesPerPixel(texture.Format);
+        if (bytesPerPixel == 0)
+            return false;
+
+        void* mapped = nullptr;
+        const D3D12_RANGE readRange{0, static_cast<SIZE_T>(texture.TotalBytes)};
+        HRESULT hr = texture.Readback.GetD3D12Resource()->Map(0, &readRange, &mapped);
+        if (FAILED(hr) || !mapped)
+            return false;
+
+        const auto* base = static_cast<const uint8_t*>(mapped) + texture.Layout.Offset;
+        const size_t tightRowBytes = static_cast<size_t>(texture.Width) * bytesPerPixel;
+        uint64_t nonBlackPixels = 0;
+        uint64_t pixelCount = static_cast<uint64_t>(texture.Width) * texture.Height;
+        for (UINT row = 0; row < texture.NumRows; ++row)
+        {
+            const auto* rowData = base + static_cast<size_t>(row) * texture.Layout.Footprint.RowPitch;
+            for (size_t byteIndex = 0; byteIndex < tightRowBytes; ++byteIndex)
+            {
+                hash ^= rowData[byteIndex];
+                hash *= 1099511628211ull;
+            }
+
+            for (UINT x = 0; x < texture.Width; ++x)
+            {
+                const auto* pixel = rowData + static_cast<size_t>(x) * bytesPerPixel;
+                bool nonBlack = false;
+                switch (texture.Format)
+                {
+                case DXGI_FORMAT_R8G8B8A8_UNORM:
+                case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                case DXGI_FORMAT_B8G8R8A8_UNORM:
+                case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                    nonBlack = pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0;
+                    break;
+                case DXGI_FORMAT_R16G16B16A16_FLOAT:
+                    nonBlack = pixel[0] != 0 || pixel[1] != 0 ||
+                        pixel[2] != 0 || pixel[3] != 0 ||
+                        pixel[4] != 0 || pixel[5] != 0;
+                    break;
+                default:
+                    for (uint32_t channel = 0; channel < bytesPerPixel; ++channel)
+                    {
+                        if (pixel[channel] != 0)
+                        {
+                            nonBlack = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                if (nonBlack)
+                    ++nonBlackPixels;
+            }
+        }
+
+        const D3D12_RANGE emptyRange{0, 0};
+        texture.Readback.GetD3D12Resource()->Unmap(0, &emptyRange);
+        nonBlackRatio = pixelCount > 0 ? static_cast<double>(nonBlackPixels) / static_cast<double>(pixelCount) : 0.0;
+        return true;
+    };
+
+    auto writeMeasurement = [&](const FinalOutputDiagnosticMeasurement& measurement)
+    {
+        const auto path = GetExecutableDirectory() / L"VoxelFinalOutputDiagnostics.csv";
+        if (!finalOutputDiagnosticCsv.is_open())
+            finalOutputDiagnosticCsv.open(path, std::ios::out | std::ios::app);
+        if (finalOutputDiagnosticCsv.is_open())
+        {
+            if (!finalOutputDiagnosticCsvHeaderWritten &&
+                (!std::filesystem::exists(path) || std::filesystem::file_size(path) == 0))
+            {
+                finalOutputDiagnosticCsv
+                    << "frame_index,resolve_source,source_generation,source_hash,"
+                    << "source_non_black_ratio,backbuffer_hash,backbuffer_non_black_ratio,"
+                    << "present_result,interpretation\n";
+            }
+            finalOutputDiagnosticCsvHeaderWritten = true;
+            finalOutputDiagnosticCsv
+                << measurement.FrameIndex << ','
+                << FinalResolveSourceName(measurement.ResolveSource) << ','
+                << measurement.SourceGeneration << ','
+                << std::hex << measurement.SourceHash << std::dec << ','
+                << measurement.SourceNonBlackRatio << ','
+                << std::hex << measurement.BackBufferHash << std::dec << ','
+                << measurement.BackBufferNonBlackRatio << ','
+                << HResultToHex(measurement.PresentResult) << ','
+                << '"' << EscapeJsonString(measurement.Interpretation) << "\"\n";
+            finalOutputDiagnosticCsv.flush();
+        }
+
+        std::ostringstream debug;
+        debug << "[FinalOutputDiagnostic]"
+              << " frame=" << measurement.FrameIndex
+              << " resolve=" << FinalResolveSourceName(measurement.ResolveSource)
+              << " sourceGeneration=" << measurement.SourceGeneration
+              << " sourceHash=0x" << std::hex << measurement.SourceHash
+              << " sourceNonBlack=" << std::dec << measurement.SourceNonBlackRatio
+              << " backbufferHash=0x" << std::hex << measurement.BackBufferHash
+              << " backbufferNonBlack=" << std::dec << measurement.BackBufferNonBlackRatio
+              << " present=" << HResultToHex(measurement.PresentResult)
+              << " interpretation=" << measurement.Interpretation << "\n";
+        OutputDebugStringA(debug.str().c_str());
+    };
+
+    constexpr double BlackRatioThreshold = 0.0001;
+    pendingFinalOutputDiagnosticReadbacks.erase(
+        std::remove_if(
+            pendingFinalOutputDiagnosticReadbacks.begin(),
+            pendingFinalOutputDiagnosticReadbacks.end(),
+            [&](PendingFinalOutputDiagnosticReadback& pending)
+            {
+                if (pending.RequiredPrimaryFenceValue == 0 ||
+                    !pending.PresentResultRecorded ||
+                    !renderQueue->IsFinish(pending.RequiredPrimaryFenceValue))
+                {
+                    return false;
+                }
+
+                FinalOutputDiagnosticMeasurement measurement{};
+                measurement.FrameIndex = pending.FrameIndex;
+                measurement.ResolveSource = pending.ResolveSource;
+                measurement.SourceGeneration = pending.SourceGeneration;
+                measurement.PresentResult = pending.PresentResult;
+                const bool sourceMeasured = measureTexture(
+                    pending.Source,
+                    measurement.SourceHash,
+                    measurement.SourceNonBlackRatio);
+                const bool backBufferMeasured = measureTexture(
+                    pending.BackBuffer,
+                    measurement.BackBufferHash,
+                    measurement.BackBufferNonBlackRatio);
+
+                const bool sourceNonBlack =
+                    sourceMeasured && measurement.SourceNonBlackRatio > BlackRatioThreshold;
+                const bool sourceBlack =
+                    sourceMeasured && measurement.SourceNonBlackRatio <= BlackRatioThreshold;
+                const bool backBufferNonBlack =
+                    backBufferMeasured && measurement.BackBufferNonBlackRatio > BlackRatioThreshold;
+                const bool backBufferBlack =
+                    backBufferMeasured && measurement.BackBufferNonBlackRatio <= BlackRatioThreshold;
+
+                if (sourceNonBlack && backBufferBlack)
+                    measurement.Interpretation = "final resolve failure";
+                else if (sourceBlack)
+                    measurement.Interpretation = "upstream render/composite failure";
+                else if (backBufferNonBlack)
+                    measurement.Interpretation = "swapchain/window/presentation failure if the window is visually black";
+                else
+                    measurement.Interpretation = "diagnostic readback incomplete";
+
+                writeMeasurement(measurement);
+
+                if (sourceNonBlack && backBufferBlack)
+                    ++consecutiveBlackBackbufferWithNonBlackComposite;
+                else if (sourceMeasured && backBufferMeasured)
+                    consecutiveBlackBackbufferWithNonBlackComposite = 0;
+
+                if (consecutiveBlackBackbufferWithNonBlackComposite >= 3 && researchRunnerActive)
+                {
+                    const std::string reason =
+                        "Final output diagnostics observed 3 consecutive measured frames with black backbuffer "
+                        "and non-black PrimaryCompositeColor; likely final resolve failure";
+                    visualValidationMetrics.HasResult = true;
+                    visualValidationMetrics.Passed = false;
+                    visualValidationMetrics.FailReason = reason;
+                    researchRunnerPhase = "BLOCKED";
+                    researchRunnerBlockedReason = reason;
+                    researchRunnerActive = false;
+                    researchRunnerHasRequest = false;
+                    researchRunnerCancelRequested = false;
+                    if (benchmarkController.IsAutomaticActive() || benchmarkProfiler.IsActive())
+                        StopAutomaticBenchmark();
+                    logQueue.Push(L"\n" + std::wstring(reason.begin(), reason.end()));
+                }
+
+                return true;
+            }),
+        pendingFinalOutputDiagnosticReadbacks.end());
+}
+
 bool VoxelWaterfallApp::PumpOneFrame()
 {
     if (isPumpingFrame)
@@ -6794,6 +7149,8 @@ bool VoxelWaterfallApp::PumpOneFrame()
 
 void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
 {
+    ProcessCompletedFinalOutputDiagnostics();
+
     if (primeDevice)
     {
         primeDevice->ResetAllocators(frameSerial);
