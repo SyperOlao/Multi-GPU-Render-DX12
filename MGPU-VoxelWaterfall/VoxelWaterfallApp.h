@@ -312,8 +312,8 @@ protected:
     uint64_t partitionGeneration = 0;
     uint64_t renderTargetGeneration = 0;
     uint64_t descriptorGeneration = 0;
-    VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::MultiGpuFull;
-    VoxelExecutionMode executionMode = VoxelExecutionMode::MultiGpuFull;
+    VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
     bool isDrawingFrame = false;
     bool isPumpingFrame = false;
     uint32_t currentFramePumpDepth = 0;

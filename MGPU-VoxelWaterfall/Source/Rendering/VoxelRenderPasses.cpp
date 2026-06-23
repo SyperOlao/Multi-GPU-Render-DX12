@@ -54,7 +54,7 @@ namespace
                "final resolve descriptor metadata resource address must match selected source resource");
         assert(metadata.ResourceGeneration == context.CurrentFrameResource.RenderTargetGeneration &&
                "final resolve descriptor resource generation must match the frame render target generation");
-        // Final-resolve SRVs are immutable per render-target generation. The frame descriptor
+        // Final-resolve SRVs are immutable per render-target generation. Frame descriptor
         // generation also covers unrelated shader-visible heaps such as material and ImGui heaps.
         assert(metadata.DescriptorGeneration == metadata.ResourceGeneration &&
                "final resolve descriptor generation must match its source resource generation");
