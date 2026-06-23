@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace
@@ -110,6 +112,30 @@ namespace
         default:
             return "Unknown";
         }
+    }
+
+    const char* FinalResolveSourceName(const FinalResolveSource source)
+    {
+        switch (source)
+        {
+        case FinalResolveSource::SolidColor:
+            return "SolidColor";
+        case FinalResolveSource::PrimaryBase:
+            return "PrimaryBase";
+        case FinalResolveSource::PrimaryComposite:
+            return "PrimaryComposite";
+        case FinalResolveSource::ReceivedSecondary:
+            return "ReceivedSecondary";
+        default:
+            return "Unknown";
+        }
+    }
+
+    std::string HexU64(const uint64_t value)
+    {
+        char buffer[32]{};
+        std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(value));
+        return buffer;
     }
 
     const char* SpatialLodStatusName(const VoxelSceneWorkload& workload)
@@ -418,6 +444,22 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
                            static_cast<int>(VoxelCompositeDebugView::DepthDifference)));
     }
 
+    const char* finalResolveSources[] = {
+        "SolidColor",
+        "PrimaryBase",
+        "PrimaryComposite",
+        "ReceivedSecondary"
+    };
+    int selectedFinalResolveSource = static_cast<int>(context.FinalResolveSourceMode);
+    if (ImGui::Combo("Final source", &selectedFinalResolveSource, finalResolveSources,
+                     IM_ARRAYSIZE(finalResolveSources)))
+    {
+        context.FinalResolveSourceMode =
+            static_cast<FinalResolveSource>(
+                std::clamp(selectedFinalResolveSource, 0,
+                           static_cast<int>(FinalResolveSource::ReceivedSecondary)));
+    }
+
     ImGui::TextDisabled("Hotkeys: F1 static, F2 dynamic, F3 mixed, F4 occlusion, F5 LOD, F9 demo, F6 ownership, F7 secondary, F8 composite");
 
     if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
@@ -476,6 +518,17 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricU64("estimated render memory", telemetry ? telemetry->EstimatedOffscreenMemoryBytes : 0);
         DrawMetricU64("estimated cross-adapter bytes/frame",
                       telemetry ? telemetry->EstimatedCrossAdapterBytesPerFrame : 0);
+        DrawMetric("final source", telemetry ? telemetry->FinalResolveSourceName.c_str()
+                                             : FinalResolveSourceName(context.FinalResolveSourceMode));
+        DrawMetric("final resource pointer",
+                   telemetry ? HexU64(telemetry->FinalResolveSourceResourcePointer).c_str() : "0x0");
+        DrawMetricU64("final generation", telemetry ? telemetry->FinalResolveSourceGeneration : 0);
+        DrawMetricU32("final source width", telemetry ? telemetry->FinalResolveSourceWidth : 0);
+        DrawMetricU32("final source height", telemetry ? telemetry->FinalResolveSourceHeight : 0);
+        DrawMetricU32("final source format",
+                      telemetry ? static_cast<uint32_t>(telemetry->FinalResolveSourceFormat) : 0);
+        DrawMetric("final descriptor GPU",
+                   telemetry ? HexU64(telemetry->FinalResolveSourceDescriptorGpuHandle).c_str() : "0x0");
     }
 
     if (ImGui::CollapsingHeader("Spawn Grid", ImGuiTreeNodeFlags_DefaultOpen))

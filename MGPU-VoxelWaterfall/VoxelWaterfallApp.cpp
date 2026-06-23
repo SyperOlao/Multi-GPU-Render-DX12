@@ -1,5 +1,6 @@
 #include "VoxelWaterfallApp.h"
 #include "ComputePSO.h"
+#include "GDescriptor.h"
 #include "GDescriptorHeap.h"
 #include "GCommandList.h"
 #include "GCommandQueue.h"
@@ -814,6 +815,23 @@ namespace
         stream << bytes << L" bytes (" << std::fixed << std::setprecision(2)
                << static_cast<double>(bytes) / Mib << L" MiB)";
         return stream.str();
+    }
+
+    const char* FinalResolveSourceName(const FinalResolveSource source)
+    {
+        switch (source)
+        {
+        case FinalResolveSource::SolidColor:
+            return "SolidColor";
+        case FinalResolveSource::PrimaryBase:
+            return "PrimaryBase";
+        case FinalResolveSource::PrimaryComposite:
+            return "PrimaryComposite";
+        case FinalResolveSource::ReceivedSecondary:
+            return "ReceivedSecondary";
+        default:
+            return "Unknown";
+        }
     }
 
     std::string FormatName(const DXGI_FORMAT format)
@@ -1954,9 +1972,11 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         secondaryImageReadyThisFrame = true;
     }
 
-    const bool shouldComposeSecondaryImage =
+    const bool hasCurrentSecondaryImage =
         runSecondaryGraphics &&
-        multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex].HasReceivedImage &&
+        multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex].HasReceivedImage;
+    const bool shouldComposeSecondaryImage =
+        hasCurrentSecondaryImage &&
         voxelCompositePass.IsInitialized();
     if (shouldComposeSecondaryImage)
     {
@@ -1969,6 +1989,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.CompositeSubmitted = shouldComposeSecondaryImage;
     frameGraphTelemetry.CompositeUsedSecondaryImage = shouldComposeSecondaryImage;
     frameGraphTelemetry.CompositeDebugView = voxelCompositeDebugView;
+    frameGraphTelemetry.FinalResolveSourceMode = finalResolveSource;
+    frameGraphTelemetry.FinalResolveSourceName = FinalResolveSourceName(finalResolveSource);
 
     FinalCompositeAndPresentPassContext finalPassContext{
         renderQueue,
@@ -1982,7 +2004,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         graphicsPassFenceValue,
         benchmarkProfiler,
         &frameGraphTelemetry,
-        [this, shouldComposeSecondaryImage, frameRenderTargetGeneration](const std::shared_ptr<GCommandList>& cmdList)
+        [this, hasCurrentSecondaryImage, shouldComposeSecondaryImage, frameRenderTargetGeneration](
+            const std::shared_ptr<GCommandList>& cmdList)
         {
             VoxelRenderPassContext finalPassContext{
                 primeDeviceSignature,
@@ -2001,6 +2024,60 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 nullptr,
                 MainWindow->GetCurrentBackBuffer()
             };
+
+            auto setResolveSourceDiagnostics = [&](const FinalResolveSource source,
+                                                   GTexture* texture,
+                                                   GDescriptor* descriptor,
+                                                   const UINT descriptorOffset,
+                                                   const uint64_t generation)
+            {
+                frameGraphTelemetry.FinalResolveSourceMode = source;
+                frameGraphTelemetry.FinalResolveSourceName = FinalResolveSourceName(source);
+                frameGraphTelemetry.FinalResolveSourceGeneration = generation;
+                frameGraphTelemetry.FinalResolveSourceDescriptorGpuHandle =
+                    descriptor ? descriptor->GetGPUHandle(descriptorOffset).ptr : 0;
+                if (texture && texture->IsValid())
+                {
+                    const auto resource = texture->GetD3D12Resource();
+                    const auto desc = texture->GetD3D12ResourceDesc();
+                    frameGraphTelemetry.FinalResolveSourceResourcePointer =
+                        reinterpret_cast<uint64_t>(resource.Get());
+                    frameGraphTelemetry.FinalResolveSourceWidth = static_cast<uint32_t>(desc.Width);
+                    frameGraphTelemetry.FinalResolveSourceHeight = desc.Height;
+                    frameGraphTelemetry.FinalResolveSourceFormat = static_cast<int>(desc.Format);
+                }
+                else
+                {
+                    frameGraphTelemetry.FinalResolveSourceResourcePointer = 0;
+                    frameGraphTelemetry.FinalResolveSourceWidth = 0;
+                    frameGraphTelemetry.FinalResolveSourceHeight = 0;
+                    frameGraphTelemetry.FinalResolveSourceFormat = 0;
+                }
+            };
+
+            const auto selectPrimaryBase = [&]
+            {
+                finalPassContext.ResolveSource = FinalResolveSource::PrimaryBase;
+                finalPassContext.ResolveSourceTexture = &antiAliasingPrimePath->GetRenderTarget();
+                finalPassContext.ResolveSourceSrv = antiAliasingPrimePath->GetSRV();
+                finalPassContext.ResolveSourceSrvOffset = 0;
+                setResolveSourceDiagnostics(FinalResolveSource::PrimaryBase,
+                                            finalPassContext.ResolveSourceTexture,
+                                            finalPassContext.ResolveSourceSrv,
+                                            finalPassContext.ResolveSourceSrvOffset,
+                                            frameRenderTargetGeneration);
+            };
+
+            if (finalResolveSource == FinalResolveSource::SolidColor)
+            {
+                finalPassContext.ResolveSource = FinalResolveSource::SolidColor;
+                setResolveSourceDiagnostics(FinalResolveSource::SolidColor, nullptr, nullptr, 0,
+                                            frameRenderTargetGeneration);
+            }
+            else
+            {
+                selectPrimaryBase();
+            }
             if (shouldComposeSecondaryImage)
             {
                 auto& targets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
@@ -2027,8 +2104,35 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                                            VoxelBenchmarkProfiler::RangeId::Composite);
                 benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                                VoxelBenchmarkProfiler::RangeId::Composite);
-                finalPassContext.ResolveSourceSrv = &targets.PrimaryCompositeDescriptors;
-                finalPassContext.ResolveSourceSrvOffset = 4;
+                if (finalResolveSource == FinalResolveSource::PrimaryComposite)
+                {
+                    finalPassContext.ResolveSource = FinalResolveSource::PrimaryComposite;
+                    finalPassContext.ResolveSourceTexture = &targets.PrimaryCompositeColor;
+                    finalPassContext.ResolveSourceSrv = &targets.PrimaryCompositeDescriptors;
+                    finalPassContext.ResolveSourceSrvOffset = 4;
+                    setResolveSourceDiagnostics(FinalResolveSource::PrimaryComposite,
+                                                finalPassContext.ResolveSourceTexture,
+                                                finalPassContext.ResolveSourceSrv,
+                                                finalPassContext.ResolveSourceSrvOffset,
+                                                targets.RenderTargetGeneration);
+                }
+            }
+            if (finalResolveSource == FinalResolveSource::ReceivedSecondary && hasCurrentSecondaryImage)
+            {
+                auto& targets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
+                assert(targets.RenderTargetGeneration == frameRenderTargetGeneration &&
+                       "command list must not mix render targets from different generations");
+                assert(targets.DescriptorGeneration == targets.RenderTargetGeneration &&
+                       "descriptor generation must match render target resource generation");
+                finalPassContext.ResolveSource = FinalResolveSource::ReceivedSecondary;
+                finalPassContext.ResolveSourceTexture = &targets.PrimaryReceivedSecondaryColor;
+                finalPassContext.ResolveSourceSrv = &targets.PrimarySrvDescriptors;
+                finalPassContext.ResolveSourceSrvOffset = 0;
+                setResolveSourceDiagnostics(FinalResolveSource::ReceivedSecondary,
+                                            finalPassContext.ResolveSourceTexture,
+                                            finalPassContext.ResolveSourceSrv,
+                                            finalPassContext.ResolveSourceSrvOffset,
+                                            targets.RenderTargetGeneration);
             }
             benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                          VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
@@ -2350,6 +2454,7 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         voxelExpectedCount,
         &frameGraphTelemetry,
         voxelCompositeDebugView,
+        finalResolveSource,
         benchmarkProfiler,
         benchmarkController.WasVSyncEnabled(),
         benchmarkController.IsAutomaticActive(),

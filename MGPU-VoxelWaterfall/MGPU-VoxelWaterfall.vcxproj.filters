@@ -155,6 +155,7 @@
     <None Include="Shaders\MipMapCS.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\ParticleCommon.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Quad.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\FinalResolveSolidColor.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Shadows.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\SkyBoxShader.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Ssao.hlsl"><Filter>Shaders</Filter></None>

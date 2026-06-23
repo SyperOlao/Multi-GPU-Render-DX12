@@ -142,6 +142,14 @@ struct VoxelFrameGraphTelemetry
     double VisualValidationDepthMismatchPercent = 0.0;
     uint64_t VisualValidationPipelinePrimitiveCount = 0;
     std::string VisualValidationFailReason;
+    FinalResolveSource FinalResolveSourceMode = FinalResolveSource::PrimaryBase;
+    std::string FinalResolveSourceName = "PrimaryBase";
+    uint64_t FinalResolveSourceResourcePointer = 0;
+    uint64_t FinalResolveSourceGeneration = 0;
+    uint32_t FinalResolveSourceWidth = 0;
+    uint32_t FinalResolveSourceHeight = 0;
+    int FinalResolveSourceFormat = 0;
+    uint64_t FinalResolveSourceDescriptorGpuHandle = 0;
     VoxelCompositeDebugView CompositeDebugView = VoxelCompositeDebugView::FinalComposite;
     VoxelExecutionMode RequestedMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;

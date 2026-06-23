@@ -42,6 +42,8 @@ struct VoxelRenderPassContext
     std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
     VoxelBenchmarkProfiler* BenchmarkProfiler = nullptr;
     PEPEngine::Graphics::GTexture& BackBuffer;
+    FinalResolveSource ResolveSource = FinalResolveSource::PrimaryBase;
+    PEPEngine::Graphics::GTexture* ResolveSourceTexture = nullptr;
     PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
     UINT ResolveSourceSrvOffset = 0;
     bool DynamicShadowsEnabled = false;

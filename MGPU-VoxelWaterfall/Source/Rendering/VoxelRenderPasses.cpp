@@ -212,12 +212,24 @@ void VoxelRenderPasses::RecordFullQuad(const std::shared_ptr<GCommandList>& cmdL
                                        const VoxelRenderPassContext& context)
 {
     cmdList->SetRootSignature(*context.PrimeDeviceSignature.get());
+    if (context.ResolveSource == FinalResolveSource::SolidColor)
+    {
+        cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::FinalSolidColor));
+        RecordDraw(cmdList, context, RenderMode::Quad);
+        return;
+    }
+
     auto* resolveSource = context.ResolveSourceSrv != nullptr
                               ? context.ResolveSourceSrv
                               : context.AntiAliasingPath.GetSRV();
     const auto resolveSourceOffset = context.ResolveSourceSrv != nullptr
                                      ? context.ResolveSourceSrvOffset
                                      : 0u;
+    if (context.ResolveSourceTexture)
+    {
+        cmdList->TransitionBarrier(*context.ResolveSourceTexture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->FlushResourceBarriers();
+    }
     cmdList->SetDescriptorsHeap(resolveSource);
 
     cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, resolveSource, resolveSourceOffset);

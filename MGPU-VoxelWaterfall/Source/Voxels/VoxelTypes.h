@@ -44,6 +44,14 @@ enum class VoxelCompositeDebugView : uint32_t
     DepthDifference
 };
 
+enum class FinalResolveSource : uint32_t
+{
+    SolidColor,
+    PrimaryBase,
+    PrimaryComposite,
+    ReceivedSecondary
+};
+
 enum class VoxelSpatialLodMode : uint32_t
 {
     Off,

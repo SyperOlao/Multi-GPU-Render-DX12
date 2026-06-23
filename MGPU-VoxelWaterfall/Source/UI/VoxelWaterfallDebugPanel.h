@@ -43,6 +43,7 @@ struct VoxelWaterfallDebugPanelContext
     uint32_t ExpectedVoxelCount = 0;
     const VoxelFrameGraphTelemetry* FrameGraphTelemetry = nullptr;
     VoxelCompositeDebugView& CompositeDebugView;
+    FinalResolveSource& FinalResolveSourceMode;
 
     VoxelBenchmarkProfiler& BenchmarkProfiler;
     bool BenchmarkVSyncWasEnabled = true;

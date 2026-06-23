@@ -201,6 +201,9 @@ void RenderModeFactory::LoadDefaultPSO(std::shared_ptr<GDevice> device, std::sha
     depthStencilDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     quadPso->SetDepthStencilState(depthStencilDesc);
 
+    auto finalSolidColorPso = std::make_shared<GraphicPSO>(RenderMode::FinalSolidColor);
+    finalSolidColorPso->SetPsoDesc(quadPso->GetPsoDescription());
+    const auto finalSolidColorPsoShadersLoaded = setShaders(*finalSolidColorPso, {"quadVS", "finalSolidColorPS"});
 
     auto noisePSO = std::make_shared<GraphicPSO>(RenderMode::Debug);
     noisePSO->SetPsoDesc(basePsoDesc);
@@ -272,6 +275,7 @@ void RenderModeFactory::LoadDefaultPSO(std::shared_ptr<GDevice> device, std::sha
     addPso(drawNormalsDropPso, drawNormalsDropPsoShadersLoaded);
     addPso(debugPso, debugPsoShadersLoaded);
     addPso(quadPso, quadPsoShadersLoaded);
+    addPso(finalSolidColorPso, finalSolidColorPsoShadersLoaded);
     addPso(noisePSO, noisePsoShadersLoaded);
     addPso(uiPSO, uiPsoShadersLoaded);
 
@@ -341,6 +345,7 @@ void RenderModeFactory::LoadDefaultShaders()
 
     loadShader("quadVS", L"Shaders\\Quad.hlsl", VertexShader, nullptr, "VS", "vs_5_1");
     loadShader("quadPS", L"Shaders\\Quad.hlsl", PixelShader, nullptr, "PS", "ps_5_1");
+    loadShader("finalSolidColorPS", L"Shaders\\FinalResolveSolidColor.hlsl", PixelShader, nullptr, "PS", "ps_5_1");
 
     loadShader("noiseVS", L"Shaders\\NoiseDraw.hlsl", VertexShader, nullptr, "VS", "vs_5_1");
     loadShader("noisePS", L"Shaders\\NoiseDraw.hlsl", PixelShader, nullptr, "PS", "ps_5_1");

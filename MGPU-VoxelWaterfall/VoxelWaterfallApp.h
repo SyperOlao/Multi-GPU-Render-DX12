@@ -305,6 +305,7 @@ protected:
     RenderPipeline renderPipeline;
     VoxelCompositePass voxelCompositePass;
     VoxelRenderPasses voxelRenderPasses;
+    FinalResolveSource finalResolveSource = FinalResolveSource::PrimaryComposite;
     VoxelWaterfallDebugPanel debugPanel;
     VoxelResearchSceneManager voxelResearchSceneManager;
     Win32InputRouter inputRouter;
