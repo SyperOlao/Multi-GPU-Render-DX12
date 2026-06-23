@@ -141,7 +141,7 @@ void VoxelGpuPartition::InitializeStaticParticleSet()
         return;
 
     std::vector<VoxelParticleData> particles(emitterData.ParticlesTotalCount);
-    std::vector<UINT> aliveIndices(emitterData.ParticlesTotalCount);
+    std::vector<DWORD> aliveIndices(emitterData.ParticlesTotalCount);
     for (DWORD i = 0; i < emitterData.ParticlesTotalCount; ++i)
     {
         particles[i] = GenerateStaticVoxelParticle(i);
@@ -151,8 +151,11 @@ void VoxelGpuPartition::InitializeStaticParticleSet()
     auto queue = device->GetCommandQueue();
     auto initList = queue->GetCommandList();
     gpuResources.ParticlesPool->LoadData(particles.data(), initList);
-    gpuResources.ParticlesAlive->LoadData(aliveIndices.data(), initList);
-    gpuResources.ParticlesAlive->SetCounterValue(initList, emitterData.ParticlesTotalCount);
+    gpuResources.ParticlesAlive->LoadElementData(
+        aliveIndices.data(),
+        emitterData.ParticlesTotalCount,
+        initList,
+        emitterData.ParticlesTotalCount);
     gpuResources.ParticlesDead->SetCounterValue(initList, 0u);
     initList->TransitionBarrier(gpuResources.ParticlesPool->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);
     initList->TransitionBarrier(gpuResources.ParticlesAlive->GetD3D12Resource(), D3D12_RESOURCE_STATE_COMMON);

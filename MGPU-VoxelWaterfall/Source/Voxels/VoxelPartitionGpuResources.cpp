@@ -127,12 +127,11 @@ void VoxelPartitionGpuResources::CreateParticleBuffers(
 void VoxelPartitionGpuResources::InitializeDeadParticleList(
     const std::shared_ptr<PEPEngine::Graphics::GDevice>& device, const DWORD particleCount) const
 {
-    std::vector<UINT> deadIndices(particleCount);
+    std::vector<DWORD> deadIndices(particleCount);
     std::iota(deadIndices.begin(), deadIndices.end(), 0u);
     auto queue = device->GetCommandQueue();
     auto initList = queue->GetCommandList();
-    ParticlesDead->LoadData(deadIndices.data(), initList);
-    ParticlesDead->SetCounterValue(initList, particleCount);
+    ParticlesDead->LoadElementData(deadIndices.data(), particleCount, initList, particleCount);
     const DWORD zero = 0;
     SimulationStatsUpload->CopyData(0, &zero, sizeof(DWORD));
     initList->TransitionBarrier(SimulationStats->GetD3D12Resource(), D3D12_RESOURCE_STATE_COPY_DEST);

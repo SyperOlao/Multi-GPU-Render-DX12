@@ -4,6 +4,11 @@
 #include "d3dUtil.h"
 #include "GBuffer.h"
 #include "GCommandList.h"
+
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
 using namespace Microsoft::WRL;
 
 namespace PEPEngine::Graphics
@@ -129,6 +134,20 @@ namespace PEPEngine::Graphics
 
         CounteredStructBuffer(const CounteredStructBuffer& rhs) = delete;
         CounteredStructBuffer& operator=(const CounteredStructBuffer& rhs) = delete;
+
+        void LoadElementData(const T* data, const UINT elementCount,
+                             const std::shared_ptr<GCommandList>& cmdList,
+                             const DWORD counterValue = 0) const
+        {
+            std::vector<uint8_t> padded(bufferSize, 0u);
+            const auto clampedCount = std::min(elementCount, count);
+            const auto dataBytes = static_cast<size_t>(clampedCount) * sizeof(T);
+            if (dataBytes > 0)
+                std::memcpy(padded.data(), data, dataBytes);
+
+            std::memcpy(padded.data() + bufferSize - sizeof(DWORD), &counterValue, sizeof(DWORD));
+            GBuffer::LoadData(padded.data(), cmdList);
+        }
 
         void SetCounterValue(const std::shared_ptr<GCommandList>& cmdList, const DWORD value) const
         {
