@@ -89,6 +89,8 @@ protected:
     void AdvanceResearchRunner(bool presentedFrame);
     void RequestApplyVoxelWorkloadSettings();
     void RequestSecondaryShare(float secondaryShare);
+    void RequestDynamicSpawnBatchSize(uint32_t dynamicSpawnBatchSize);
+    void RequestDynamicVoxelBudget(uint32_t dynamicVoxelBudget);
     void RequestVisualValidation(const std::filesystem::path& outputDirectory = {},
                                  BenchmarkSuite suite = BenchmarkSuite::Smoke,
                                  uint32_t seedOverride = 0);
@@ -229,6 +231,8 @@ protected:
         std::optional<VoxelExecutionMode> ExecutionMode;
         std::optional<bool> VoxelWorkloadSettings;
         std::optional<float> SecondaryShare;
+        std::optional<uint32_t> DynamicSpawnBatchSize;
+        std::optional<uint32_t> DynamicVoxelBudget;
         std::optional<FinalResolveSource> FinalResolve;
         std::optional<VisualValidationRequest> RunVisualValidation;
 
@@ -241,6 +245,8 @@ protected:
                 ExecutionMode.has_value() ||
                 VoxelWorkloadSettings.has_value() ||
                 SecondaryShare.has_value() ||
+                DynamicSpawnBatchSize.has_value() ||
+                DynamicVoxelBudget.has_value() ||
                 FinalResolve.has_value() ||
                 RunVisualValidation.has_value();
         }

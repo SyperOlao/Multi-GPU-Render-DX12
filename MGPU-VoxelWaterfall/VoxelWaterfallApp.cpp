@@ -2521,6 +2521,8 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         [this] { StopAutomaticBenchmark(); },
         [this] { RequestApplyVoxelWorkloadSettings(); },
         [this](const float secondaryShare) { RequestSecondaryShare(secondaryShare); },
+        [this](const uint32_t dynamicSpawnBatchSize) { RequestDynamicSpawnBatchSize(dynamicSpawnBatchSize); },
+        [this](const uint32_t dynamicVoxelBudget) { RequestDynamicVoxelBudget(dynamicVoxelBudget); },
         [this](const ResearchRunnerRequest& request) { RequestResearchRunner(request); },
         [this] { CancelResearchRunner(); }
     };
@@ -4664,6 +4666,17 @@ void VoxelWaterfallApp::RequestSecondaryShare(const float secondaryShare)
     pendingRuntimeChanges.SecondaryShare = std::clamp(secondaryShare, 0.0f, 1.0f);
 }
 
+void VoxelWaterfallApp::RequestDynamicSpawnBatchSize(const uint32_t dynamicSpawnBatchSize)
+{
+    pendingRuntimeChanges.DynamicSpawnBatchSize = dynamicSpawnBatchSize;
+}
+
+void VoxelWaterfallApp::RequestDynamicVoxelBudget(const uint32_t dynamicVoxelBudget)
+{
+    constexpr uint32_t MaxRuntimeDynamicVoxelBudget = 2'000'000u;
+    pendingRuntimeChanges.DynamicVoxelBudget = std::clamp(dynamicVoxelBudget, 1u, MaxRuntimeDynamicVoxelBudget);
+}
+
 void VoxelWaterfallApp::RequestVisualValidation(const std::filesystem::path& outputDirectory,
                                                 const BenchmarkSuite suite,
                                                 const uint32_t seedOverride)
@@ -4688,6 +4701,8 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     bool sceneNeedsRebuild = false;
     bool renderTargetsRebuilt = false;
     std::optional<float> secondaryShareOverride;
+    std::optional<uint32_t> dynamicSpawnBatchSizeOverride;
+    std::optional<uint32_t> dynamicVoxelBudgetOverride;
 
     if (changes.SecondaryShare)
     {
@@ -4695,6 +4710,35 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         if (voxelWorkload.SecondaryShare != requestedSecondaryShare)
         {
             secondaryShareOverride = requestedSecondaryShare;
+            voxelResearchSceneManager.ForceRebuildActivePreset();
+            sceneNeedsRebuild = true;
+        }
+    }
+
+    if (changes.DynamicSpawnBatchSize)
+    {
+        const uint32_t requestedDynamicSpawnBatchSize =
+            std::min(*changes.DynamicSpawnBatchSize, std::max(1u, voxelWorkload.DynamicVoxelBudget));
+        if (voxelWorkload.Parameters.DynamicSpawnBatchSize != requestedDynamicSpawnBatchSize)
+        {
+            dynamicSpawnBatchSizeOverride = requestedDynamicSpawnBatchSize;
+            voxelResearchSceneManager.ForceRebuildActivePreset();
+            sceneNeedsRebuild = true;
+        }
+    }
+
+    if (changes.DynamicVoxelBudget)
+    {
+        const uint32_t requestedDynamicVoxelBudget = std::max(1u, *changes.DynamicVoxelBudget);
+        if (voxelWorkload.DynamicVoxelBudget != requestedDynamicVoxelBudget)
+        {
+            dynamicVoxelBudgetOverride = requestedDynamicVoxelBudget;
+            if (!dynamicSpawnBatchSizeOverride)
+            {
+                dynamicSpawnBatchSizeOverride = std::min(
+                    static_cast<uint32_t>(voxelWorkload.Parameters.DynamicSpawnBatchSize),
+                    requestedDynamicVoxelBudget);
+            }
             voxelResearchSceneManager.ForceRebuildActivePreset();
             sceneNeedsRebuild = true;
         }
@@ -4812,6 +4856,20 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         }
         if (!changes.WorkloadProfile && !secondaryShareOverride)
             secondaryShareOverride = voxelWorkload.SecondaryShare;
+        if (!changes.WorkloadProfile && !dynamicSpawnBatchSizeOverride)
+            dynamicSpawnBatchSizeOverride = voxelWorkload.Parameters.DynamicSpawnBatchSize;
+        if (!changes.WorkloadProfile && !dynamicVoxelBudgetOverride)
+            dynamicVoxelBudgetOverride = voxelWorkload.DynamicVoxelBudget;
+    }
+
+    if (sceneNeedsRebuild && !changes.WorkloadProfile)
+    {
+        if (!secondaryShareOverride)
+            secondaryShareOverride = voxelWorkload.SecondaryShare;
+        if (!dynamicSpawnBatchSizeOverride)
+            dynamicSpawnBatchSizeOverride = voxelWorkload.Parameters.DynamicSpawnBatchSize;
+        if (!dynamicVoxelBudgetOverride)
+            dynamicVoxelBudgetOverride = voxelWorkload.DynamicVoxelBudget;
     }
 
     if (sceneNeedsRebuild)
@@ -4831,7 +4889,11 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             voxelWorkload,
             RenderAspectRatio()
         };
-        voxelResearchSceneManager.RebuildScene(sceneContext, secondaryShareOverride);
+        voxelResearchSceneManager.RebuildScene(
+            sceneContext,
+            secondaryShareOverride,
+            dynamicSpawnBatchSizeOverride,
+            dynamicVoxelBudgetOverride);
         ++sceneGeneration;
         SortGO();
     }
@@ -5480,11 +5542,13 @@ void VoxelWaterfallApp::ApplyBenchmarkVoxelCount(const int totalCount)
         if (totalCount <= 100000)
             voxelWorkload.DynamicVoxelBudget = 25000;
         else if (totalCount <= 250000)
-            voxelWorkload.DynamicVoxelBudget = 100000;
-        else if (totalCount <= 500000)
             voxelWorkload.DynamicVoxelBudget = 250000;
-        else
+        else if (totalCount <= 500000)
             voxelWorkload.DynamicVoxelBudget = 500000;
+        else if (totalCount <= 1000000)
+            voxelWorkload.DynamicVoxelBudget = 1000000;
+        else
+            voxelWorkload.DynamicVoxelBudget = 2000000;
     }
     else if (activePreset == VoxelResearchScenePreset::DynamicWaterfall)
         voxelWorkload.DynamicVoxelBudget = static_cast<uint32_t>(std::max(0, totalCount));
@@ -5536,10 +5600,12 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
         if (staticBudget <= 100000)
             return 25000u;
         if (staticBudget <= 250000)
-            return 100000u;
-        if (staticBudget <= 500000)
             return 250000u;
-        return 500000u;
+        if (staticBudget <= 500000)
+            return 500000u;
+        if (staticBudget <= 1000000)
+            return 1000000u;
+        return 2000000u;
     };
     result.RequestedLabelCount =
         config.RequestedLabelCount != 0 ? config.RequestedLabelCount : config.TotalCount;

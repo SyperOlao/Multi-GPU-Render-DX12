@@ -31,11 +31,11 @@ namespace
         case DynamicVoxelBudgetPreset::Small:
             return 25000;
         case DynamicVoxelBudgetPreset::Medium:
-            return 100000;
-        case DynamicVoxelBudgetPreset::Large:
             return 250000;
+        case DynamicVoxelBudgetPreset::Large:
+            return 1000000;
         case DynamicVoxelBudgetPreset::VeryLarge:
-            return 500000;
+            return 2000000;
         default:
             return 25000;
         }
@@ -148,14 +148,20 @@ bool VoxelResearchSceneManager::RequiresRebuild() const
 
 void VoxelResearchSceneManager::RebuildScene(
     const VoxelResearchSceneContext& context,
-    const std::optional<float> secondaryShareOverride)
+    const std::optional<float> secondaryShareOverride,
+    const std::optional<uint32_t> dynamicSpawnBatchSizeOverride,
+    const std::optional<uint32_t> dynamicVoxelBudgetOverride)
 {
     if (!rebuildPending)
         return;
 
     ClearScene(context);
     activePreset = requestedPreset;
-    context.Workload = CreateLogicalWorkload(activePreset, secondaryShareOverride);
+    context.Workload = CreateLogicalWorkload(
+        activePreset,
+        secondaryShareOverride,
+        dynamicSpawnBatchSizeOverride,
+        dynamicVoxelBudgetOverride);
 
     switch (activePreset)
     {
@@ -217,7 +223,9 @@ void VoxelResearchSceneManager::CreateOcclusionPrimitives(const VoxelResearchSce
 
 VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
     const VoxelResearchScenePreset preset,
-    const std::optional<float> secondaryShareOverride)
+    const std::optional<float> secondaryShareOverride,
+    const std::optional<uint32_t> dynamicSpawnBatchSizeOverride,
+    const std::optional<uint32_t> dynamicVoxelBudgetOverride)
 {
     VoxelSceneWorkload workload{};
     workload.Profile = ProfileForPreset(preset);
@@ -248,6 +256,7 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
     workload.Parameters.InitialFallSpeed = 0.0f;
     workload.Parameters.Gravity = 0.0f;
     workload.Parameters.Seed = 1337;
+    workload.Parameters.DynamicSpawnBatchSize = dynamicSpawnBatchSizeOverride.value_or(0u);
     workload.CameraPath = "FixedOverview";
     workload.LightingPreset = "BenchmarkNeutral";
     workload.CameraMode = VoxelResearchCameraMode::FixedOverview;
@@ -271,6 +280,8 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
         workload.CameraMode = VoxelResearchCameraMode::WaterfallCloseup;
         workload.CameraPath = "WaterfallCloseup";
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
+        if (dynamicVoxelBudgetOverride)
+            workload.DynamicVoxelBudget = *dynamicVoxelBudgetOverride;
         return VoxelSceneWorkloadBuilder::Build(workload);
     }
     case VoxelResearchScenePreset::MixedVoxelEnvironment:
@@ -279,6 +290,8 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
         workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
         workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
+        if (dynamicVoxelBudgetOverride)
+            workload.DynamicVoxelBudget = *dynamicVoxelBudgetOverride;
         assert(workload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
         workload.Layers.push_back(GenerateStaticLayer(workload));
         return VoxelSceneWorkloadBuilder::Build(workload);
@@ -289,6 +302,8 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
         workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
         workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
+        if (dynamicVoxelBudgetOverride)
+            workload.DynamicVoxelBudget = *dynamicVoxelBudgetOverride;
         workload.CameraMode = VoxelResearchCameraMode::DemoMixedOverview;
         workload.CameraPath = "DemoMixedOverview";
         workload.LightingMode = VoxelResearchLightingPreset::DemoStaticSky;
@@ -314,6 +329,8 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
         workload.LightingPreset = "OcclusionValidationLighting";
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
         workload.DynamicVoxelBudget = 12000;
+        if (dynamicVoxelBudgetOverride)
+            workload.DynamicVoxelBudget = *dynamicVoxelBudgetOverride;
         workload.Layers.push_back(GenerateStaticLayer(workload));
         return VoxelSceneWorkloadBuilder::Build(workload);
     }

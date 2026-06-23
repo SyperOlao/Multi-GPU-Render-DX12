@@ -401,9 +401,11 @@ void VoxelGpuPartition::CreateBuffers()
 {
     gpuResources.ResetResources();
 
-    gpuResources.InjectionCapacity = HasVoxels()
-                                         ? std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16)
-                                         : 0;
+    const DWORD defaultInjectionCapacity = std::max<DWORD>(1, emitterData.ParticlesTotalCount / 16);
+    const DWORD requestedInjectionCapacity =
+        parameters.DynamicSpawnBatchSize > 0 ? parameters.DynamicSpawnBatchSize : defaultInjectionCapacity;
+    gpuResources.InjectionCapacity =
+        HasVoxels() ? std::clamp<DWORD>(requestedInjectionCapacity, 1u, emitterData.ParticlesTotalCount) : 0;
     emitterData.ParticleInjectCount = gpuResources.InjectionCapacity;
     emitterData.InjectedGroupCount = static_cast<DWORD>(CalculateGroupCount(gpuResources.InjectionCapacity));
     emitterData.ParticlesAliveCount = 0;

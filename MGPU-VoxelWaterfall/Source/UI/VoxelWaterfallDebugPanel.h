@@ -76,6 +76,8 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void()> StopAutomaticBenchmark;
     std::function<void()> RequestApplyWorkloadSettings;
     std::function<void(float)> ApplySecondaryShare;
+    std::function<void(uint32_t)> ApplyDynamicSpawnBatchSize;
+    std::function<void(uint32_t)> ApplyDynamicVoxelBudget;
     std::function<void(const ResearchRunnerRequest&)> RequestResearchRunner;
     std::function<void()> CancelResearchRunner;
 };

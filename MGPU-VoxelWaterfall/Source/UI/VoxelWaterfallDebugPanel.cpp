@@ -477,6 +477,29 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricVec3("static bounds max", context.Workload.StaticTelemetry.BoundsMax);
         DrawMetricU32("chunk count", TotalChunkCount(context.Workload));
         DrawMetricU32("seed", SeedForScene(context.Workload));
+        if (context.Workload.DynamicVoxelBudget > 0)
+        {
+            constexpr uint32_t MaxRuntimeDynamicVoxelBudget = 2'000'000u;
+            int dynamicVoxelBudget = static_cast<int>(
+                std::min(context.Workload.DynamicVoxelBudget, MaxRuntimeDynamicVoxelBudget));
+            if (ImGui::SliderInt("dynamic particles", &dynamicVoxelBudget, 1,
+                                 static_cast<int>(MaxRuntimeDynamicVoxelBudget)) &&
+                context.ApplyDynamicVoxelBudget)
+            {
+                context.ApplyDynamicVoxelBudget(static_cast<uint32_t>(dynamicVoxelBudget));
+            }
+
+            const uint32_t dynamicBudget = std::max(1u, context.Workload.DynamicVoxelBudget);
+            int spawnBatchSize = static_cast<int>(
+                context.Workload.Parameters.DynamicSpawnBatchSize > 0
+                    ? std::min<uint32_t>(context.Workload.Parameters.DynamicSpawnBatchSize, dynamicBudget)
+                    : std::max(1u, dynamicBudget / 16u));
+            if (ImGui::SliderInt("spawn batch", &spawnBatchSize, 1, static_cast<int>(dynamicBudget)) &&
+                context.ApplyDynamicSpawnBatchSize)
+            {
+                context.ApplyDynamicSpawnBatchSize(static_cast<uint32_t>(spawnBatchSize));
+            }
+        }
     }
 
     if (ImGui::CollapsingHeader("Multi-GPU", ImGuiTreeNodeFlags_DefaultOpen))

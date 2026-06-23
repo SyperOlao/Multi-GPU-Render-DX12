@@ -51,14 +51,19 @@ public:
     void ForceRebuildActivePreset();
     bool RequiresRebuild() const;
     void RebuildScene(const VoxelResearchSceneContext& context,
-                      std::optional<float> secondaryShareOverride = std::nullopt);
+                      std::optional<float> secondaryShareOverride = std::nullopt,
+                      std::optional<uint32_t> dynamicSpawnBatchSizeOverride = std::nullopt,
+                      std::optional<uint32_t> dynamicVoxelBudgetOverride = std::nullopt);
 
 private:
     static void ClearScene(const VoxelResearchSceneContext& context);
     static void AddRenderer(const VoxelResearchSceneContext& context, PEPEngine::Graphics::RenderMode mode,
                             const std::shared_ptr<Renderer>& renderer);
-    static VoxelSceneWorkload CreateLogicalWorkload(VoxelResearchScenePreset preset,
-                                                    std::optional<float> secondaryShareOverride = std::nullopt);
+    static VoxelSceneWorkload CreateLogicalWorkload(
+        VoxelResearchScenePreset preset,
+        std::optional<float> secondaryShareOverride = std::nullopt,
+        std::optional<uint32_t> dynamicSpawnBatchSizeOverride = std::nullopt,
+        std::optional<uint32_t> dynamicVoxelBudgetOverride = std::nullopt);
     static void CreateOcclusionPrimitives(const VoxelResearchSceneContext& context);
     static void CreateEmptyBaseline(const VoxelResearchSceneContext& context);
     static const char* PresetName(VoxelResearchScenePreset preset);

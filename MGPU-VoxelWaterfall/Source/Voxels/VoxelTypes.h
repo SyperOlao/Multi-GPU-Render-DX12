@@ -158,6 +158,7 @@ struct VoxelSimulationParameters
     float InitialFallSpeed = 3.0f;
     float Gravity = 18.0f;
     DWORD Seed = 1337;
+    DWORD DynamicSpawnBatchSize = 0;
 };
 
 struct alignas(16) VoxelParticleData
