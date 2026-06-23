@@ -1867,6 +1867,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 &voxelFrameRenderPlan.PrimaryOwnedPartitions,
                 &primaryVoxelRenderResults,
                 &benchmarkProfiler,
+                primeDevice,
+                currentFrameResourceIndex,
                 MainWindow->GetCurrentBackBuffer()
             };
             basePassContext.DynamicShadowsEnabled = voxelWorkload.DynamicShadowsEnabled;
@@ -2022,6 +2024,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 nullptr,
                 nullptr,
                 nullptr,
+                primeDevice,
+                currentFrameResourceIndex,
                 MainWindow->GetCurrentBackBuffer()
             };
 
@@ -2061,6 +2065,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 finalPassContext.ResolveSourceTexture = &antiAliasingPrimePath->GetRenderTarget();
                 finalPassContext.ResolveSourceSrv = antiAliasingPrimePath->GetSRV();
                 finalPassContext.ResolveSourceSrvOffset = 0;
+                finalPassContext.ResolveSourceMetadata = nullptr;
                 setResolveSourceDiagnostics(FinalResolveSource::PrimaryBase,
                                             finalPassContext.ResolveSourceTexture,
                                             finalPassContext.ResolveSourceSrv,
@@ -2071,6 +2076,10 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             if (finalResolveSource == FinalResolveSource::SolidColor)
             {
                 finalPassContext.ResolveSource = FinalResolveSource::SolidColor;
+                finalPassContext.ResolveSourceTexture = nullptr;
+                finalPassContext.ResolveSourceSrv = nullptr;
+                finalPassContext.ResolveSourceSrvOffset = 0;
+                finalPassContext.ResolveSourceMetadata = nullptr;
                 setResolveSourceDiagnostics(FinalResolveSource::SolidColor, nullptr, nullptr, 0,
                                             frameRenderTargetGeneration);
             }
@@ -2108,8 +2117,9 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 {
                     finalPassContext.ResolveSource = FinalResolveSource::PrimaryComposite;
                     finalPassContext.ResolveSourceTexture = &targets.PrimaryCompositeColor;
-                    finalPassContext.ResolveSourceSrv = &targets.PrimaryCompositeDescriptors;
-                    finalPassContext.ResolveSourceSrvOffset = 4;
+                    finalPassContext.ResolveSourceSrv = &targets.PrimaryCompositeFinalResolveSrv;
+                    finalPassContext.ResolveSourceSrvOffset = 0;
+                    finalPassContext.ResolveSourceMetadata = &targets.PrimaryCompositeFinalResolveSrvMetadata;
                     setResolveSourceDiagnostics(FinalResolveSource::PrimaryComposite,
                                                 finalPassContext.ResolveSourceTexture,
                                                 finalPassContext.ResolveSourceSrv,
@@ -2128,6 +2138,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 finalPassContext.ResolveSourceTexture = &targets.PrimaryReceivedSecondaryColor;
                 finalPassContext.ResolveSourceSrv = &targets.PrimarySrvDescriptors;
                 finalPassContext.ResolveSourceSrvOffset = 0;
+                finalPassContext.ResolveSourceMetadata = &targets.PrimaryReceivedSecondaryColorSrvMetadata;
                 setResolveSourceDiagnostics(FinalResolveSource::ReceivedSecondary,
                                             finalPassContext.ResolveSourceTexture,
                                             finalPassContext.ResolveSourceSrv,
@@ -2136,6 +2147,10 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             }
             benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                          VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
+            assert((finalPassContext.ResolveSource == FinalResolveSource::SolidColor ||
+                    finalPassContext.ResolveSource == FinalResolveSource::PrimaryBase ||
+                    finalPassContext.ResolveSourceMetadata != nullptr) &&
+                   "final resolve metadata must be ready before RecordFinalPresent");
             voxelRenderPasses.RecordFinalPresent(cmdList, finalPassContext);
             if (!benchmarkController.IsAutomaticActive())
                 DrawUserInterface(cmdList);

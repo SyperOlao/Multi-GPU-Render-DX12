@@ -33,6 +33,19 @@ struct MultiGpuVoxelResourceInfo
     D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COMMON;
 };
 
+struct VoxelFinalResolveSrvMetadata
+{
+    uint64_t ResourceAddress = 0;
+    uint64_t ResourceGeneration = 0;
+    uint64_t DescriptorGeneration = 0;
+    UINT FrameResourceIndex = 0;
+    DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
+    UINT Width = 0;
+    UINT Height = 0;
+    D3D12_SRV_DIMENSION ViewDimension = D3D12_SRV_DIMENSION_UNKNOWN;
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle{};
+};
+
 struct MultiGpuVoxelFrameRenderTargets
 {
     UINT FrameIndex = 0;
@@ -80,7 +93,10 @@ struct MultiGpuVoxelFrameRenderTargets
     PEPEngine::Graphics::GDescriptor SecondaryDsvDescriptor;
     PEPEngine::Graphics::GDescriptor PrimarySrvDescriptors;
     PEPEngine::Graphics::GDescriptor PrimaryCompositeDescriptors;
+    PEPEngine::Graphics::GDescriptor PrimaryCompositeFinalResolveSrv;
     PEPEngine::Graphics::GDescriptor PrimaryCompositeRtvDescriptor;
+    VoxelFinalResolveSrvMetadata PrimaryReceivedSecondaryColorSrvMetadata;
+    VoxelFinalResolveSrvMetadata PrimaryCompositeFinalResolveSrvMetadata;
 
     UINT64 ColorTransferBytes = 0;
     UINT64 LinearDepthTransferBytes = 0;

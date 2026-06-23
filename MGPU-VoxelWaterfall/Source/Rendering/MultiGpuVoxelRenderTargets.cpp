@@ -1,6 +1,7 @@
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 
 #include "GDevice.h"
+#include "GDescriptorHeap.h"
 #include "d3dUtil.h"
 
 #include <Windows.h>
@@ -177,6 +178,30 @@ namespace
             D3D12_RESOURCE_STATE_COMMON);
 
         return bridge;
+    }
+
+    VoxelFinalResolveSrvMetadata BuildFinalResolveSrvMetadata(
+        const GTexture& texture,
+        const GDescriptor& descriptor,
+        const UINT descriptorOffset,
+        const UINT frameIndex,
+        const uint64_t resourceGeneration,
+        const uint64_t descriptorGeneration,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC& srvDesc)
+    {
+        const auto resource = texture.GetD3D12Resource();
+        const auto desc = texture.GetD3D12ResourceDesc();
+        VoxelFinalResolveSrvMetadata metadata{};
+        metadata.ResourceAddress = reinterpret_cast<uint64_t>(resource.Get());
+        metadata.ResourceGeneration = resourceGeneration;
+        metadata.DescriptorGeneration = descriptorGeneration;
+        metadata.FrameResourceIndex = frameIndex;
+        metadata.Format = srvDesc.Format;
+        metadata.Width = static_cast<UINT>(desc.Width);
+        metadata.Height = desc.Height;
+        metadata.ViewDimension = srvDesc.ViewDimension;
+        metadata.GpuHandle = descriptor.GetGPUHandle(descriptorOffset);
+        return metadata;
     }
 }
 
@@ -401,9 +426,20 @@ bool MultiGpuVoxelRenderTargets::Initialize(
         frame.SecondaryDsvDescriptor = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
         frame.PrimarySrvDescriptors = primaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
         frame.PrimaryCompositeDescriptors =
-            primaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5);
+            primaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4);
+        frame.PrimaryCompositeFinalResolveSrv =
+            primaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
         frame.PrimaryCompositeRtvDescriptor =
             primaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
+        assert(!frame.PrimarySrvDescriptors.IsNull() &&
+               frame.PrimarySrvDescriptors.GetDescriptorHeap()->GetDevice() == primaryDevice &&
+               "received-secondary SRV heap must belong to the primary device");
+        assert(!frame.PrimaryCompositeDescriptors.IsNull() &&
+               frame.PrimaryCompositeDescriptors.GetDescriptorHeap()->GetDevice() == primaryDevice &&
+               "primary composite pass SRV heap must belong to the primary device");
+        assert(!frame.PrimaryCompositeFinalResolveSrv.IsNull() &&
+               frame.PrimaryCompositeFinalResolveSrv.GetDescriptorHeap()->GetDevice() == primaryDevice &&
+               "primary composite final-resolve SRV heap must belong to the primary device");
 
         const auto colorName = FrameName(L"SecondaryLocalColor", frameIndex);
         const auto localColorDesc = Texture2DDesc(desc.Width, desc.Height, desc.ColorFormat,
@@ -521,10 +557,28 @@ bool MultiGpuVoxelRenderTargets::Initialize(
         srvDesc.Texture2D.MipLevels = 1;
         srvDesc.Format = desc.ColorFormat;
         frame.PrimaryReceivedSecondaryColor.CreateShaderResourceView(&srvDesc, &frame.PrimarySrvDescriptors, 0);
+        frame.PrimaryReceivedSecondaryColorSrvMetadata =
+            BuildFinalResolveSrvMetadata(
+                frame.PrimaryReceivedSecondaryColor,
+                frame.PrimarySrvDescriptors,
+                0,
+                frameIndex,
+                renderTargetGeneration,
+                descriptorGeneration,
+                srvDesc);
         srvDesc.Format = desc.LinearDepthFormat;
         frame.PrimaryReceivedSecondaryLinearDepth.CreateShaderResourceView(&srvDesc, &frame.PrimarySrvDescriptors, 1);
         srvDesc.Format = desc.ColorFormat;
-        frame.PrimaryCompositeColor.CreateShaderResourceView(&srvDesc, &frame.PrimaryCompositeDescriptors, 4);
+        frame.PrimaryCompositeColor.CreateShaderResourceView(&srvDesc, &frame.PrimaryCompositeFinalResolveSrv, 0);
+        frame.PrimaryCompositeFinalResolveSrvMetadata =
+            BuildFinalResolveSrvMetadata(
+                frame.PrimaryCompositeColor,
+                frame.PrimaryCompositeFinalResolveSrv,
+                0,
+                frameIndex,
+                renderTargetGeneration,
+                descriptorGeneration,
+                srvDesc);
 
         rtvDesc.Format = desc.ColorFormat;
         frame.PrimaryCompositeColor.CreateRenderTargetView(&rtvDesc, &frame.PrimaryCompositeRtvDescriptor, 0);

@@ -16,10 +16,12 @@ class RenderModeFactory;
 class ShadowMap;
 class SSAO;
 class SSAA;
+struct VoxelFinalResolveSrvMetadata;
 
 namespace PEPEngine::Graphics
 {
     class GCommandList;
+    class GDevice;
     class GDescriptor;
     class GRootSignature;
     class GTexture;
@@ -41,11 +43,14 @@ struct VoxelRenderPassContext
     const std::vector<VoxelFramePartitionRenderPlan>* PrimaryVoxelPartitions = nullptr;
     std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
     VoxelBenchmarkProfiler* BenchmarkProfiler = nullptr;
+    std::shared_ptr<PEPEngine::Graphics::GDevice> PrimaryDevice;
+    UINT FrameResourceIndex = 0;
     PEPEngine::Graphics::GTexture& BackBuffer;
     FinalResolveSource ResolveSource = FinalResolveSource::PrimaryBase;
     PEPEngine::Graphics::GTexture* ResolveSourceTexture = nullptr;
     PEPEngine::Graphics::GDescriptor* ResolveSourceSrv = nullptr;
     UINT ResolveSourceSrvOffset = 0;
+    const VoxelFinalResolveSrvMetadata* ResolveSourceMetadata = nullptr;
     bool DynamicShadowsEnabled = false;
     std::array<float, 4> BackgroundColor = {0.03f, 0.035f, 0.04f, 1.0f};
 };

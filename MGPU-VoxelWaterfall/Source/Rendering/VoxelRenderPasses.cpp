@@ -3,6 +3,8 @@
 #include "FrameResource.h"
 #include "GCommandList.h"
 #include "GDescriptor.h"
+#include "GDescriptorHeap.h"
+#include "GDevice.h"
 #include "GRootSignature.h"
 #include "GTexture.h"
 #include "Renderer.h"
@@ -10,7 +12,10 @@
 #include "ShadowMap.h"
 #include "SSAA.h"
 #include "SSAO.h"
+#include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
+
+#include <cassert>
 
 using namespace DirectX;
 using namespace PEPEngine::Graphics;
@@ -20,6 +25,57 @@ namespace
     bool HasRenderers(const VoxelRenderPassContext& context, const RenderMode mode)
     {
         return !context.TypedRenderers[static_cast<int>(mode)].empty();
+    }
+
+    void ValidateFinalResolveSrv(const VoxelRenderPassContext& context,
+                                 const GDescriptor& descriptor,
+                                 const UINT descriptorOffset)
+    {
+        static_assert(StandardShaderSlot::AmbientMap - StandardShaderSlot::SkyMap == 2,
+                      "fullscreen pixel shader samples ssaoMap at t2");
+
+        if (context.ResolveSource == FinalResolveSource::PrimaryBase)
+            return;
+
+        assert(context.ResolveSourceTexture != nullptr &&
+               "final resolve SRV validation requires the selected source resource");
+        assert(context.ResolveSourceMetadata != nullptr &&
+               "final resolve SRV validation requires descriptor metadata");
+
+        const auto& metadata = *context.ResolveSourceMetadata;
+        const auto sourceResource = context.ResolveSourceTexture->GetD3D12Resource();
+        const auto sourceDesc = context.ResolveSourceTexture->GetD3D12ResourceDesc();
+        const auto descriptorHeap = descriptor.GetDescriptorHeap();
+
+        assert(sourceResource.Get() != nullptr && "final resolve source resource must be valid");
+        assert(metadata.ResourceAddress == reinterpret_cast<uint64_t>(sourceResource.Get()) &&
+               "final resolve descriptor metadata resource address must match selected source resource");
+        assert(metadata.ResourceGeneration == context.CurrentFrameResource.RenderTargetGeneration &&
+               "final resolve descriptor resource generation must match the frame render target generation");
+        assert(metadata.DescriptorGeneration == context.CurrentFrameResource.DescriptorGeneration &&
+               "final resolve descriptor generation must match the frame descriptor generation");
+        assert(metadata.DescriptorGeneration == metadata.ResourceGeneration &&
+               "final resolve descriptor generation must match its source resource generation");
+        assert(metadata.FrameResourceIndex == context.FrameResourceIndex &&
+               "final resolve descriptor frame index must match the current FrameResource");
+        assert(metadata.Format == sourceDesc.Format &&
+               "final resolve SRV format must match the selected source resource format");
+        assert(metadata.Width == static_cast<UINT>(sourceDesc.Width) &&
+               metadata.Height == sourceDesc.Height &&
+               "final resolve SRV dimensions must match the selected source resource dimensions");
+        assert(metadata.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D &&
+               sourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+               "final resolve SRV view dimension must match a Texture2D source resource");
+        assert(!descriptor.IsNull() && descriptor.GetType() == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+               "final resolve SRV must come from a CBV/SRV/UAV descriptor heap");
+        assert(descriptorHeap && descriptorHeap->GetDirectxHeap() != nullptr &&
+               "final resolve SRV descriptor heap must be valid");
+        assert(descriptorHeap->GetDevice() == context.PrimaryDevice &&
+               "final resolve shader-visible heap must belong to the primary device");
+        assert(descriptor.GetGPUHandle(descriptorOffset).ptr != 0 &&
+               "final resolve root descriptor table requires a shader-visible GPU handle");
+        assert(metadata.GpuHandle.ptr == descriptor.GetGPUHandle(descriptorOffset).ptr &&
+               "final resolve root descriptor table must use the current descriptor GPU handle");
     }
 }
 
@@ -235,6 +291,7 @@ void VoxelRenderPasses::RecordFullQuad(const std::shared_ptr<GCommandList>& cmdL
     cmdList->SetRootDescriptorTable(StandardShaderSlot::AmbientMap, resolveSource, resolveSourceOffset);
 
     cmdList->SetPipelineState(*context.PipelineResources.GetPSO(RenderMode::Quad));
+    ValidateFinalResolveSrv(context, *resolveSource, resolveSourceOffset);
     RecordDraw(cmdList, context, RenderMode::Quad);
 }
 
