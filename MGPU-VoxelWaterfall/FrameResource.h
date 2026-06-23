@@ -33,4 +33,9 @@ struct FrameResource
     UINT64 PrimaryComputeFenceValue = 0;
     UINT64 SecondaryComputeFenceValue = 0;
     UINT64 ComputeFenceValue = 0;
+
+    uint64_t SceneGeneration = 0;
+    uint64_t PartitionGeneration = 0;
+    uint64_t RenderTargetGeneration = 0;
+    uint64_t DescriptorGeneration = 0;
 };

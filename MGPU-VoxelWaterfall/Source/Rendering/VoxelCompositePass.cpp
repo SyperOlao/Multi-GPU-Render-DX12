@@ -118,6 +118,8 @@ void VoxelCompositePass::Record(const std::shared_ptr<GCommandList>& cmdList,
                                 const VoxelCompositePassContext& context) const
 {
     assert(IsInitialized());
+    assert(context.FrameTargets.DescriptorGeneration == context.FrameTargets.RenderTargetGeneration &&
+           "descriptor generation must match render target resource generation");
     RefreshDescriptors(context);
 
     const auto colorDesc = context.PrimaryBaseColor.GetD3D12ResourceDesc();

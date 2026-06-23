@@ -1500,6 +1500,15 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         ~DrawFrameScope() { Flag = false; }
     } drawFrameScope(isDrawingFrame);
 
+    const uint64_t frameSceneGeneration = sceneGeneration;
+    const uint64_t framePartitionGeneration = partitionGeneration;
+    const uint64_t frameRenderTargetGeneration = renderTargetGeneration;
+    const uint64_t frameDescriptorGeneration = descriptorGeneration;
+    currentFrameResource->SceneGeneration = frameSceneGeneration;
+    currentFrameResource->PartitionGeneration = framePartitionGeneration;
+    currentFrameResource->RenderTargetGeneration = frameRenderTargetGeneration;
+    currentFrameResource->DescriptorGeneration = frameDescriptorGeneration;
+
     const bool benchmarkWasActive = benchmarkProfiler.IsActive();
     std::optional<VoxelBenchmarkProfiler::FrameMetadata> benchmarkFrameMetadata;
     if (benchmarkWasActive)
@@ -1714,6 +1723,10 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     if (runSecondaryGraphics)
     {
         auto& secondaryFrameTargets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
+        assert(secondaryFrameTargets.RenderTargetGeneration == frameRenderTargetGeneration &&
+               "command list must not mix render targets from different generations");
+        assert(secondaryFrameTargets.DescriptorGeneration == secondaryFrameTargets.RenderTargetGeneration &&
+               "descriptor generation must match render target resource generation");
         const auto secondaryDesc = secondaryFrameTargets.SecondaryLocalColor.GetD3D12ResourceDesc();
         const D3D12_VIEWPORT secondaryViewport{
             0.0f,
@@ -1781,6 +1794,14 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         runSecondaryGraphics &&
         multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex].HasReceivedImage &&
         voxelCompositePass.IsInitialized();
+    if (shouldComposeSecondaryImage)
+    {
+        const auto& composeTargets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
+        assert(composeTargets.RenderTargetGeneration == frameRenderTargetGeneration &&
+               "command list must not mix render targets from different generations");
+        assert(composeTargets.DescriptorGeneration == composeTargets.RenderTargetGeneration &&
+               "descriptor generation must match render target resource generation");
+    }
     frameGraphTelemetry.CompositeSubmitted = shouldComposeSecondaryImage;
     frameGraphTelemetry.CompositeUsedSecondaryImage = shouldComposeSecondaryImage;
     frameGraphTelemetry.CompositeDebugView = voxelCompositeDebugView;
@@ -1797,7 +1818,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         graphicsPassFenceValue,
         benchmarkProfiler,
         &frameGraphTelemetry,
-        [this, shouldComposeSecondaryImage](const std::shared_ptr<GCommandList>& cmdList)
+        [this, shouldComposeSecondaryImage, frameRenderTargetGeneration](const std::shared_ptr<GCommandList>& cmdList)
         {
             VoxelRenderPassContext finalPassContext{
                 primeDeviceSignature,
@@ -1819,6 +1840,10 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             if (shouldComposeSecondaryImage)
             {
                 auto& targets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
+                assert(targets.RenderTargetGeneration == frameRenderTargetGeneration &&
+                       "command list must not mix render targets from different generations");
+                assert(targets.DescriptorGeneration == targets.RenderTargetGeneration &&
+                       "descriptor generation must match render target resource generation");
                 benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                              VoxelBenchmarkProfiler::RangeId::Composite);
                 VoxelCompositePassContext compositeContext{
@@ -1832,6 +1857,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                     voxelCompositeDebugView
                 };
                 voxelCompositePass.Record(cmdList, compositeContext);
+                assert(targets.RenderTargetGeneration == frameRenderTargetGeneration &&
+                       "final resolve source must match composite renderTargetGeneration");
                 benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                            VoxelBenchmarkProfiler::RangeId::Composite);
                 benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
@@ -1852,7 +1879,22 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                                            VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
         }
     };
+    auto assertFrameGenerationStable = [&]
+    {
+        assert(sceneGeneration == frameSceneGeneration &&
+               partitionGeneration == framePartitionGeneration &&
+               renderTargetGeneration == frameRenderTargetGeneration &&
+               descriptorGeneration == frameDescriptorGeneration &&
+               "frame generation must not change between DrawFrame begin and Present submission");
+        assert(currentFrameResource->SceneGeneration == frameSceneGeneration &&
+               currentFrameResource->PartitionGeneration == framePartitionGeneration &&
+               currentFrameResource->RenderTargetGeneration == frameRenderTargetGeneration &&
+               currentFrameResource->DescriptorGeneration == frameDescriptorGeneration &&
+               "FrameResource generation snapshot changed during DrawFrame");
+    };
+    assertFrameGenerationStable();
     renderPipeline.SubmitFinalCompositeAndPresentPass(finalPassContext);
+    assertFrameGenerationStable();
     if (currentFrameResource && currentFrameResource->PrimeRenderFenceValue != 0)
     {
         retainedVoxelFrameRenderPlans.push_back(
@@ -2090,6 +2132,8 @@ void VoxelWaterfallApp::InitUserInterface()
     io.FontGlobalScale = DebugUiScale;
     ImGui::GetStyle().ScaleAllSizes(DebugUiScale);
 
+    RetireDescriptorOwner(std::move(imguiSrvMemory));
+    ++descriptorGeneration;
     imguiSrvMemory = primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
     ImGui_ImplWin32_Init(MainWindow->GetWindowHandle());
     ImGui_ImplDX12_InitInfo dx12InitInfo{};
@@ -4018,6 +4062,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     if (executionModeChanged)
     {
         executionMode = targetMode;
+        ++partitionGeneration;
         voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
         voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
         if (executionMode == VoxelExecutionMode::MultiGpuFull)
@@ -4049,7 +4094,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             AspectRatio()
         };
         voxelResearchSceneManager.RebuildScene(sceneContext);
-        ++voxelSceneGeneration;
+        ++sceneGeneration;
         SortGO();
     }
 
@@ -4089,7 +4134,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             voxelWorkload.DynamicVoxelBudget = 0;
         }
         voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
-        ++voxelSceneGeneration;
+        ++sceneGeneration;
         AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
     }
 
@@ -4149,7 +4194,7 @@ void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkload
     };
     assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
-    ++voxelSceneGeneration;
+    ++sceneGeneration;
     SortGO();
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
@@ -4797,6 +4842,7 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
     voxelWorkload.TemporalPolicy = temporalMode ? VoxelTemporalPolicy::Decimated : VoxelTemporalPolicy::Full;
     voxelWorkload.TemporalDecimationInterval = std::clamp<uint32_t>(config.TemporalInterval, 1, 16);
 
+    const VoxelExecutionMode previousExecutionMode = executionMode;
     requestedExecutionMode = config.Mode;
     executionMode = config.Mode;
     if ((config.Mode == VoxelExecutionMode::MultiGpuFull ||
@@ -4812,6 +4858,8 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
                                 : VoxelExecutionMode::SingleGpuTemporalDecimation;
         }
     }
+    if (executionMode != previousExecutionMode)
+        ++partitionGeneration;
 
     pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
@@ -4890,6 +4938,7 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
         return;
 
     executionMode = targetMode;
+    ++partitionGeneration;
     voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
     voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
     if (executionMode == VoxelExecutionMode::MultiGpuFull)
@@ -4961,7 +5010,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
         voxelWorkload.DynamicVoxelBudget = 0;
     voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
-    ++voxelSceneGeneration;
+    ++sceneGeneration;
     AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
@@ -4979,7 +5028,15 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
 void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
 {
     assert(!isDrawingFrame && "Voxel GPU partition rebuild must not run during DrawFrame");
-    ++voxelPartitionGeneration;
+    ++partitionGeneration;
+    std::vector<std::shared_ptr<VoxelGpuPartition>> retiredPartitions;
+    for (const auto& partition : voxelWorkload.Partitions)
+    {
+        if (partition.GpuPartition)
+            retiredPartitions.push_back(partition.GpuPartition);
+    }
+    RetireVoxelGpuPartitions(std::move(retiredPartitions));
+
     auto voxelObjectIt = std::find_if(
         gameObjects.begin(),
         gameObjects.end(),
@@ -5034,8 +5091,8 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
 VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
 {
     VoxelFrameRenderPlan renderPlan{};
-    renderPlan.SceneGeneration = voxelSceneGeneration;
-    renderPlan.PartitionGeneration = voxelPartitionGeneration;
+    renderPlan.SceneGeneration = sceneGeneration;
+    renderPlan.PartitionGeneration = partitionGeneration;
     renderPlan.Profile = voxelWorkload.Profile;
     renderPlan.ExecutionMode = executionMode;
     for (const auto& partition : voxelWorkload.Partitions)
@@ -5046,8 +5103,8 @@ VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
         partitionPlan.LogicalVoxelCount = partition.VoxelCount();
         partitionPlan.DrawStreams = partition.DrawStreams;
         partitionPlan.GpuPartition = partition.GpuPartition;
-        partitionPlan.SceneGeneration = voxelSceneGeneration;
-        partitionPlan.PartitionGeneration = voxelPartitionGeneration;
+        partitionPlan.SceneGeneration = sceneGeneration;
+        partitionPlan.PartitionGeneration = partitionGeneration;
 
         renderPlan.LogicalVoxelCount += partitionPlan.LogicalVoxelCount;
         if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
@@ -5493,6 +5550,8 @@ void VoxelWaterfallApp::CreateMaterials()
 
 void VoxelWaterfallApp::InitSRVMemoryAndMaterials()
 {
+    RetireDescriptorOwner(std::move(srvTexturesMemory));
+    ++descriptorGeneration;
     srvTexturesMemory =
         primeDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                                          static_cast<uint32_t>(assets->GetTextures().size()));
@@ -5560,13 +5619,20 @@ MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetD
 void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
 {
     assert(!isDrawingFrame && "Multi-GPU voxel render target rebuild must not run during DrawFrame");
-    multiGpuVoxelRenderTargets.Reset();
+    RetireCurrentMultiGpuVoxelRenderTargets();
+    ++renderTargetGeneration;
+    ++descriptorGeneration;
 
     if (!multiGpuAvailable)
         return;
 
     const auto desc = BuildMultiGpuVoxelRenderTargetDesc();
-    if (!multiGpuVoxelRenderTargets.Initialize(primeDevice, secondDevice, desc))
+    if (!multiGpuVoxelRenderTargets.Initialize(
+        primeDevice,
+        secondDevice,
+        desc,
+        renderTargetGeneration,
+        renderTargetGeneration))
     {
         DisableMultiGpu(multiGpuVoxelRenderTargets.GetFailureMessage());
         return;
@@ -5585,8 +5651,9 @@ void VoxelWaterfallApp::DisableMultiGpu(const std::wstring& reason)
     crossAdapterTransferMode = CrossAdapterTransferMode::Unavailable;
     multiGpuPublicationEligible = false;
     executionMode = VoxelExecutionMode::SingleGpuFull;
+    ++partitionGeneration;
     multiGpuStatus = reason.empty() ? L"MultiGpu unavailable: unknown capability failure" : reason;
-    multiGpuVoxelRenderTargets.Reset();
+    RetireCurrentMultiGpuVoxelRenderTargets();
     logQueue.Push(L"\n" + multiGpuStatus);
 }
 
@@ -5747,7 +5814,7 @@ void VoxelWaterfallApp::CreateGO()
     };
     assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
-    ++voxelSceneGeneration;
+    ++sceneGeneration;
     RebuildGpuPartitionsForMode();
 
 #if defined(DEBUG) || defined(_DEBUG)
@@ -6076,6 +6143,77 @@ void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
     }
     if (secondDevice && secondDevice != primeDevice)
         secondDevice->ResetAllocators(frameSerial);
+
+    const auto primaryRenderQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Graphics) : nullptr;
+    const auto primaryComputeQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Compute) : nullptr;
+    const auto secondaryRenderQueue = secondDevice ? secondDevice->GetCommandQueue(GQueueType::Graphics) : nullptr;
+    const auto secondaryComputeQueue = secondDevice ? secondDevice->GetCommandQueue(GQueueType::Compute) : nullptr;
+    auto fenceComplete = [](const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& queue,
+                            const UINT64 fenceValue)
+    {
+        return fenceValue == 0 || (queue && queue->IsFinish(fenceValue));
+    };
+    deferredGpuResourceReleases.erase(
+        std::remove_if(
+            deferredGpuResourceReleases.begin(),
+            deferredGpuResourceReleases.end(),
+            [&](const DeferredGpuResourceRelease& release)
+            {
+                return fenceComplete(primaryRenderQueue, release.RequiredPrimaryRenderFenceValue) &&
+                    fenceComplete(secondaryRenderQueue, release.RequiredSecondaryRenderFenceValue) &&
+                    fenceComplete(primaryComputeQueue, release.RequiredPrimaryComputeFenceValue) &&
+                    fenceComplete(secondaryComputeQueue, release.RequiredSecondaryComputeFenceValue);
+            }),
+        deferredGpuResourceReleases.end());
+}
+
+void VoxelWaterfallApp::RetireCurrentMultiGpuVoxelRenderTargets()
+{
+    if (!multiGpuVoxelRenderTargets.IsInitialized())
+        return;
+
+    DeferredGpuResourceRelease release{};
+    release.RenderTargets = std::move(multiGpuVoxelRenderTargets);
+    release.RequiredPrimaryRenderFenceValue = graphicsPassFenceValue;
+    release.RequiredSecondaryRenderFenceValue = lastSecondaryPartitionGraphicsFenceOwner == VoxelAdapterOwner::Secondary
+                                                   ? lastSecondaryPartitionGraphicsFenceValue
+                                                   : 0;
+    release.RequiredPrimaryComputeFenceValue = primaryComputeQueueFenceValue;
+    release.RequiredSecondaryComputeFenceValue = secondaryComputeQueueFenceValue;
+    deferredGpuResourceReleases.push_back(std::move(release));
+    multiGpuVoxelRenderTargets = MultiGpuVoxelRenderTargets{};
+}
+
+void VoxelWaterfallApp::RetireVoxelGpuPartitions(std::vector<std::shared_ptr<VoxelGpuPartition>> partitions)
+{
+    if (partitions.empty())
+        return;
+
+    DeferredGpuResourceRelease release{};
+    release.PartitionResources = std::move(partitions);
+    release.RequiredPrimaryRenderFenceValue = graphicsPassFenceValue;
+    release.RequiredSecondaryRenderFenceValue = lastSecondaryPartitionGraphicsFenceOwner == VoxelAdapterOwner::Secondary
+                                                   ? lastSecondaryPartitionGraphicsFenceValue
+                                                   : 0;
+    release.RequiredPrimaryComputeFenceValue = primaryComputeQueueFenceValue;
+    release.RequiredSecondaryComputeFenceValue = secondaryComputeQueueFenceValue;
+    deferredGpuResourceReleases.push_back(std::move(release));
+}
+
+void VoxelWaterfallApp::RetireDescriptorOwner(PEPEngine::Graphics::GDescriptor descriptor)
+{
+    if (descriptor.IsNull())
+        return;
+
+    DeferredGpuResourceRelease release{};
+    release.DescriptorOwners.push_back(std::move(descriptor));
+    release.RequiredPrimaryRenderFenceValue = graphicsPassFenceValue;
+    release.RequiredSecondaryRenderFenceValue = lastSecondaryPartitionGraphicsFenceOwner == VoxelAdapterOwner::Secondary
+                                                   ? lastSecondaryPartitionGraphicsFenceValue
+                                                   : 0;
+    release.RequiredPrimaryComputeFenceValue = primaryComputeQueueFenceValue;
+    release.RequiredSecondaryComputeFenceValue = secondaryComputeQueueFenceValue;
+    deferredGpuResourceReleases.push_back(std::move(release));
 }
 
 void VoxelWaterfallApp::PumpOneMemoryAuditFrame()
@@ -6562,6 +6700,7 @@ bool VoxelWaterfallApp::InitMainWindow()
 void VoxelWaterfallApp::OnResize()
 {
     D3DApp::OnResize();
+    ++renderTargetGeneration;
     voxelWorkload.RenderResolutionWidth = static_cast<uint32_t>(MainWindow->GetClientWidth());
     voxelWorkload.RenderResolutionHeight = static_cast<uint32_t>(MainWindow->GetClientHeight());
 
@@ -6617,6 +6756,7 @@ void VoxelWaterfallApp::Flush()
     if (secondDevice && secondDevice != primeDevice)
         secondDevice->Flush();
     retainedVoxelFrameRenderPlans.clear();
+    deferredGpuResourceReleases.clear();
     lastPrimaryPartitionGraphicsFenceValue = 0;
     lastSecondaryPartitionGraphicsFenceValue = 0;
     lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Primary;

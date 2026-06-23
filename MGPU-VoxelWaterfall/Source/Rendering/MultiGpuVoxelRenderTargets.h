@@ -37,6 +37,8 @@ struct MultiGpuVoxelFrameRenderTargets
 {
     UINT FrameIndex = 0;
     CrossAdapterTransferMode TransferMode = CrossAdapterTransferMode::Unavailable;
+    uint64_t RenderTargetGeneration = 0;
+    uint64_t DescriptorGeneration = 0;
 
     PEPEngine::Graphics::GTexture SecondaryLocalColor;
     PEPEngine::Graphics::GTexture SecondaryLocalLinearDepth;
@@ -98,7 +100,9 @@ public:
 
     bool Initialize(const std::shared_ptr<PEPEngine::Graphics::GDevice>& primaryDevice,
                     const std::shared_ptr<PEPEngine::Graphics::GDevice>& secondaryDevice,
-                    const MultiGpuVoxelRenderTargetDesc& desc);
+                    const MultiGpuVoxelRenderTargetDesc& desc,
+                    uint64_t renderTargetGeneration,
+                    uint64_t descriptorGeneration);
 
     void Reset();
 

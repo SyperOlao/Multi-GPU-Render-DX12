@@ -113,6 +113,9 @@ protected:
     void InitializeBenchmarkProvenanceCache();
     void PumpOneMemoryAuditFrame();
     void ServiceDeferredResourceLifetime();
+    void RetireCurrentMultiGpuVoxelRenderTargets();
+    void RetireVoxelGpuPartitions(std::vector<std::shared_ptr<VoxelGpuPartition>> partitions);
+    void RetireDescriptorOwner(PEPEngine::Graphics::GDescriptor descriptor);
     void StartAutomaticBenchmark();
     void StartAutomaticBenchmark(BenchmarkSuite suite, uint32_t seedOverride = 0,
                                  uint32_t repetitionOverride = 0);
@@ -222,8 +225,21 @@ protected:
         UINT64 PrimaryRenderFenceValue = 0;
     };
     std::vector<RetainedVoxelFrameRenderPlan> retainedVoxelFrameRenderPlans;
-    uint64_t voxelSceneGeneration = 0;
-    uint64_t voxelPartitionGeneration = 0;
+    struct DeferredGpuResourceRelease
+    {
+        MultiGpuVoxelRenderTargets RenderTargets;
+        std::vector<std::shared_ptr<VoxelGpuPartition>> PartitionResources;
+        std::vector<PEPEngine::Graphics::GDescriptor> DescriptorOwners;
+        UINT64 RequiredPrimaryRenderFenceValue = 0;
+        UINT64 RequiredSecondaryRenderFenceValue = 0;
+        UINT64 RequiredPrimaryComputeFenceValue = 0;
+        UINT64 RequiredSecondaryComputeFenceValue = 0;
+    };
+    std::vector<DeferredGpuResourceRelease> deferredGpuResourceReleases;
+    uint64_t sceneGeneration = 0;
+    uint64_t partitionGeneration = 0;
+    uint64_t renderTargetGeneration = 0;
+    uint64_t descriptorGeneration = 0;
     VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
     bool isDrawingFrame = false;

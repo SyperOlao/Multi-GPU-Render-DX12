@@ -377,7 +377,9 @@ bool MultiGpuVoxelRenderTargets::ValidateCapabilities(
 bool MultiGpuVoxelRenderTargets::Initialize(
     const std::shared_ptr<GDevice>& primaryDevice,
     const std::shared_ptr<GDevice>& secondaryDevice,
-    const MultiGpuVoxelRenderTargetDesc& desc)
+    const MultiGpuVoxelRenderTargetDesc& desc,
+    const uint64_t renderTargetGeneration,
+    const uint64_t descriptorGeneration)
 {
     Reset();
 
@@ -392,6 +394,8 @@ bool MultiGpuVoxelRenderTargets::Initialize(
         auto& frame = frames[frameIndex];
         frame.FrameIndex = frameIndex;
         frame.TransferMode = desc.TransferMode;
+        frame.RenderTargetGeneration = renderTargetGeneration;
+        frame.DescriptorGeneration = descriptorGeneration;
 
         frame.SecondaryRtvDescriptors = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2);
         frame.SecondaryDsvDescriptor = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
