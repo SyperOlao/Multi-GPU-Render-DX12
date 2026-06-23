@@ -68,6 +68,7 @@ struct VoxelWaterfallDebugPanelContext
     std::function<void(VoxelResearchLightingPreset)> ApplyLightingPreset;
     std::function<void(VoxelRenderResolutionPreset)> ApplyRenderResolutionPreset;
     std::function<void(VoxelExecutionMode)> ApplyExecutionMode;
+    std::function<void(FinalResolveSource)> ApplyFinalResolveSource;
     std::function<void()> StartBenchmark;
     std::function<void()> StopBenchmark;
     std::function<void()> RunVisualValidation;

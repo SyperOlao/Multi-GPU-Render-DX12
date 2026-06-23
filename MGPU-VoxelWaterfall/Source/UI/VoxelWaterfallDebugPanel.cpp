@@ -454,10 +454,13 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
     if (ImGui::Combo("Final source", &selectedFinalResolveSource, finalResolveSources,
                      IM_ARRAYSIZE(finalResolveSources)))
     {
-        context.FinalResolveSourceMode =
-            static_cast<FinalResolveSource>(
-                std::clamp(selectedFinalResolveSource, 0,
-                           static_cast<int>(FinalResolveSource::ReceivedSecondary)));
+        if (context.ApplyFinalResolveSource)
+        {
+            context.ApplyFinalResolveSource(
+                static_cast<FinalResolveSource>(
+                    std::clamp(selectedFinalResolveSource, 0,
+                               static_cast<int>(FinalResolveSource::ReceivedSecondary))));
+        }
     }
 
     ImGui::TextDisabled("Hotkeys: F1 static, F2 dynamic, F3 mixed, F4 occlusion, F5 LOD, F9 demo, F6 ownership, F7 secondary, F8 composite");

@@ -53,6 +53,7 @@ namespace
             HasCommandLineFlag(commandLine, "--benchmark-smoke") ||
             HasCommandLineFlag(commandLine, "--benchmark-full") ||
             HasCommandLineFlag(commandLine, "--profile-sweep") ||
+            HasCommandLineFlag(commandLine, "--runtime-mutation-stress") ||
             HasCommandLineFlag(commandLine, "--memory-soak") ||
             HasCommandLineFlag(commandLine, "--memory-rebuild-stress");
     }
@@ -201,6 +202,10 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                     ReadCommandLineUint(cmdLine, "--profile-sweep-measured-frames=", 120),
                     ReadCommandLineUint(cmdLine, "--profile-sweep-repetitions=", 1),
                     ReadCommandLinePath(cmdLine, "--profile-sweep-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--runtime-mutation-stress"))
+                result = theApp.RunRuntimeMutationStressTestOnce(
+                    ReadCommandLineUint(cmdLine, "--runtime-mutation-frames=", 1000),
+                    ReadCommandLinePath(cmdLine, "--runtime-mutation-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--memory-soak"))
                 result = theApp.RunMemorySoakTestOnce(
                     ReadCommandLineUint(cmdLine, "--memory-duration-seconds=", 600),

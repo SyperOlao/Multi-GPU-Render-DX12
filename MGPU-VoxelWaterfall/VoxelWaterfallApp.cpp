@@ -2542,6 +2542,7 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         [this](const VoxelResearchLightingPreset preset) { pendingRuntimeChanges.LightingPreset = preset; },
         [this](const VoxelRenderResolutionPreset preset) { pendingRuntimeChanges.RenderResolutionPreset = preset; },
         [this](const VoxelExecutionMode mode) { pendingRuntimeChanges.ExecutionMode = mode; },
+        [this](const FinalResolveSource source) { pendingRuntimeChanges.FinalResolve = source; },
         [this] { StartManualBenchmark(); },
         [this] { StopManualBenchmark(); },
         [this] { RequestVisualValidation(); },
@@ -4275,6 +4276,231 @@ int VoxelWaterfallApp::RunProfileSweepOnce(
     return researchRunnerPhase == "COMPLETE" ? 0 : 2;
 }
 
+int VoxelWaterfallApp::RunRuntimeMutationStressTestOnce(
+    const uint32_t requestedFrameCount,
+    const std::filesystem::path& outputDirectory)
+{
+    const uint32_t frameCount = std::max(1000u, requestedFrameCount);
+    const uint32_t warmupFrames = std::min<uint32_t>(120u, frameCount / 4u);
+    std::filesystem::path runOutputDirectory = outputDirectory;
+    if (runOutputDirectory.empty())
+    {
+        runOutputDirectory = std::filesystem::path(L"Artifacts") / L"runtime_mutation_stress" /
+            (FilesystemTimestampToken() + "_" + std::to_string(GetCurrentProcessId()));
+    }
+    std::filesystem::create_directories(runOutputDirectory);
+    std::ofstream csv(runOutputDirectory / L"runtime_mutation_stress.csv", std::ios::out | std::ios::trunc);
+    csv << "presented_frame,frame_serial,profile,requested_mode,actual_mode,resolution,final_resolve,"
+        << "scene_generation,partition_generation,render_target_generation,descriptor_generation,"
+        << "source_measured,source_non_black,backbuffer_measured,backbuffer_non_black,"
+        << "primary_local_usage,secondary_local_usage,deferred_releases,d3d12_errors\n";
+
+    struct RuntimeMutationStressScope
+    {
+        VoxelWaterfallApp& App;
+        explicit RuntimeMutationStressScope(VoxelWaterfallApp& app) : App(app)
+        {
+            App.runtimeMutationStressActive = true;
+            App.latestFinalOutputDiagnosticMeasurement.reset();
+            App.consecutiveBlackBackbufferWithNonBlackComposite = 0;
+        }
+        ~RuntimeMutationStressScope()
+        {
+            App.runtimeMutationStressActive = false;
+        }
+    } stressScope(*this);
+    currentFramePumpDepth = 0;
+    maximumObservedFramePumpDepth = 0;
+    rejectedRecursiveFrameRequests = 0;
+
+    const std::array<VoxelResearchWorkloadProfile, 3> profiles =
+    {
+        VoxelResearchWorkloadProfile::StaticRenderOnly,
+        VoxelResearchWorkloadProfile::DynamicSimulationAndRender,
+        VoxelResearchWorkloadProfile::MixedStaticAndDynamic
+    };
+    const std::array<VoxelExecutionMode, 2> modes =
+    {
+        VoxelExecutionMode::SingleGpuFull,
+        VoxelExecutionMode::MultiGpuFull
+    };
+    const std::array<VoxelRenderResolutionPreset, 4> resolutions =
+    {
+        VoxelRenderResolutionPreset::R1280x720,
+        VoxelRenderResolutionPreset::R1920x1080,
+        VoxelRenderResolutionPreset::R2560x1440,
+        VoxelRenderResolutionPreset::R3840x2160
+    };
+    const std::array<FinalResolveSource, 2> resolveSources =
+    {
+        FinalResolveSource::PrimaryBase,
+        FinalResolveSource::PrimaryComposite
+    };
+
+    auto fail = [&](const int code, const std::string& reason)
+    {
+        csv << "# FAIL," << code << ",\"" << EscapeJsonString(reason) << "\"\n";
+        csv.flush();
+        logQueue.Push(L"\nRuntimeMutationStress FAIL: " + std::wstring(reason.begin(), reason.end()));
+        return code;
+    };
+
+    auto completedDeferredReleaseCount = [&]
+    {
+        const auto primaryRenderQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Graphics) : nullptr;
+        const auto primaryComputeQueue = primeDevice ? primeDevice->GetCommandQueue(GQueueType::Compute) : nullptr;
+        const auto secondaryRenderQueue = secondDevice ? secondDevice->GetCommandQueue(GQueueType::Graphics) : nullptr;
+        const auto secondaryComputeQueue = secondDevice ? secondDevice->GetCommandQueue(GQueueType::Compute) : nullptr;
+        auto fenceComplete = [](const std::shared_ptr<PEPEngine::Graphics::GCommandQueue>& queue,
+                                const UINT64 fenceValue)
+        {
+            return fenceValue == 0 || (queue && queue->IsFinish(fenceValue));
+        };
+
+        size_t completed = 0;
+        for (const auto& release : deferredGpuResourceReleases)
+        {
+            if (fenceComplete(primaryRenderQueue, release.RequiredPrimaryRenderFenceValue) &&
+                fenceComplete(secondaryRenderQueue, release.RequiredSecondaryRenderFenceValue) &&
+                fenceComplete(primaryComputeQueue, release.RequiredPrimaryComputeFenceValue) &&
+                fenceComplete(secondaryComputeQueue, release.RequiredSecondaryComputeFenceValue))
+            {
+                ++completed;
+            }
+        }
+        return completed;
+    };
+
+    DrainD3D12InfoQueues(frameSerial, L"runtime mutation stress start");
+    const uint64_t initialD3D12Errors = d3d12ErrorOrCorruptionMessageCount;
+    auto* timerPtr = GetTimer();
+    timerPtr->Reset();
+    pumpFrameQuitRequested = false;
+
+    uint32_t presentedFrames = 0;
+    uint32_t monotonicMemoryIncreaseFrames = 0;
+    uint64_t previousMemoryUsage = 0;
+    uint32_t compositeMeasurementsAfterWarmup = 0;
+    constexpr double BlackRatioThreshold = 0.0001;
+    constexpr uint32_t MaxMonotonicMemoryGrowthFrames = 180;
+
+    while (presentedFrames < frameCount && !pumpFrameQuitRequested)
+    {
+        const auto requestedProfile = profiles[presentedFrames % profiles.size()];
+        const auto requestedMode = modes[(presentedFrames / profiles.size()) % modes.size()];
+        const auto requestedResolution =
+            resolutions[(presentedFrames / (profiles.size() * modes.size())) % resolutions.size()];
+        const auto requestedResolve =
+            resolveSources[(presentedFrames / (profiles.size() * modes.size() * resolutions.size())) %
+                           resolveSources.size()];
+        pendingRuntimeChanges.WorkloadProfile = requestedProfile;
+        pendingRuntimeChanges.ExecutionMode = requestedMode;
+        pendingRuntimeChanges.RenderResolutionPreset = requestedResolution;
+        pendingRuntimeChanges.FinalResolve = requestedResolve;
+
+        const bool presented = PumpOneFrame();
+        if (!presented)
+        {
+            std::this_thread::yield();
+            continue;
+        }
+        ++presentedFrames;
+
+        ServiceDeferredResourceLifetime();
+        DrainD3D12InfoQueues(frameSerial, L"runtime mutation stress frame");
+        ProcessCompletedFinalOutputDiagnostics();
+
+        if (frameGraphTelemetry.CurrentFramePumpDepth != 1 ||
+            currentFramePumpDepth != 0 ||
+            maximumObservedFramePumpDepth != 1)
+        {
+            return fail(2, "PumpOneFrame depth contract failed");
+        }
+
+        if (d3d12ErrorOrCorruptionMessageCount != initialD3D12Errors)
+            return fail(3, "D3D12 ERROR/CORRUPTION was reported during runtime mutation stress");
+
+        ServiceDeferredResourceLifetime();
+        if (completedDeferredReleaseCount() != 0)
+            return fail(2, "completed deferred generation resources were not released after fence completion");
+
+        const auto memory = CaptureMemoryAuditSnapshot(frameSerial, 0.0, primeDevice, secondDevice);
+        const uint64_t memoryUsage =
+            memory.PrimaryLocalUsageBytes + memory.SecondaryLocalUsageBytes + memory.PrivateUsageBytes;
+        if (presentedFrames > warmupFrames)
+        {
+            if (previousMemoryUsage != 0 && memoryUsage > previousMemoryUsage)
+                ++monotonicMemoryIncreaseFrames;
+            else
+                monotonicMemoryIncreaseFrames = 0;
+            if (monotonicMemoryIncreaseFrames >= MaxMonotonicMemoryGrowthFrames)
+                return fail(2, "memory usage increased monotonically across the stress window");
+        }
+        previousMemoryUsage = memoryUsage;
+
+        std::optional<FinalOutputDiagnosticMeasurement> measurement = latestFinalOutputDiagnosticMeasurement;
+        if (measurement && measurement->FrameIndex + 3 < frameSerial)
+            measurement.reset();
+
+        if (presentedFrames > warmupFrames && measurement)
+        {
+            if (measurement->SourceMeasured)
+            {
+                ++compositeMeasurementsAfterWarmup;
+                if (measurement->SourceNonBlackRatio <= BlackRatioThreshold)
+                    return fail(2, "PrimaryCompositeColor diagnostic source is black after warmup");
+            }
+            if (measurement->BackBufferMeasured &&
+                measurement->BackBufferNonBlackRatio <= BlackRatioThreshold)
+            {
+                return fail(2, "backbuffer diagnostic readback is black after warmup");
+            }
+            if (consecutiveBlackBackbufferWithNonBlackComposite >= 3)
+                return fail(2, "black-frame threshold reached with non-black composite source");
+        }
+
+        csv << presentedFrames << ','
+            << frameSerial << ','
+            << ProfileName(voxelWorkload.Profile) << ','
+            << GetExecutionModeName(requestedMode) << ','
+            << GetExecutionModeName(executionMode) << ','
+            << ResolutionPresetName(voxelWorkload.ResolutionPreset) << ','
+            << FinalResolveSourceName(finalResolveSource) << ','
+            << sceneGeneration << ','
+            << partitionGeneration << ','
+            << renderTargetGeneration << ','
+            << descriptorGeneration << ','
+            << (measurement && measurement->SourceMeasured ? "true" : "false") << ','
+            << (measurement ? measurement->SourceNonBlackRatio : 0.0) << ','
+            << (measurement && measurement->BackBufferMeasured ? "true" : "false") << ','
+            << (measurement ? measurement->BackBufferNonBlackRatio : 0.0) << ','
+            << memory.PrimaryLocalUsageBytes << ','
+            << memory.SecondaryLocalUsageBytes << ','
+            << deferredGpuResourceReleases.size() << ','
+            << (d3d12ErrorOrCorruptionMessageCount - initialD3D12Errors) << '\n';
+    }
+
+    if (pumpFrameQuitRequested)
+        return fail(4, "runtime mutation stress interrupted by window quit");
+
+    Flush();
+    ServiceDeferredResourceLifetime();
+    ProcessCompletedFinalOutputDiagnostics();
+    if (!pendingFinalOutputDiagnosticReadbacks.empty())
+        return fail(2, "final output diagnostic readbacks leaked after final flush");
+    if (!deferredGpuResourceReleases.empty())
+        return fail(2, "deferred generation resources leaked after final flush");
+    if (compositeMeasurementsAfterWarmup == 0)
+        return fail(2, "no PrimaryCompositeColor diagnostic measurements were completed after warmup");
+    if (d3d12ErrorOrCorruptionMessageCount != initialD3D12Errors)
+        return fail(3, "D3D12 ERROR/CORRUPTION was reported during runtime mutation stress");
+
+    csv << "# PASS\n";
+    csv.flush();
+    logQueue.Push(L"\nRuntimeMutationStress PASS");
+    return 0;
+}
+
 void VoxelWaterfallApp::RequestApplyVoxelWorkloadSettings()
 {
     pendingRuntimeChanges.VoxelWorkloadSettings = true;
@@ -4489,6 +4715,8 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         ApplyResearchCameraMode(*changes.CameraMode);
     if (changes.LightingPreset)
         ApplyResearchLightingPreset(*changes.LightingPreset);
+    if (changes.FinalResolve)
+        finalResolveSource = *changes.FinalResolve;
     if (sceneNeedsRebuild || voxelSettingsRequested || executionModeChanged || changes.CameraMode)
         spatialLodCameraInitialized = false;
 
@@ -6739,7 +6967,10 @@ bool VoxelWaterfallApp::ShouldCaptureFinalOutputDiagnostics() const
     if (!primeDevice || !MainWindow)
         return false;
 
-    if (researchRunnerActive || benchmarkController.IsAutomaticActive() || visualValidationFixedStepMode)
+    if (runtimeMutationStressActive ||
+        researchRunnerActive ||
+        benchmarkController.IsAutomaticActive() ||
+        visualValidationFixedStepMode)
         return true;
 
     constexpr uint64_t InteractiveDiagnosticFrameInterval = 30;
@@ -7022,23 +7253,23 @@ void VoxelWaterfallApp::ProcessCompletedFinalOutputDiagnostics()
                 measurement.ResolveSource = pending.ResolveSource;
                 measurement.SourceGeneration = pending.SourceGeneration;
                 measurement.PresentResult = pending.PresentResult;
-                const bool sourceMeasured = measureTexture(
+                measurement.SourceMeasured = measureTexture(
                     pending.Source,
                     measurement.SourceHash,
                     measurement.SourceNonBlackRatio);
-                const bool backBufferMeasured = measureTexture(
+                measurement.BackBufferMeasured = measureTexture(
                     pending.BackBuffer,
                     measurement.BackBufferHash,
                     measurement.BackBufferNonBlackRatio);
 
                 const bool sourceNonBlack =
-                    sourceMeasured && measurement.SourceNonBlackRatio > BlackRatioThreshold;
+                    measurement.SourceMeasured && measurement.SourceNonBlackRatio > BlackRatioThreshold;
                 const bool sourceBlack =
-                    sourceMeasured && measurement.SourceNonBlackRatio <= BlackRatioThreshold;
+                    measurement.SourceMeasured && measurement.SourceNonBlackRatio <= BlackRatioThreshold;
                 const bool backBufferNonBlack =
-                    backBufferMeasured && measurement.BackBufferNonBlackRatio > BlackRatioThreshold;
+                    measurement.BackBufferMeasured && measurement.BackBufferNonBlackRatio > BlackRatioThreshold;
                 const bool backBufferBlack =
-                    backBufferMeasured && measurement.BackBufferNonBlackRatio <= BlackRatioThreshold;
+                    measurement.BackBufferMeasured && measurement.BackBufferNonBlackRatio <= BlackRatioThreshold;
 
                 if (sourceNonBlack && backBufferBlack)
                     measurement.Interpretation = "final resolve failure";
@@ -7050,10 +7281,11 @@ void VoxelWaterfallApp::ProcessCompletedFinalOutputDiagnostics()
                     measurement.Interpretation = "diagnostic readback incomplete";
 
                 writeMeasurement(measurement);
+                latestFinalOutputDiagnosticMeasurement = measurement;
 
                 if (sourceNonBlack && backBufferBlack)
                     ++consecutiveBlackBackbufferWithNonBlackComposite;
-                else if (sourceMeasured && backBufferMeasured)
+                else if (measurement.SourceMeasured && measurement.BackBufferMeasured)
                     consecutiveBlackBackbufferWithNonBlackComposite = 0;
 
                 if (consecutiveBlackBackbufferWithNonBlackComposite >= 3 && researchRunnerActive)
@@ -7222,6 +7454,12 @@ void VoxelWaterfallApp::DrainD3D12InfoQueues(const uint64_t frameIndex, const st
             hr = infoQueue->GetMessage(messageIndex, message, &messageByteLength);
             if (FAILED(hr))
                 continue;
+
+            if (message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ||
+                message->Severity == D3D12_MESSAGE_SEVERITY_ERROR)
+            {
+                ++d3d12ErrorOrCorruptionMessageCount;
+            }
 
             std::wostringstream stream;
             stream << L"\n[D3D12InfoQueue]"

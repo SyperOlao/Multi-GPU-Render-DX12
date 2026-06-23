@@ -58,6 +58,8 @@ public:
                             uint32_t measuredFrames = 120,
                             uint32_t repetitions = 1,
                             const std::filesystem::path& outputDirectory = {});
+    int RunRuntimeMutationStressTestOnce(uint32_t frameCount = 1000,
+                                         const std::filesystem::path& outputDirectory = {});
 
 protected:
     void Update(const GameTimer& gt) override;
@@ -223,6 +225,7 @@ protected:
         std::optional<VoxelRenderResolutionPreset> RenderResolutionPreset;
         std::optional<VoxelExecutionMode> ExecutionMode;
         std::optional<bool> VoxelWorkloadSettings;
+        std::optional<FinalResolveSource> FinalResolve;
         std::optional<VisualValidationRequest> RunVisualValidation;
 
         bool HasAny() const
@@ -233,6 +236,7 @@ protected:
                 RenderResolutionPreset.has_value() ||
                 ExecutionMode.has_value() ||
                 VoxelWorkloadSettings.has_value() ||
+                FinalResolve.has_value() ||
                 RunVisualValidation.has_value();
         }
     };
@@ -292,12 +296,17 @@ protected:
         uint64_t BackBufferHash = 0;
         double BackBufferNonBlackRatio = 0.0;
         HRESULT PresentResult = S_OK;
+        bool SourceMeasured = false;
+        bool BackBufferMeasured = false;
         std::string Interpretation;
     };
     std::vector<PendingFinalOutputDiagnosticReadback> pendingFinalOutputDiagnosticReadbacks;
+    std::optional<FinalOutputDiagnosticMeasurement> latestFinalOutputDiagnosticMeasurement;
     std::ofstream finalOutputDiagnosticCsv;
     bool finalOutputDiagnosticCsvHeaderWritten = false;
     uint32_t consecutiveBlackBackbufferWithNonBlackComposite = 0;
+    bool runtimeMutationStressActive = false;
+    uint64_t d3d12ErrorOrCorruptionMessageCount = 0;
     uint64_t sceneGeneration = 0;
     uint64_t partitionGeneration = 0;
     uint64_t renderTargetGeneration = 0;
