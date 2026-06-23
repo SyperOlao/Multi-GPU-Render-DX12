@@ -3,9 +3,13 @@
 #include "GDevice.h"
 #include "d3dUtil.h"
 
+#include <Windows.h>
+
 #include <algorithm>
+#include <cassert>
 #include <cfloat>
 #include <stdexcept>
+#include <sstream>
 
 using namespace PEPEngine::Graphics;
 
@@ -17,6 +21,68 @@ namespace
     std::wstring FrameName(const wchar_t* baseName, const UINT frameIndex)
     {
         return std::wstring(baseName) + L" Frame " + std::to_wstring(frameIndex);
+    }
+
+    UINT64 Align64K(const UINT64 value)
+    {
+        return (value + D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1) &
+            ~(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1);
+    }
+
+    void ValidateCopyOnlyFootprint(const D3D12_RESOURCE_DESC& textureDesc,
+                                   const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
+                                   const UINT64 rowSizeInBytes,
+                                   const UINT64 totalBytes)
+    {
+        if (totalBytes == 0)
+            throw std::runtime_error("copy-only bridge footprint has zero total bytes");
+        if (footprint.Offset != 0)
+            throw std::runtime_error("copy-only bridge footprint offset must be zero");
+        if (footprint.Footprint.Format != textureDesc.Format ||
+            footprint.Footprint.Width != textureDesc.Width ||
+            footprint.Footprint.Height != textureDesc.Height ||
+            footprint.Footprint.Depth != 1)
+        {
+            throw std::runtime_error("copy-only bridge footprint does not match texture descriptor");
+        }
+        if (footprint.Footprint.RowPitch < rowSizeInBytes ||
+            (footprint.Footprint.RowPitch % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) != 0)
+        {
+            throw std::runtime_error("copy-only bridge footprint row pitch is invalid");
+        }
+    }
+
+    void DumpCopyOnlyBridgeDescriptor(const std::wstring& name,
+                                      const D3D12_RESOURCE_DESC& textureDesc,
+                                      const D3D12_RESOURCE_DESC& bufferDesc,
+                                      const MultiGpuVoxelFrameRenderTargets::CopyOnlyBridge& bridge)
+    {
+#if defined(_DEBUG)
+        std::wostringstream stream;
+        stream << L"[CopyOnlyBridge] name=" << name
+               << L" sourceDimension=" << textureDesc.Dimension
+               << L" sourceWidth=" << textureDesc.Width
+               << L" sourceHeight=" << textureDesc.Height
+               << L" sourceFormat=" << textureDesc.Format
+               << L" sourceLayout=" << textureDesc.Layout
+               << L" sourceFlags=" << textureDesc.Flags
+               << L" bridgeDimension=" << bufferDesc.Dimension
+               << L" bridgeWidth=" << bufferDesc.Width
+               << L" bridgeHeight=" << bufferDesc.Height
+               << L" bridgeFormat=" << bufferDesc.Format
+               << L" bridgeLayout=" << bufferDesc.Layout
+               << L" bridgeFlags=" << bufferDesc.Flags
+               << L" footprintOffset=" << bridge.Footprint.Offset
+               << L" footprintWidth=" << bridge.Footprint.Footprint.Width
+               << L" footprintHeight=" << bridge.Footprint.Footprint.Height
+               << L" footprintFormat=" << bridge.Footprint.Footprint.Format
+               << L" footprintRowPitch=" << bridge.Footprint.Footprint.RowPitch
+               << L" numRows=" << bridge.NumRows
+               << L" rowSizeInBytes=" << bridge.RowSizeInBytes
+               << L" totalBytes=" << bridge.TotalBytes
+               << L"\n";
+        OutputDebugStringW(stream.str().c_str());
+#endif
     }
 
     MultiGpuVoxelFrameRenderTargets::CopyOnlyBridge CreateCopyOnlyBridge(
@@ -36,11 +102,41 @@ namespace
             &bridge.RowSizeInBytes,
             &bridge.TotalBytes);
 
-        auto bridgeDesc = textureDesc;
+        ValidateCopyOnlyFootprint(textureDesc, bridge.Footprint, bridge.RowSizeInBytes, bridge.TotalBytes);
+
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT secondaryFootprint{};
+        UINT secondaryNumRows = 0;
+        UINT64 secondaryRowSizeInBytes = 0;
+        UINT64 secondaryTotalBytes = 0;
+        secondaryDevice->GetDXDevice()->GetCopyableFootprints(
+            &textureDesc,
+            0,
+            1,
+            0,
+            &secondaryFootprint,
+            &secondaryNumRows,
+            &secondaryRowSizeInBytes,
+            &secondaryTotalBytes);
+        ValidateCopyOnlyFootprint(textureDesc, secondaryFootprint, secondaryRowSizeInBytes, secondaryTotalBytes);
+        if (secondaryFootprint.Footprint.Format != bridge.Footprint.Footprint.Format ||
+            secondaryFootprint.Footprint.Width != bridge.Footprint.Footprint.Width ||
+            secondaryFootprint.Footprint.Height != bridge.Footprint.Footprint.Height ||
+            secondaryFootprint.Footprint.Depth != bridge.Footprint.Footprint.Depth ||
+            secondaryFootprint.Footprint.RowPitch != bridge.Footprint.Footprint.RowPitch ||
+            secondaryTotalBytes != bridge.TotalBytes)
+        {
+            throw std::runtime_error("copy-only bridge footprints differ between primary and secondary adapters");
+        }
+
+        auto bridgeDesc = CD3DX12_RESOURCE_DESC::Buffer(bridge.TotalBytes);
         bridgeDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
-        bridgeDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        const UINT64 heapBytes = (bridge.TotalBytes + D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1) &
-            ~(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1);
+        assert(bridgeDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
+        assert(bridgeDesc.Format == DXGI_FORMAT_UNKNOWN);
+        assert(bridgeDesc.Height == 1);
+        assert(bridgeDesc.Width >= bridge.TotalBytes);
+        DumpCopyOnlyBridgeDescriptor(name, textureDesc, bridgeDesc, bridge);
+
+        const UINT64 heapBytes = Align64K(bridge.TotalBytes);
         const CD3DX12_HEAP_DESC heapDesc(
             heapBytes,
             D3D12_HEAP_TYPE_DEFAULT,
@@ -69,14 +165,14 @@ namespace
             primaryDevice,
             bridgeDesc,
             bridge.PrimeHeap,
-            name + L".PrimeCopyTexture",
+            name + L".PrimeCopyBuffer",
             nullptr,
             D3D12_RESOURCE_STATE_COMMON);
         bridge.SharedBuffer = GResource(
             secondaryDevice,
             bridgeDesc,
             bridge.SharedHeap,
-            name + L".SecondaryCopyTexture",
+            name + L".SecondaryCopyBuffer",
             nullptr,
             D3D12_RESOURCE_STATE_COMMON);
 
@@ -263,11 +359,12 @@ bool MultiGpuVoxelRenderTargets::ValidateCapabilities(
     catch (...)
     {
         failureMessage =
-            L"MultiGpu unavailable: failed to allocate/open copy-only cross-adapter bridge textures"
+            L"MultiGpu unavailable: failed to allocate/open copy-only cross-adapter bridge buffers"
             L"; transferMode=" + std::wstring(CrossAdapterTransferModeNameW(desc.TransferMode)) +
             L"; primary=" + primaryDevice->GetName() +
             L"; secondary=" + secondaryDevice->GetName() +
-            L"; resourceFlags=D3D12_RESOURCE_FLAG_NONE"
+            L"; resourceDimension=BUFFER"
+            L"; resourceFlags=D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER"
             L"; heapFlags=D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER"
             L"; colorFormat=" + std::to_wstring(static_cast<int>(desc.ColorFormat)) +
             L"; depthFormat=" + std::to_wstring(static_cast<int>(desc.LinearDepthFormat));
@@ -434,18 +531,38 @@ bool MultiGpuVoxelRenderTargets::Initialize(
                            linearDepthDesc.Flags, D3D12_RESOURCE_STATE_COMMON);
         AppendResourceInfo(dsvName, secondaryDevice, desc.DepthStencilFormat, desc.Width, desc.Height,
                            dsvDesc.Flags, D3D12_RESOURCE_STATE_COMMON);
-        AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.Prime", frameIndex), primaryDevice,
-                           desc.ColorFormat, desc.Width, desc.Height,
-                           D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
-        AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.Shared", frameIndex), secondaryDevice,
-                           desc.ColorFormat, desc.Width, desc.Height,
-                           D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
-        AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.Prime", frameIndex), primaryDevice,
-                           desc.LinearDepthFormat, desc.Width, desc.Height,
-                           D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
-        AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.Shared", frameIndex), secondaryDevice,
-                           desc.LinearDepthFormat, desc.Width, desc.Height,
-                           D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+        if (desc.TransferMode == CrossAdapterTransferMode::CopyOnlyCrossAdapter)
+        {
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.PrimeCopyBuffer", frameIndex), primaryDevice,
+                               DXGI_FORMAT_UNKNOWN, static_cast<UINT>(frame.CopyOnlyColor.TotalBytes), 1,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.SecondaryCopyBuffer", frameIndex), secondaryDevice,
+                               DXGI_FORMAT_UNKNOWN, static_cast<UINT>(frame.CopyOnlyColor.TotalBytes), 1,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.PrimeCopyBuffer", frameIndex),
+                               primaryDevice,
+                               DXGI_FORMAT_UNKNOWN, static_cast<UINT>(frame.CopyOnlyLinearDepth.TotalBytes), 1,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.SecondaryCopyBuffer", frameIndex),
+                               secondaryDevice,
+                               DXGI_FORMAT_UNKNOWN, static_cast<UINT>(frame.CopyOnlyLinearDepth.TotalBytes), 1,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+        }
+        else
+        {
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.Prime", frameIndex), primaryDevice,
+                               desc.ColorFormat, desc.Width, desc.Height,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryColor.Shared", frameIndex), secondaryDevice,
+                               desc.ColorFormat, desc.Width, desc.Height,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.Prime", frameIndex), primaryDevice,
+                               desc.LinearDepthFormat, desc.Width, desc.Height,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+            AppendResourceInfo(FrameName(L"CrossAdapterSecondaryLinearDepth.Shared", frameIndex), secondaryDevice,
+                               desc.LinearDepthFormat, desc.Width, desc.Height,
+                               D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COMMON);
+        }
         AppendResourceInfo(receivedColorName, primaryDevice, desc.ColorFormat, desc.Width, desc.Height,
                            receivedColorDesc.Flags, D3D12_RESOURCE_STATE_COMMON);
         AppendResourceInfo(receivedDepthName, primaryDevice, desc.LinearDepthFormat, desc.Width, desc.Height,

@@ -56,7 +56,14 @@ struct MultiGpuVoxelFrameRenderTargets
 
         bool IsValid() const
         {
-            return PrimeBuffer.IsValid() && SharedBuffer.IsValid() && TotalBytes != 0;
+            if (!PrimeBuffer.IsValid() || !SharedBuffer.IsValid() || TotalBytes == 0 ||
+                Footprint.Footprint.RowPitch == 0)
+            {
+                return false;
+            }
+
+            return PrimeBuffer.GetD3D12ResourceDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+                SharedBuffer.GetD3D12ResourceDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
         }
     };
     CopyOnlyBridge CopyOnlyColor;

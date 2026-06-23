@@ -91,6 +91,14 @@ struct VoxelFrameGraphTelemetry
     std::string SharedToLocalColorDestination;
     std::string SharedToLocalDepthSource;
     std::string SharedToLocalDepthDestination;
+    std::string CopyOperation = "CopyResource";
+    std::string LocalToSharedPath = "texture_to_shared_texture";
+    std::string SharedToLocalPath = "shared_texture_to_texture";
+    std::string BridgeResourceDimension = "TEXTURE2D";
+    UINT64 BridgeColorBytes = 0;
+    UINT64 BridgeDepthBytes = 0;
+    UINT64 BridgeColorRowPitch = 0;
+    UINT64 BridgeDepthRowPitch = 0;
     uint32_t SecondaryGraphicsTimestampBeginQuery = 0;
     uint32_t SecondaryGraphicsTimestampEndQuery = 0;
     uint32_t LocalToSharedTimestampBeginQuery = 0;
