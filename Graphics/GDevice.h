@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <wrl/client.h>
 #include "dxgi1_6.h"
 #include "Lazy.h"
@@ -74,6 +75,7 @@ namespace PEPEngine::Graphics
     class GDevice : std::enable_shared_from_this<GDevice>
     {
         ComPtr<ID3D12Device> device;
+        ComPtr<ID3D12InfoQueue> infoQueue;
         ComPtr<IDXGIAdapter3> adapter;
 
 
@@ -158,6 +160,7 @@ namespace PEPEngine::Graphics
         void ReportLiveDeviceObjects() const;
 
         ComPtr<ID3D12Device> GetDXDevice() const;
+        ComPtr<ID3D12InfoQueue> GetInfoQueue() const;
 
         std::wstring GetName() const
         {

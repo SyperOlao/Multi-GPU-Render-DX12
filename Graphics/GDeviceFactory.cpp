@@ -6,6 +6,7 @@
 #include "GCommandQueue.h"
 
 #include <cwchar>
+#include <d3d12sdklayers.h>
 
 
 namespace PEPEngine::Graphics
@@ -19,6 +20,27 @@ namespace PEPEngine::Graphics
                                                          static_cast<DWORD>(std::size(value)));
             return length > 0 && length < std::size(value) && value[0] == L'1';
         }
+
+        void EnableD3D12DebugDiagnostics()
+        {
+            ComPtr<ID3D12Debug> debugController;
+            ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
+            debugController->EnableDebugLayer();
+
+            if (IsGpuBasedValidationRequested())
+            {
+                ComPtr<ID3D12Debug1> debugController1;
+                ThrowIfFailed(debugController->QueryInterface(IID_PPV_ARGS(&debugController1)));
+                debugController1->SetEnableGPUBasedValidation(true);
+            }
+
+            ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings))))
+            {
+                dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            }
+        }
     }
 
     ComPtr<IDXGIFactory4> GDeviceFactory::dxgiFactory = CreateFactory();
@@ -30,18 +52,7 @@ namespace PEPEngine::Graphics
     ComPtr<IDXGIFactory4> GDeviceFactory::CreateFactory()
     {
 #if defined(DEBUG) || defined(_DEBUG)
-        {
-            ComPtr<ID3D12Debug> debugController;
-            ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
-            debugController->EnableDebugLayer();
-
-            if (IsGpuBasedValidationRequested())
-            {
-                ComPtr<ID3D12Debug1> spDebugController1;
-                ThrowIfFailed(debugController->QueryInterface(IID_PPV_ARGS(&spDebugController1)));
-                spDebugController1->SetEnableGPUBasedValidation(true);
-            }
-        }
+        EnableD3D12DebugDiagnostics();
 #endif
 
         ComPtr<IDXGIFactory4> factory;

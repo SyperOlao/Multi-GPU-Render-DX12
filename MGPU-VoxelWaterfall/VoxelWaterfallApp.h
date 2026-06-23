@@ -114,6 +114,7 @@ protected:
     void InitializeBenchmarkProvenanceCache();
     void PumpOneMemoryAuditFrame();
     void ServiceDeferredResourceLifetime();
+    void DrainD3D12InfoQueues(uint64_t frameIndex, const std::wstring& phase);
     void RetireOffscreenRenderPaths(std::shared_ptr<SSAO> ambientPath,
                                     std::shared_ptr<SSAA> antiAliasingPath);
     void RetireCurrentMultiGpuVoxelRenderTargets();
@@ -371,6 +372,8 @@ protected:
     uint32_t visualValidationFixedStepsPerFrame = 1;
     uint64_t totalFrameResourceBackpressurePollCount = 0;
     uint64_t currentFrameResourceBackpressurePollCount = 0;
+    uint64_t primaryD3D12InfoQueueReadIndex = 0;
+    uint64_t secondaryD3D12InfoQueueReadIndex = 0;
     uint32_t currentFrameDrainedMessageCount = 0;
     bool researchRunnerActive = false;
     bool researchRunnerCancelRequested = false;

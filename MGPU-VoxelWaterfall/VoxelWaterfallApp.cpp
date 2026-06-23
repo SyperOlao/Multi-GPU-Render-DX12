@@ -4,6 +4,7 @@
 #include "GDescriptorHeap.h"
 #include "GCommandList.h"
 #include "GCommandQueue.h"
+#include "GDevice.h"
 #include "GRootSignature.h"
 #include "Source/Assets/SampleAssetManifest.h"
 #include "Source/Devices/DeviceSelectionPolicy.h"
@@ -854,6 +855,34 @@ namespace
         text.reserve(value.size());
         for (const wchar_t ch : value)
             text.push_back(ch >= 0 && ch < 128 ? static_cast<char>(ch) : '?');
+        return text;
+    }
+
+    const wchar_t* D3D12MessageSeverityName(const D3D12_MESSAGE_SEVERITY severity)
+    {
+        switch (severity)
+        {
+        case D3D12_MESSAGE_SEVERITY_CORRUPTION: return L"CORRUPTION";
+        case D3D12_MESSAGE_SEVERITY_ERROR: return L"ERROR";
+        case D3D12_MESSAGE_SEVERITY_WARNING: return L"WARNING";
+        case D3D12_MESSAGE_SEVERITY_INFO: return L"INFO";
+        case D3D12_MESSAGE_SEVERITY_MESSAGE: return L"MESSAGE";
+        default: return L"UNKNOWN";
+        }
+    }
+
+    std::wstring D3D12MessageDescription(const D3D12_MESSAGE& message)
+    {
+        std::wstring text;
+        if (!message.pDescription || message.DescriptionByteLength == 0)
+            return text;
+
+        text.reserve(message.DescriptionByteLength);
+        for (size_t i = 0; i < message.DescriptionByteLength && message.pDescription[i] != '\0'; ++i)
+        {
+            const unsigned char ch = static_cast<unsigned char>(message.pDescription[i]);
+            text.push_back(ch >= 32 && ch < 127 ? static_cast<wchar_t>(ch) : L' ');
+        }
         return text;
     }
 
@@ -1942,6 +1971,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             &secondaryVoxelRenderResults
         };
         renderPipeline.SubmitSecondaryVoxelPass(secondaryGraphicsContext);
+        DrainD3D12InfoQueues(frameSerial, L"secondary submission");
         lastSecondaryPartitionGraphicsFenceValue = currentFrameResource->SecondaryRenderFenceValue;
         lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Secondary;
 
@@ -1958,6 +1988,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             &frameGraphTelemetry
         };
         renderPipeline.SubmitSecondaryLocalToSharedCopyPass(secondaryCopyContext);
+        DrainD3D12InfoQueues(frameSerial, L"secondary local-to-shared cross-adapter copy submission");
 
         PrimarySharedToLocalCopyPassContext primaryCopyContext{
             primaryCopyQueue,
@@ -1970,6 +2001,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             &frameGraphTelemetry
         };
         renderPipeline.SubmitPrimarySharedToLocalCopyPass(primaryCopyContext);
+        DrainD3D12InfoQueues(frameSerial, L"primary shared-to-local cross-adapter copy submission");
         secondaryFrameTargets.HasReceivedImage = true;
         secondaryImageReadyThisFrame = true;
     }
@@ -2177,6 +2209,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     };
     assertFrameGenerationStable();
     renderPipeline.SubmitFinalCompositeAndPresentPass(finalPassContext);
+    DrainD3D12InfoQueues(frameSerial, L"composite submission and final resolve");
     assertFrameGenerationStable();
     if (currentFrameResource && currentFrameResource->PrimeRenderFenceValue != 0)
     {
@@ -2207,6 +2240,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.VisualValidationFailReason = visualValidationMetrics.FailReason;
 
     currentFrameResourceIndex = MainWindow->Present();
+    DrainD3D12InfoQueues(frameSerial, L"Present");
     const auto presentTime = std::chrono::steady_clock::now();
     currentPresentToPresentMs = hasSuccessfulPresentTime
                                     ? std::chrono::duration<double, std::milli>(
@@ -6181,6 +6215,7 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
                 failureReason = rebuiltMultiGpuTargets.GetFailureMessage();
                 multiGpuStatus = failureReason;
                 logQueue.Push(L"\n" + failureReason);
+                DrainD3D12InfoQueues(frameSerial, L"offscreen target rebuild failed");
                 return false;
             }
             rebuiltMultiGpuTargetsValid = true;
@@ -6194,6 +6229,7 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
         failureReason = L"Offscreen render target rebuild failed: " + ex.ToString();
         multiGpuStatus = failureReason;
         logQueue.Push(L"\n" + failureReason);
+        DrainD3D12InfoQueues(frameSerial, L"offscreen target rebuild failed");
         return false;
     }
     catch (const std::exception& ex)
@@ -6203,6 +6239,7 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
             std::wstring(message.begin(), message.end());
         multiGpuStatus = failureReason;
         logQueue.Push(L"\n" + failureReason);
+        DrainD3D12InfoQueues(frameSerial, L"offscreen target rebuild failed");
         return false;
     }
 
@@ -6221,6 +6258,7 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
             std::wstring(CrossAdapterTransferModeNameW(crossAdapterTransferMode));
         logQueue.Push(L"\n" + multiGpuStatus);
     }
+    DrainD3D12InfoQueues(frameSerial, L"offscreen target rebuild");
     return true;
 }
 
@@ -6255,6 +6293,7 @@ bool VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
     {
         multiGpuStatus = rebuiltTargets.GetFailureMessage();
         logQueue.Push(L"\n" + multiGpuStatus);
+        DrainD3D12InfoQueues(frameSerial, L"multi-gpu target rebuild failed");
         return false;
     }
 
@@ -6267,6 +6306,7 @@ bool VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
     logQueue.Push(L"\n" + multiGpuStatus);
     logQueue.Push(L"\nMultiGpu voxel render target frame sets: " +
         std::to_wstring(multiGpuVoxelRenderTargets.GetFrameCount()));
+    DrainD3D12InfoQueues(frameSerial, L"multi-gpu target rebuild");
     return true;
 }
 
@@ -6790,6 +6830,57 @@ void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
                     fenceComplete(secondaryComputeQueue, release.RequiredSecondaryComputeFenceValue);
             }),
     deferredGpuResourceReleases.end());
+}
+
+void VoxelWaterfallApp::DrainD3D12InfoQueues(const uint64_t frameIndex, const std::wstring& phase)
+{
+    auto drainDevice = [&](const std::shared_ptr<GDevice>& device, uint64_t& readIndex)
+    {
+        if (!device)
+            return;
+
+        const auto infoQueue = device->GetInfoQueue();
+        if (!infoQueue)
+            return;
+
+        const uint64_t messageCount = infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
+        if (readIndex > messageCount)
+            readIndex = 0;
+
+        for (uint64_t messageIndex = readIndex; messageIndex < messageCount; ++messageIndex)
+        {
+            SIZE_T messageByteLength = 0;
+            HRESULT hr = infoQueue->GetMessage(messageIndex, nullptr, &messageByteLength);
+            if (FAILED(hr) || messageByteLength == 0)
+                continue;
+
+            std::vector<uint8_t> messageBytes(messageByteLength);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(messageBytes.data());
+            hr = infoQueue->GetMessage(messageIndex, message, &messageByteLength);
+            if (FAILED(hr))
+                continue;
+
+            std::wostringstream stream;
+            stream << L"\n[D3D12InfoQueue]"
+                   << L" device=\"" << device->GetName() << L"\""
+                   << L" frame=" << frameIndex
+                   << L" phase=\"" << phase << L"\""
+                   << L" severity=" << D3D12MessageSeverityName(message->Severity)
+                   << L" id=" << static_cast<int>(message->ID)
+                   << L" description=\"" << D3D12MessageDescription(*message) << L"\"";
+            const auto line = stream.str();
+            OutputDebugStringW(line.c_str());
+            logQueue.Push(line);
+        }
+
+        // Keep the native queue intact; this cursor prevents duplicate log writes without
+        // clearing messages before they are persisted.
+        readIndex = messageCount;
+    };
+
+    drainDevice(primeDevice, primaryD3D12InfoQueueReadIndex);
+    if (secondDevice && secondDevice != primeDevice)
+        drainDevice(secondDevice, secondaryD3D12InfoQueueReadIndex);
 }
 
 void VoxelWaterfallApp::RetireOffscreenRenderPaths(std::shared_ptr<SSAO> ambientPath,

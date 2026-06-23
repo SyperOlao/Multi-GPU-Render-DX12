@@ -13,6 +13,17 @@ namespace PEPEngine::Graphics
 {
     using namespace Utils;
 
+    namespace
+    {
+        bool IsStrictD3D12DebugModeRequested()
+        {
+            wchar_t value[8] = {};
+            const DWORD length = GetEnvironmentVariableW(L"MGPU_STRICT_D3D12_DEBUG", value,
+                                                         static_cast<DWORD>(std::size(value)));
+            return length > 0 && length < std::size(value) && value[0] == L'1';
+        }
+    }
+
     UINT GDevice::GetNodeMask() const
     {
         return 0;
@@ -228,39 +239,13 @@ namespace PEPEngine::Graphics
 
 #if defined(DEBUG) || defined(_DEBUG)
 
-        ComPtr<ID3D12InfoQueue> pInfoQueue;
-        if (SUCCEEDED(device.As(&pInfoQueue)))
+        if (SUCCEEDED(device.As(&infoQueue)))
         {
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE));
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE));
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE));
-
-
-            // Suppress messages based on their severity level
-            D3D12_MESSAGE_SEVERITY Severities[] =
-            {
-                D3D12_MESSAGE_SEVERITY_INFO
-            };
-
-            // Suppress individual messages by their ID
-            D3D12_MESSAGE_ID DenyIds[] = {
-                D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
-                // I'm really not sure how to avoid this message.
-                D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,
-                // This warning occurs when using capture frame while graphics debugging.
-                D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,
-                // This warning occurs when using capture frame while graphics debugging.
-                D3D12_MESSAGE_ID_OBJECT_DELETED_WHILE_STILL_IN_USE,
-                // Can occur during teardown/reinit races; keep app alive while diagnosing lifetime ordering.
-            };
-
-            D3D12_INFO_QUEUE_FILTER NewFilter = {};
-            NewFilter.DenyList.NumSeverities = _countof(Severities);
-            NewFilter.DenyList.pSeverityList = Severities;
-            NewFilter.DenyList.NumIDs = _countof(DenyIds);
-            NewFilter.DenyList.pIDList = DenyIds;
-
-            ThrowIfFailed(pInfoQueue->PushStorageFilter(&NewFilter));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(
+                D3D12_MESSAGE_SEVERITY_WARNING,
+                IsStrictD3D12DebugModeRequested() ? TRUE : FALSE));
         }
 #endif
     }
@@ -295,6 +280,11 @@ namespace PEPEngine::Graphics
     ComPtr<ID3D12Device> GDevice::GetDXDevice() const
     {
         return device;
+    }
+
+    ComPtr<ID3D12InfoQueue> GDevice::GetInfoQueue() const
+    {
+        return infoQueue;
     }
 
     GDevice::~GDevice()
