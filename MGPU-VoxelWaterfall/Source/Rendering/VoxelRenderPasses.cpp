@@ -188,6 +188,8 @@ void VoxelRenderPasses::RecordPrimaryVoxelPartitions(
             VoxelBenchmarkProfiler::RangeId::PrimaryLodCompaction);
         result.PartitionId = partition.PartitionId;
         result.LogicalVoxelCount = partition.LogicalVoxelCount;
+        result.SceneGeneration = partition.SceneGeneration;
+        result.PartitionGeneration = partition.PartitionGeneration;
         if (context.PrimaryVoxelRenderResults)
             context.PrimaryVoxelRenderResults->push_back(result);
     }

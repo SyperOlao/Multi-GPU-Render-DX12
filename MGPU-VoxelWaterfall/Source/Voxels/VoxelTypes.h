@@ -432,6 +432,8 @@ struct VoxelPartitionRenderResult
     VoxelAdapterOwner OwnerAdapter = VoxelAdapterOwner::Primary;
     std::wstring OwnerAdapterName;
     std::wstring CommandListAdapterName;
+    uint64_t SceneGeneration = 0;
+    uint64_t PartitionGeneration = 0;
 };
 
 struct VoxelFramePartitionRenderPlan
@@ -451,6 +453,8 @@ struct VoxelFrameRenderPlan
     std::vector<VoxelFramePartitionRenderPlan> PrimaryOwnedPartitions;
     std::vector<VoxelFramePartitionRenderPlan> SecondaryOwnedPartitions;
     uint32_t LogicalVoxelCount = 0;
+    VoxelResearchWorkloadProfile Profile = VoxelResearchWorkloadProfile::MixedStaticAndDynamic;
+    VoxelExecutionMode ExecutionMode = VoxelExecutionMode::SingleGpuFull;
     uint64_t SceneGeneration = 0;
     uint64_t PartitionGeneration = 0;
 };

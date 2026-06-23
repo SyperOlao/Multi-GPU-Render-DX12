@@ -417,6 +417,32 @@ namespace
         }
     }
 
+    const char* AdapterOwnerName(const VoxelAdapterOwner owner)
+    {
+        switch (owner)
+        {
+        case VoxelAdapterOwner::Primary:
+            return "Primary";
+        case VoxelAdapterOwner::Secondary:
+            return "Secondary";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* PartitionIdName(const VoxelAdapterPartitionId partitionId)
+    {
+        switch (partitionId)
+        {
+        case VoxelAdapterPartitionId::PrimaryPartition:
+            return "PrimaryPartition";
+        case VoxelAdapterPartitionId::SecondaryPartition:
+            return "SecondaryPartition";
+        default:
+            return "UnknownPartition";
+        }
+    }
+
     VoxelResearchScenePreset ScenePresetForProfile(const VoxelResearchWorkloadProfile profile)
     {
         switch (profile)
@@ -5010,6 +5036,8 @@ VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
     VoxelFrameRenderPlan renderPlan{};
     renderPlan.SceneGeneration = voxelSceneGeneration;
     renderPlan.PartitionGeneration = voxelPartitionGeneration;
+    renderPlan.Profile = voxelWorkload.Profile;
+    renderPlan.ExecutionMode = executionMode;
     for (const auto& partition : voxelWorkload.Partitions)
     {
         VoxelFramePartitionRenderPlan partitionPlan{};
@@ -5117,17 +5145,92 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
-    const uint32_t expectedPartitionVoxelCount = renderPlan.LogicalVoxelCount;
+    uint32_t expectedPartitionVoxelCount = 0;
+    for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
+        expectedPartitionVoxelCount += partition.LogicalVoxelCount;
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+        expectedPartitionVoxelCount += partition.LogicalVoxelCount;
 
     uint32_t logicalDrawListVoxelCount = 0;
-    for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
-        logicalDrawListVoxelCount += partition.LogicalVoxelCount;
-    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
-        logicalDrawListVoxelCount += partition.LogicalVoxelCount;
+    uint32_t submittedVoxelCount = 0;
+    auto accumulateResultCounts = [&logicalDrawListVoxelCount, &submittedVoxelCount](
+        const std::vector<VoxelPartitionRenderResult>& results)
+    {
+        for (const auto& result : results)
+        {
+            logicalDrawListVoxelCount += result.LogicalVoxelCount;
+            submittedVoxelCount += result.SubmittedVoxelCount;
+        }
+    };
+    accumulateResultCounts(primaryResults);
+    accumulateResultCounts(secondaryResults);
+
+    auto emitValidationDiagnostics = [&](const char* reason)
+    {
+        std::ostringstream stream;
+        stream << "[VoxelFrameDrawValidation] " << reason
+               << " frame_index=" << simulationFrameIndex
+               << " profile=" << ProfileName(renderPlan.Profile)
+               << " mode=" << ExecutionModeNameLiteral(renderPlan.ExecutionMode)
+               << " expected_count=" << expectedPartitionVoxelCount
+               << " logical_result_count=" << logicalDrawListVoxelCount
+               << " submitted_count=" << submittedVoxelCount
+               << " frame_scene_generation=" << renderPlan.SceneGeneration
+               << " frame_partition_generation=" << renderPlan.PartitionGeneration
+               << "\n  plan_partitions=";
+        auto appendPlanPartition = [&stream](const char* queueName, const VoxelFramePartitionRenderPlan& partition)
+        {
+            stream << queueName << '{'
+                   << "id=" << PartitionIdName(partition.PartitionId)
+                   << ",owner=" << AdapterOwnerName(partition.AdapterOwner)
+                   << ",expected=" << partition.LogicalVoxelCount
+                   << ",sceneGen=" << partition.SceneGeneration
+                   << ",partitionGen=" << partition.PartitionGeneration
+                   << "} ";
+        };
+        for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
+            appendPlanPartition("primary", partition);
+        for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+            appendPlanPartition("secondary", partition);
+
+        stream << "\n  draw_results=";
+        auto appendResult = [&stream](const char* queueName, const VoxelPartitionRenderResult& result)
+        {
+            stream << queueName << '{'
+                   << "id=" << PartitionIdName(result.PartitionId)
+                   << ",owner=" << AdapterOwnerName(result.OwnerAdapter)
+                   << ",logical=" << result.LogicalVoxelCount
+                   << ",submitted=" << result.SubmittedVoxelCount
+                   << ",draws=" << result.DrawCallCount
+                   << ",sceneGen=" << result.SceneGeneration
+                   << ",partitionGen=" << result.PartitionGeneration
+                   << "} ";
+        };
+        for (const auto& result : primaryResults)
+            appendResult("primary", result);
+        for (const auto& result : secondaryResults)
+            appendResult("secondary", result);
+        stream << '\n';
+        OutputDebugStringA(stream.str().c_str());
+    };
+
+    auto resultHasMixedGeneration = [&renderPlan](const VoxelPartitionRenderResult& result)
+    {
+        return result.SceneGeneration != renderPlan.SceneGeneration ||
+            result.PartitionGeneration != renderPlan.PartitionGeneration;
+    };
+    const bool mixedFrameGenerations =
+        std::any_of(primaryResults.begin(), primaryResults.end(), resultHasMixedGeneration) ||
+        std::any_of(secondaryResults.begin(), secondaryResults.end(), resultHasMixedGeneration);
+    if (mixedFrameGenerations)
+        emitValidationDiagnostics("mixed frame generations");
+    assert(!mixedFrameGenerations && "mixed frame generations");
+
+    if (logicalDrawListVoxelCount != expectedPartitionVoxelCount)
+        emitValidationDiagnostics("Frame voxel draw lists do not cover the current partition workload count");
     assert(logicalDrawListVoxelCount == expectedPartitionVoxelCount &&
            "Frame voxel draw lists do not cover the current partition workload count");
 
-    uint32_t submittedVoxelCount = 0;
     uint32_t secondaryDrawCallCount = 0;
 
     size_t primaryResultIndex = 0;
@@ -5135,15 +5238,22 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     {
         if (partition.LogicalVoxelCount == 0)
             continue;
+        if (primaryResultIndex >= primaryResults.size())
+            emitValidationDiagnostics("Primary voxel command list did not record an expected partition");
         assert(primaryResultIndex < primaryResults.size() &&
                "Primary voxel command list did not record an expected partition");
         const auto& result = primaryResults[primaryResultIndex++];
+        if (result.PartitionId != partition.PartitionId)
+            emitValidationDiagnostics("Primary voxel render result does not match the expected partition id");
         assert(result.PartitionId == partition.PartitionId &&
                "Primary voxel render result does not match the expected partition id");
+        if (result.LogicalVoxelCount != partition.LogicalVoxelCount)
+            emitValidationDiagnostics("Primary voxel render result does not match the expected logical voxel count");
         assert(result.LogicalVoxelCount == partition.LogicalVoxelCount &&
                "Primary voxel render result does not match the expected logical voxel count");
-        submittedVoxelCount += result.SubmittedVoxelCount;
     }
+    if (primaryResultIndex != primaryResults.size())
+        emitValidationDiagnostics("Primary voxel command list recorded unexpected extra partition results");
     assert(primaryResultIndex == primaryResults.size() &&
            "Primary voxel command list recorded unexpected extra partition results");
 
@@ -5152,20 +5262,29 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     {
         if (partition.LogicalVoxelCount == 0)
             continue;
+        if (secondaryResultIndex >= secondaryResults.size())
+            emitValidationDiagnostics("Secondary voxel command list did not record an expected partition");
         assert(secondaryResultIndex < secondaryResults.size() &&
                "Secondary voxel command list did not record an expected partition");
         const auto& result = secondaryResults[secondaryResultIndex++];
+        if (result.PartitionId != partition.PartitionId)
+            emitValidationDiagnostics("Secondary voxel render result does not match the expected partition id");
         assert(result.PartitionId == partition.PartitionId &&
                "Secondary voxel render result does not match the expected partition id");
+        if (result.LogicalVoxelCount != partition.LogicalVoxelCount)
+            emitValidationDiagnostics("Secondary voxel render result does not match the expected logical voxel count");
         assert(result.LogicalVoxelCount == partition.LogicalVoxelCount &&
                "Secondary voxel render result does not match the expected logical voxel count");
-        submittedVoxelCount += result.SubmittedVoxelCount;
         secondaryDrawCallCount += result.DrawCallCount;
     }
+    if (secondaryResultIndex != secondaryResults.size())
+        emitValidationDiagnostics("Secondary voxel command list recorded unexpected extra partition results");
     assert(secondaryResultIndex == secondaryResults.size() &&
            "Secondary voxel command list recorded unexpected extra partition results");
 
-    assert(submittedVoxelCount <= renderPlan.LogicalVoxelCount &&
+    if (submittedVoxelCount > expectedPartitionVoxelCount)
+        emitValidationDiagnostics("Submitted voxel draw count exceeds logical workload count");
+    assert(submittedVoxelCount <= expectedPartitionVoxelCount &&
            "Submitted voxel draw count exceeds logical workload count");
 
     if (executionMode == VoxelExecutionMode::MultiGpuFull ||

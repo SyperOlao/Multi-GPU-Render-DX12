@@ -207,6 +207,8 @@ void RenderPipeline::SubmitSecondaryVoxelPass(const SecondaryVoxelGraphicsPassCo
                 VoxelBenchmarkProfiler::RangeId::SecondaryLodCompaction);
             result.PartitionId = partition.PartitionId;
             result.LogicalVoxelCount = partition.LogicalVoxelCount;
+            result.SceneGeneration = partition.SceneGeneration;
+            result.PartitionGeneration = partition.PartitionGeneration;
             drawCallCount += result.DrawCallCount;
             submittedVoxelCount += result.SubmittedVoxelCount;
             lodStats.Lod0Rendered += result.LodStats.Lod0Rendered;
