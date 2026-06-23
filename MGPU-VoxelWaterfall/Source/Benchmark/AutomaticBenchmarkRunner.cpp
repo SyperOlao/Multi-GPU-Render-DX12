@@ -28,7 +28,7 @@ namespace
     uint32_t MixedDynamicBudgetForStaticBudget(const uint32_t staticBudget)
     {
         if (staticBudget <= 100000)
-            return 25000;
+            return VoxelPaperQuickDynamicParticles;
         if (staticBudget <= 250000)
             return 100000;
         if (staticBudget <= 500000)
@@ -228,7 +228,7 @@ std::vector<AutomaticBenchmarkConfig> AutomaticBenchmarkRunner::BuildConfigs(
         const uint32_t seed = seedOverride != 0 ? seedOverride : SmokeSeed;
         const auto sessionId = BuildSessionId(suite, seed);
         constexpr uint32_t total = 100000;
-        constexpr float share = 0.50f;
+        constexpr float share = VoxelPaperQuickSecondaryShare;
         constexpr bool lodModes[] = {false, true};
         const uint32_t repetitions = repetitionOverride > 0 ? repetitionOverride : 1;
         blocks.reserve(4);

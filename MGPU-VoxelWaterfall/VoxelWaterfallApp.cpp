@@ -4043,6 +4043,7 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
                 << "  \"dynamic_particles\":" << metadata.ActualDynamicVoxelCount << ",\n"
                 << "  \"requested_static_budget\":" << metadata.StaticVoxelBudget << ",\n"
                 << "  \"requested_dynamic_budget\":" << metadata.DynamicVoxelBudget << ",\n"
+                << "  \"spawn_batch\":" << voxelWorkload.Parameters.DynamicSpawnBatchSize << ",\n"
                 << "  \"secondary_share\":" << metadata.SecondaryShare << ",\n"
                 << "  \"render_width\":" << metadata.RenderWidth << ",\n"
                 << "  \"render_height\":" << metadata.RenderHeight << ",\n"
@@ -4051,6 +4052,14 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
                 << "  \"primary_rendered_voxels\":" << metadata.PrimaryRenderedVoxelCount << ",\n"
                 << "  \"secondary_rendered_voxels\":" << metadata.SecondaryRenderedVoxelCount << ",\n"
                 << "  \"secondary_draw_calls\":" << metadata.SecondaryDrawCalls << ",\n"
+                << "  \"multi_gpu_full_invariants_passed\":"
+                << (metadata.RequestedMode == "MultiGpuFull"
+                        ? (metadata.ActualMode == "MultiGpuFull" &&
+                           metadata.SecondaryShare > 0.0f &&
+                           metadata.SecondaryRenderedVoxelCount > 0 &&
+                           metadata.SecondaryDrawCalls > 0 &&
+                           metadata.PrimaryRenderedVoxelCount > 0 ? "true" : "false")
+                        : "true") << ",\n"
                 << "  \"total_cross_adapter_bytes_last_frame\":" << metadata.TotalCrossAdapterBytes << ",\n"
                 << "  \"render_output_transfer_bytes_last_frame\":" << metadata.RenderOutputTransferBytes << ",\n"
                 << "  \"cpu_model\":\"" << EscapeJsonString(cpuModel) << "\",\n"
@@ -4090,6 +4099,24 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
             << "  \"max_frame_time_ms\":" << maxFrameTimeMs << ",\n"
             << "  \"requested_mode\":\"" << GetExecutionModeName(requestedExecutionMode) << "\",\n"
             << "  \"actual_mode\":\"" << GetExecutionModeName(frameGraphTelemetry.ActualMode) << "\",\n"
+            << "  \"total_voxels\":" << metadata.TotalVoxelCount << ",\n"
+            << "  \"static_voxels\":" << metadata.ActualStaticVoxelCount << ",\n"
+            << "  \"dynamic_particles\":" << metadata.ActualDynamicVoxelCount << ",\n"
+            << "  \"requested_static_budget\":" << metadata.StaticVoxelBudget << ",\n"
+            << "  \"requested_dynamic_budget\":" << metadata.DynamicVoxelBudget << ",\n"
+            << "  \"spawn_batch\":" << voxelWorkload.Parameters.DynamicSpawnBatchSize << ",\n"
+            << "  \"secondary_share\":" << metadata.SecondaryShare << ",\n"
+            << "  \"primary_rendered_voxels\":" << metadata.PrimaryRenderedVoxelCount << ",\n"
+            << "  \"secondary_rendered_voxels\":" << metadata.SecondaryRenderedVoxelCount << ",\n"
+            << "  \"secondary_draw_calls\":" << metadata.SecondaryDrawCalls << ",\n"
+            << "  \"multi_gpu_full_invariants_passed\":"
+            << (metadata.RequestedMode == "MultiGpuFull"
+                    ? (metadata.ActualMode == "MultiGpuFull" &&
+                       metadata.SecondaryShare > 0.0f &&
+                       metadata.SecondaryRenderedVoxelCount > 0 &&
+                       metadata.SecondaryDrawCalls > 0 &&
+                       metadata.PrimaryRenderedVoxelCount > 0 ? "true" : "false")
+                    : "true") << ",\n"
             << "  \"csv\":\"" << EscapeJsonString(csvPath.string()) << "\",\n"
             << "  \"environment\":\""
             << EscapeJsonString((runOutputDirectory / L"environment.json").string()) << "\"\n"
@@ -4097,6 +4124,20 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
     summary.close();
 
     benchmarkController.Shutdown(BuildBenchmarkControllerContext());
+    if (metadata.RequestedMode == "MultiGpuFull")
+    {
+        const bool multiGpuFullInvariantsPassed =
+            metadata.ActualMode == "MultiGpuFull" &&
+            metadata.SecondaryShare > 0.0f &&
+            metadata.SecondaryRenderedVoxelCount > 0 &&
+            metadata.SecondaryDrawCalls > 0 &&
+            metadata.PrimaryRenderedVoxelCount > 0;
+        if (!multiGpuFullInvariantsPassed)
+        {
+            logQueue.Push(L"Quick metrics failed: requested MultiGpuFull did not keep active secondary rendering");
+            return 5;
+        }
+    }
     return pumpFrameQuitRequested ? 4 : 0;
 }
 
@@ -4257,7 +4298,7 @@ void VoxelWaterfallApp::AdvanceResearchRunner(const bool presentedFrame)
             config.Mode = mode;
             config.ModeName = ExecutionModeNameLiteral(mode);
             config.TotalCount = voxelWorkload.TotalVoxelCount;
-            config.SecondaryShare = UsesMultiGpuExecution(mode) ? 0.5f : 0.0f;
+            config.SecondaryShare = VoxelPaperQuickSecondaryShare;
             config.SpatialLodEnabled = false;
             config.TemporalInterval = UsesTemporalExecution(mode) ? 2u : 1u;
             const auto applyResult = ApplyBenchmarkConfigurationAtomic(config);
@@ -5787,7 +5828,7 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
     auto defaultDynamicBudgetForStaticBudget = [](const uint32_t staticBudget)
     {
         if (staticBudget <= 100000)
-            return 25000u;
+            return VoxelPaperQuickDynamicParticles;
         if (staticBudget <= 250000)
             return 250000u;
         if (staticBudget <= 500000)

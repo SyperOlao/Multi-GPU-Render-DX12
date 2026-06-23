@@ -234,7 +234,7 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
     workload.Rotation = Vector3::Zero;
     workload.TotalVoxelCount = 0;
     workload.DynamicVoxelBudget = 0;
-    workload.SecondaryShare = 0.1f;
+    workload.SecondaryShare = VoxelPaperQuickSecondaryShare;
     if (secondaryShareOverride)
         workload.SecondaryShare = std::clamp(*secondaryShareOverride, 0.0f, 1.0f);
     workload.TemporalPolicy = VoxelTemporalPolicy::Full;
@@ -290,8 +290,9 @@ VoxelSceneWorkload VoxelResearchSceneManager::CreateLogicalWorkload(
         workload.StaticBudgetPreset = StaticVoxelBudgetPreset::Small;
         workload.StaticVoxelBudget = VoxelResearchEnvironmentGenerator::BudgetForPreset(workload.StaticBudgetPreset);
         ConfigureWaterfallParameters(workload, DynamicVoxelBudgetPreset::Small);
-        if (dynamicVoxelBudgetOverride)
-            workload.DynamicVoxelBudget = *dynamicVoxelBudgetOverride;
+        workload.DynamicVoxelBudget = dynamicVoxelBudgetOverride.value_or(VoxelPaperQuickDynamicParticles);
+        workload.Parameters.DynamicSpawnBatchSize =
+            dynamicSpawnBatchSizeOverride.value_or(VoxelPaperQuickSpawnBatch);
         assert(workload.SpatialLod.Mode == VoxelSpatialLodMode::Off);
         workload.Layers.push_back(GenerateStaticLayer(workload));
         return VoxelSceneWorkloadBuilder::Build(workload);

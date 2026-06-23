@@ -147,6 +147,9 @@ using VoxelGlobalId = uint64_t;
 using VoxelChunkId = uint64_t;
 
 static constexpr size_t VoxelAdapterPartitionCount = static_cast<size_t>(VoxelAdapterPartitionId::Count);
+static constexpr uint32_t VoxelPaperQuickDynamicParticles = 612010u;
+static constexpr uint32_t VoxelPaperQuickSpawnBatch = 70000u;
+static constexpr float VoxelPaperQuickSecondaryShare = 0.15f;
 
 struct VoxelSimulationParameters
 {
@@ -500,11 +503,11 @@ struct VoxelSceneWorkload
     uint32_t StaticGenerationSeed = 1337;
     float StaticVoxelSize = 0.65f;
     VoxelStaticEnvironmentTelemetry StaticTelemetry{};
-    uint32_t DynamicVoxelBudget = 25000;
+    uint32_t DynamicVoxelBudget = VoxelPaperQuickDynamicParticles;
     DynamicVoxelBudgetPreset DynamicBudgetPreset = DynamicVoxelBudgetPreset::Small;
     uint32_t ActualStaticVoxelCount = 0;
     uint32_t ActualDynamicVoxelCount = 0;
-    float SecondaryShare = 0.1f;
+    float SecondaryShare = VoxelPaperQuickSecondaryShare;
     VoxelTemporalPolicy TemporalPolicy = VoxelTemporalPolicy::Full;
     uint32_t TemporalDecimationInterval = 2;
     VoxelSpatialLodSettings SpatialLod{};
