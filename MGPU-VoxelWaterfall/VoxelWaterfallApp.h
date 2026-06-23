@@ -183,7 +183,12 @@ protected:
     bool voxelWorkloadSettingsPending = false;
     VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode deferredExecutionMode = VoxelExecutionMode::SingleGpuFull;
+    bool hasDeferredExecutionMode = false;
+    bool isDrawingFrame = false;
     bool multiGpuAvailable = false;
+    CrossAdapterTransferMode crossAdapterTransferMode = CrossAdapterTransferMode::Unavailable;
+    bool multiGpuPublicationEligible = false;
     std::wstring multiGpuStatus = L"MultiGpu is not initialized";
     std::vector<std::wstring> adapterReportLines;
     MultiGpuVoxelRenderTargets multiGpuVoxelRenderTargets;
@@ -241,6 +246,7 @@ protected:
     TwoAdapterVerificationRunner twoAdapterVerificationRunner;
     TwoAdapterVerificationResult twoAdapterVerificationResult{};
     bool twoAdapterVerificationHasResult = false;
+    bool skipDestructorGpuFlush = false;
     VoxelVisualValidationRunner visualValidationRunner;
     VoxelVisualValidationMetrics visualValidationMetrics{};
     std::string visualValidationBuildHash;

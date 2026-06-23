@@ -30,12 +30,25 @@ struct AdapterSelectionInfo
     std::wstring Status;
 };
 
+enum class CrossAdapterTransferMode
+{
+    Unavailable,
+    DirectCrossAdapterTexture,
+    CopyOnlyCrossAdapter,
+    WARPVerification
+};
+
+const char* CrossAdapterTransferModeName(CrossAdapterTransferMode mode);
+const wchar_t* CrossAdapterTransferModeNameW(CrossAdapterTransferMode mode);
+
 struct SelectedDevices
 {
     std::shared_ptr<PEPEngine::Graphics::GDevice> Primary;
     std::shared_ptr<PEPEngine::Graphics::GDevice> Secondary;
     std::vector<AdapterSelectionInfo> Adapters;
     std::wstring MultiGpuUnavailableReason;
+    CrossAdapterTransferMode TransferMode = CrossAdapterTransferMode::Unavailable;
+    bool PublicationEligible = false;
 };
 
 class DeviceSelectionPolicy

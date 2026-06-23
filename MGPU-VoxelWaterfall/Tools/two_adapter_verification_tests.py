@@ -13,6 +13,7 @@ def valid_evidence() -> dict:
         "secondary_luid": "3:4",
         "requested_mode": "MultiGpuFull",
         "actual_mode": "MultiGpuFull",
+        "transfer_mode": "CopyOnlyCrossAdapter",
         "secondary_partition_voxels": 100,
         "secondary_compute_dispatch_count": 12,
         "secondary_graphics_draw_count": 12,
@@ -60,6 +61,8 @@ def validate(e: dict) -> list[str]:
         reasons.append("same LUID")
     if e["requested_mode"] != "MultiGpuFull" or e["actual_mode"] != "MultiGpuFull":
         reasons.append("fallback")
+    if e["transfer_mode"] not in {"DirectCrossAdapterTexture", "CopyOnlyCrossAdapter"}:
+        reasons.append("invalid hardware transfer mode")
     if e["secondary_partition_voxels"] <= 0:
         reasons.append("empty secondary partition")
     if e["secondary_compute_dispatch_count"] <= 0:
@@ -106,6 +109,14 @@ class TwoAdapterVerificationTests(unittest.TestCase):
 
     def test_valid_fixture_passes(self):
         self.assertEqual(validate(valid_evidence()), [])
+
+    def test_direct_transfer_fixture_passes(self):
+        evidence = valid_evidence()
+        evidence["transfer_mode"] = "DirectCrossAdapterTexture"
+        self.assertEqual(validate(evidence), [])
+
+    def test_warp_transfer_fails_for_hardware_claim(self):
+        self.assert_fails(lambda e: e.__setitem__("transfer_mode", "WARPVerification"), "transfer mode")
 
     def test_missing_local_to_shared_fails(self):
         self.assert_fails(

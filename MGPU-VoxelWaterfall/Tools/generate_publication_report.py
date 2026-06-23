@@ -509,6 +509,7 @@ def write_status(output: Path, status: str, loaded: list[tuple[str, Path, dict[s
                 "path": str(root),
                 "suite": summary.get("suite"),
                 "run_id": summary.get("run_id"),
+                "transfer_modes": summary.get("transfer_modes", []),
                 "analysis_sha256": sha256_file(root / "analysis_summary.v2.json"),
             }
             for label, root, summary in loaded

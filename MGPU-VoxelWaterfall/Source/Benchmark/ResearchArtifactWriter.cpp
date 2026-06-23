@@ -480,7 +480,7 @@ void ResearchArtifactWriter::WriteRunsCsv(
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "runs.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
-    csv << "schema,suite,run_id,session_id,pair_id,block_id,requested_mode,actual_mode,repetition,valid,reason,"
+    csv << "schema,suite,run_id,session_id,pair_id,block_id,requested_mode,actual_mode,transfer_mode,repetition,valid,reason,"
         << "requested_static_budget_label,requested_static_budget,requested_dynamic_budget,"
         << "actual_total_count,actual_static_count,actual_dynamic_count,resolved_config_hash,"
         << "measured_frame_count,valid_frame_count,invalid_frame_count,"
@@ -503,6 +503,7 @@ void ResearchArtifactWriter::WriteRunsCsv(
             << EscapeCsv(row.BlockId) << ','
             << EscapeCsv(row.RequestedMode) << ','
             << EscapeCsv(row.ActualMode) << ','
+            << EscapeCsv(row.TransferMode) << ','
             << row.Repetition << ','
             << (row.Valid && row.SkipReason.empty() ? "true" : "false") << ','
             << EscapeCsv(!row.SkipReason.empty() ? row.SkipReason : row.ValidityReason) << ','
@@ -594,7 +595,7 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "paired_runs.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
-    csv << "schema,suite,run_id,session_id,pair_id,block_id,repetition,single_mode,multi_mode,"
+    csv << "schema,suite,run_id,session_id,pair_id,block_id,repetition,single_mode,multi_mode,transfer_mode,"
         << "actual_total_count,actual_static_count,actual_dynamic_count,"
         << "endpoint,single_mean_ms,multi_mean_ms,paired_difference_ms,log_speedup,"
         << "speedup,two_device_nominal_efficiency,valid,reason\n";
@@ -645,6 +646,7 @@ void ResearchArtifactWriter::WritePairedRunsCsv(
             << ',' << row.Repetition
             << ',' << (valid ? EscapeCsv(singleIt->second->RequestedMode) : "")
             << ',' << EscapeCsv(row.RequestedMode)
+            << ',' << EscapeCsv(row.TransferMode)
             << ',' << row.TotalVoxelCount
             << ',' << row.ActualStaticVoxelCount
             << ',' << row.ActualDynamicVoxelCount
@@ -667,7 +669,7 @@ void ResearchArtifactWriter::WriteTelemetryCsv(
     std::filesystem::create_directories(context.OutputDirectory);
     std::ofstream csv(context.OutputDirectory / "telemetry.csv", std::ios::out | std::ios::trunc);
     csv.imbue(std::locale::classic());
-    csv << "schema,utc,run_id,session_id,pair_id,block_id,repetition,requested_mode,actual_mode,"
+    csv << "schema,utc,run_id,session_id,pair_id,block_id,repetition,requested_mode,actual_mode,transfer_mode,"
         << "valid,reason,measured_frame_count,valid_frame_count,invalid_frame_count,"
         << "actual_total_count,actual_static_count,actual_dynamic_count,"
         << "mean_present_to_present_ms,mean_cpu_submission_ms,mean_cpu_total_frame_ms,"
@@ -689,6 +691,7 @@ void ResearchArtifactWriter::WriteTelemetryCsv(
             << row.Repetition << ','
             << EscapeCsv(row.RequestedMode) << ','
             << EscapeCsv(row.ActualMode) << ','
+            << EscapeCsv(row.TransferMode) << ','
             << (row.Valid && row.SkipReason.empty() ? "true" : "false") << ','
             << EscapeCsv(!row.SkipReason.empty() ? row.SkipReason : row.ValidityReason) << ','
             << row.MeasuredFrameCount << ','

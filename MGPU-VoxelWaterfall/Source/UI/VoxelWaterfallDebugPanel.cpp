@@ -187,45 +187,55 @@ namespace
             : workload.Parameters.Seed;
     }
 
+    float MetricValueColumnX(const char* label)
+    {
+        constexpr float BaseColumnX = 170.0f;
+        const float scaledBaseColumnX = BaseColumnX * ImGui::GetIO().FontGlobalScale;
+        const float labelRightX = ImGui::GetCursorPosX() + ImGui::CalcTextSize(label).x;
+        const float labelSafeColumnX = labelRightX + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        return std::max(scaledBaseColumnX, labelSafeColumnX);
+    }
+
+    void DrawMetricLabel(const char* label)
+    {
+        const float valueColumnX = MetricValueColumnX(label);
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(valueColumnX);
+    }
+
     void DrawMetric(const char* label, const char* value)
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::TextUnformatted(value);
     }
 
     void DrawMetricU32(const char* label, const uint32_t value)
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::Text("%u", value);
     }
 
     void DrawMetricU64(const char* label, const uint64_t value)
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::Text("%llu", static_cast<unsigned long long>(value));
     }
 
     void DrawMetricF32(const char* label, const float value, const char* format = "%.2f")
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::Text(format, value);
     }
 
     void DrawMetricVec3(const char* label, const DirectX::SimpleMath::Vector3& value)
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::Text("%.2f, %.2f, %.2f", value.x, value.y, value.z);
     }
 
     void DrawMetricF64(const char* label, const double value, const char* format = "%.6f")
     {
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel(label);
         ImGui::Text(format, value);
     }
 
@@ -428,12 +438,12 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
     {
         DrawMetric("requested mode", ExecutionModeName(context.RequestedExecutionMode));
         DrawMetric("actual mode", ExecutionModeName(actualMode));
-        ImGui::TextUnformatted("primary adapter");
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel("primary adapter");
         ImGui::Text("%S", context.PrimaryAdapterName.c_str());
-        ImGui::TextUnformatted("secondary adapter");
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel("secondary adapter");
         ImGui::Text("%S", context.SecondaryAdapterName.c_str());
+        DrawMetric("transfer mode", context.TransferMode.c_str());
+        DrawMetric("publication eligible", context.PublicationEligible ? "true" : "false");
         DrawMetricU32("primary-owned voxels", primaryOwnedVoxels);
         DrawMetricU32("secondary-owned voxels", secondaryOwnedVoxels);
         DrawMetricF32("secondary share", context.Workload.SecondaryShare);
@@ -501,8 +511,7 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetric("camera route", context.Workload.CameraPath.c_str());
         DrawMetricF64("route time", routeTime, "%.3f s");
         DrawMetric("input locked", inputLocked ? "yes" : "no");
-        ImGui::TextUnformatted("resolution");
-        ImGui::SameLine(170.0f);
+        DrawMetricLabel("resolution");
         ImGui::Text("%u x %u", context.Workload.RenderResolutionWidth, context.Workload.RenderResolutionHeight);
     }
 

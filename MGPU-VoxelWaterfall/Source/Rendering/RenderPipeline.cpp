@@ -41,6 +41,48 @@ namespace
             &desc, 0, 1, 0, nullptr, nullptr, nullptr, &totalBytes);
         return totalBytes;
     }
+
+    void CopyTextureToPlacedBuffer(
+        const std::shared_ptr<GCommandList>& cmdList,
+        const GResource& destinationBuffer,
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& destinationFootprint,
+        const GResource& sourceTexture)
+    {
+        const auto dstLocation = CD3DX12_TEXTURE_COPY_LOCATION(
+            destinationBuffer.GetD3D12Resource().Get(),
+            destinationFootprint);
+        const auto srcLocation = CD3DX12_TEXTURE_COPY_LOCATION(
+            sourceTexture.GetD3D12Resource().Get(),
+            0);
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(
+            &dstLocation,
+            0,
+            0,
+            0,
+            &srcLocation,
+            nullptr);
+    }
+
+    void CopyPlacedBufferToTexture(
+        const std::shared_ptr<GCommandList>& cmdList,
+        const GResource& destinationTexture,
+        const GResource& sourceBuffer,
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& sourceFootprint)
+    {
+        const auto dstLocation = CD3DX12_TEXTURE_COPY_LOCATION(
+            destinationTexture.GetD3D12Resource().Get(),
+            0);
+        const auto srcLocation = CD3DX12_TEXTURE_COPY_LOCATION(
+            sourceBuffer.GetD3D12Resource().Get(),
+            sourceFootprint);
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(
+            &dstLocation,
+            0,
+            0,
+            0,
+            &srcLocation,
+            nullptr);
+    }
 }
 
 std::optional<D3D12_QUERY_DATA_PIPELINE_STATISTICS> ReadCompletedSecondaryPipelineStatistics(
@@ -216,23 +258,44 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
 {
     const auto cmdList = context.SecondaryCopyQueue->GetCommandList();
     auto& targets = context.RenderTargets;
-    const auto& sharedColor = targets.CrossAdapterColor->GetSharedResource();
-    const auto& sharedDepth = targets.CrossAdapterLinearDepth->GetSharedResource();
+    const bool copyOnly = targets.TransferMode == CrossAdapterTransferMode::CopyOnlyCrossAdapter;
+    const auto* sharedColor = copyOnly
+                                  ? &targets.CopyOnlyColor.SharedBuffer
+                                  : &targets.CrossAdapterColor->GetSharedResource();
+    const auto* sharedDepth = copyOnly
+                                  ? &targets.CopyOnlyLinearDepth.SharedBuffer
+                                  : &targets.CrossAdapterLinearDepth->GetSharedResource();
 
     cmdList->EndQuery(context.TimestampHeapIndex);
     context.BenchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCopy,
                                          VoxelBenchmarkProfiler::RangeId::SecondaryLocalToSharedCopy);
     cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->TransitionBarrier(sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->FlushResourceBarriers();
 
-    cmdList->CopyResourceNoBarrier(sharedColor, targets.SecondaryLocalColor);
-    cmdList->CopyResourceNoBarrier(sharedDepth, targets.SecondaryLocalLinearDepth);
+    if (copyOnly)
+    {
+        CopyTextureToPlacedBuffer(
+            cmdList,
+            targets.CopyOnlyColor.SharedBuffer,
+            targets.CopyOnlyColor.Footprint,
+            targets.SecondaryLocalColor);
+        CopyTextureToPlacedBuffer(
+            cmdList,
+            targets.CopyOnlyLinearDepth.SharedBuffer,
+            targets.CopyOnlyLinearDepth.Footprint,
+            targets.SecondaryLocalLinearDepth);
+    }
+    else
+    {
+        cmdList->CopyResourceNoBarrier(*sharedColor, targets.SecondaryLocalColor);
+        cmdList->CopyResourceNoBarrier(*sharedDepth, targets.SecondaryLocalLinearDepth);
+    }
 
-    cmdList->TransitionBarrier(sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->TransitionBarrier(sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COMMON);
     cmdList->FlushResourceBarriers();
     context.BenchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCopy,
                                        VoxelBenchmarkProfiler::RangeId::SecondaryLocalToSharedCopy);
@@ -268,9 +331,9 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
         context.Telemetry->LocalToSharedColorBytes = expectedColorBytes;
         context.Telemetry->LocalToSharedDepthBytes = expectedDepthBytes;
         context.Telemetry->LocalToSharedColorSource = ResourceIdentity(targets.SecondaryLocalColor);
-        context.Telemetry->LocalToSharedColorDestination = ResourceIdentity(sharedColor);
+        context.Telemetry->LocalToSharedColorDestination = ResourceIdentity(*sharedColor);
         context.Telemetry->LocalToSharedDepthSource = ResourceIdentity(targets.SecondaryLocalLinearDepth);
-        context.Telemetry->LocalToSharedDepthDestination = ResourceIdentity(sharedDepth);
+        context.Telemetry->LocalToSharedDepthDestination = ResourceIdentity(*sharedDepth);
         context.Telemetry->LocalToSharedTimestampBeginQuery = context.TimestampHeapIndex;
         context.Telemetry->LocalToSharedTimestampEndQuery = context.TimestampHeapIndex + 1;
         context.Telemetry->ColorBytesTransferred += expectedColorBytes;
@@ -289,21 +352,44 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
 {
     const auto cmdList = context.PrimaryCopyQueue->GetCommandList();
     auto& targets = context.RenderTargets;
-    const auto& primeColor = targets.CrossAdapterColor->GetPrimeResource();
-    const auto& primeDepth = targets.CrossAdapterLinearDepth->GetPrimeResource();
+    const bool copyOnly = targets.TransferMode == CrossAdapterTransferMode::CopyOnlyCrossAdapter;
+    const auto* primeColor = copyOnly
+                                 ? &targets.CopyOnlyColor.PrimeBuffer
+                                 : &targets.CrossAdapterColor->GetPrimeResource();
+    const auto* primeDepth = copyOnly
+                                 ? &targets.CopyOnlyLinearDepth.PrimeBuffer
+                                 : &targets.CrossAdapterLinearDepth->GetPrimeResource();
 
     cmdList->EndQuery(context.TimestampHeapIndex);
     context.BenchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCopy,
                                          VoxelBenchmarkProfiler::RangeId::PrimarySharedToLocalCopy);
-    cmdList->TransitionBarrier(primeColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(primeDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth, D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->FlushResourceBarriers();
 
-    cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryColor, primeColor);
-    cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryLinearDepth, primeDepth);
+    if (copyOnly)
+    {
+        CopyPlacedBufferToTexture(
+            cmdList,
+            targets.PrimaryReceivedSecondaryColor,
+            targets.CopyOnlyColor.PrimeBuffer,
+            targets.CopyOnlyColor.Footprint);
+        CopyPlacedBufferToTexture(
+            cmdList,
+            targets.PrimaryReceivedSecondaryLinearDepth,
+            targets.CopyOnlyLinearDepth.PrimeBuffer,
+            targets.CopyOnlyLinearDepth.Footprint);
+    }
+    else
+    {
+        cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryColor, *primeColor);
+        cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryLinearDepth, *primeDepth);
+    }
 
+    cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COMMON);
+    cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth,
                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -339,9 +425,9 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
         context.Telemetry->ExpectedSharedToLocalDepthBytes = expectedDepthBytes;
         context.Telemetry->SharedToLocalColorBytes = expectedColorBytes;
         context.Telemetry->SharedToLocalDepthBytes = expectedDepthBytes;
-        context.Telemetry->SharedToLocalColorSource = ResourceIdentity(primeColor);
+        context.Telemetry->SharedToLocalColorSource = ResourceIdentity(*primeColor);
         context.Telemetry->SharedToLocalColorDestination = ResourceIdentity(targets.PrimaryReceivedSecondaryColor);
-        context.Telemetry->SharedToLocalDepthSource = ResourceIdentity(primeDepth);
+        context.Telemetry->SharedToLocalDepthSource = ResourceIdentity(*primeDepth);
         context.Telemetry->SharedToLocalDepthDestination = ResourceIdentity(targets.PrimaryReceivedSecondaryLinearDepth);
         context.Telemetry->SharedToLocalTimestampBeginQuery = context.TimestampHeapIndex;
         context.Telemetry->SharedToLocalTimestampEndQuery = context.TimestampHeapIndex + 1;

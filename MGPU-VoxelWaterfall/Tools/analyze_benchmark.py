@@ -44,6 +44,9 @@ MODES = {
 }
 MULTI_MODES = {"MultiGpuFull", "MultiGpuTemporalDecimation"}
 SINGLE_MODES = {"SingleGpuFull", "SingleGpuTemporalDecimation"}
+TRANSFER_MODES = {"DirectCrossAdapterTexture", "CopyOnlyCrossAdapter", "WARPVerification", "unavailable"}
+HARDWARE_TRANSFER_MODES = {"DirectCrossAdapterTexture", "CopyOnlyCrossAdapter"}
+TWO_ADAPTER_PASS_STATUS = {"PASS", "PASS_HARDWARE_DIRECT", "PASS_HARDWARE_COPY_ONLY"}
 STATUS = {"PENDING", "RUNNING", "COMPLETE", "BLOCKED", "INVALID", "CANCELLED", "INTERRUPTED"}
 EPS = 1.0e-5
 PRIMARY_ENDPOINT = "present_to_present_ms"
@@ -643,7 +646,8 @@ def run_validation_evidence(resolved_hash: str, requested_mode: str, protocol_ha
 def validate_two_adapter(artifacts: ArtifactSet, manifest_fields: dict[str, str]) -> None:
     two = artifacts.two_adapter
     validate_schema("two_adapter_json", two)
-    require(two.get("status") == "PASS", "two-adapter status is not PASS")
+    status = str(two.get("status", ""))
+    require(status in TWO_ADAPTER_PASS_STATUS, "two-adapter status is not PASS/PASS_HARDWARE_*")
     fields = provenance_fields(two, "two-adapter")
     for field in ("build.executable_sha256", "adapter.luid_pair"):
         require(fields.get(field) == manifest_fields.get(field), f"stale two-adapter {field}")
@@ -652,6 +656,13 @@ def validate_two_adapter(artifacts: ArtifactSet, manifest_fields: dict[str, str]
     require(bool_value(pair.get("distinct_luid", True), "pair.distinct_luid"), "two-adapter LUIDs are not distinct")
     runtime = two.get("runtime", {})
     require(isinstance(runtime, dict), "two-adapter runtime object required")
+    transfer_mode = str(runtime.get("transfer_mode", two.get("pair", {}).get("transfer_mode", "")))
+    require(transfer_mode in TRANSFER_MODES, f"invalid transfer_mode: {transfer_mode}")
+    require(transfer_mode in HARDWARE_TRANSFER_MODES, "two-adapter transfer_mode is not hardware publication eligible")
+    if status == "PASS_HARDWARE_COPY_ONLY":
+        require(transfer_mode == "CopyOnlyCrossAdapter", "PASS_HARDWARE_COPY_ONLY requires CopyOnlyCrossAdapter")
+    if status == "PASS_HARDWARE_DIRECT":
+        require(transfer_mode == "DirectCrossAdapterTexture", "PASS_HARDWARE_DIRECT requires DirectCrossAdapterTexture")
     require(bool_value(runtime.get("passed", False), "runtime.passed"), "two-adapter runtime.passed is false")
     require(not bool_value(runtime.get("fallback", False), "runtime.fallback"), "two-adapter runtime fallback occurred")
     for field in ("color_local_to_shared_bytes", "depth_local_to_shared_bytes",
@@ -752,6 +763,10 @@ def recompute_frame_validity(row: dict[str, str], config: dict[str, Any],
     try:
         requested = row.get("requested_mode", "")
         actual = row.get("actual_mode", "")
+        transfer_mode = row.get("transfer_mode", "unavailable")
+        require(transfer_mode in TRANSFER_MODES, f"invalid raw frame transfer_mode: {transfer_mode}")
+        if requested in MULTI_MODES:
+            require(transfer_mode in HARDWARE_TRANSFER_MODES, "multi raw frame transfer_mode is not hardware eligible")
         require(requested == actual, "requested_mode != actual_mode")
         require(requested == config["mode"], "raw requested mode does not match config")
         expected_temporal_policy = "Decimated" if "Temporal" in requested else "Full"
@@ -892,6 +907,8 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
         block_id = constant_frame_value(valid_frames, "block_id", required=True)
         requested_mode = constant_frame_value(valid_frames, "requested_mode", required=True)
         actual_mode = constant_frame_value(valid_frames, "actual_mode", required=True)
+        transfer_mode = constant_frame_value(valid_frames, "transfer_mode", default="unavailable")
+        require(transfer_mode in TRANSFER_MODES, f"invalid run transfer_mode: {transfer_mode}")
         resolved_hash = constant_frame_value(valid_frames, "resolved_config_hash", required=True)
         validation_case_id = constant_frame_value(
             valid_frames, "validation_case_id", default=config["expected_case_id"])
@@ -947,6 +964,7 @@ def recompute_runs(raw_frames: list[dict[str, str]], configs: dict[tuple[str, in
             "repetition": key[1],
             "requested_mode": requested_mode,
             "actual_mode": actual_mode,
+            "transfer_mode": transfer_mode,
             "mode_family": mode_family(requested_mode),
             "preset": str(config_value(config, "preset")),
             "requested_static_budget_label": config_value(
@@ -1627,6 +1645,7 @@ def validate(root: Path) -> dict[str, Any]:
         "run_id": run_id,
         "suite": suite,
         "primary_endpoint": PRIMARY_ENDPOINT,
+        "transfer_modes": sorted({run.get("transfer_mode", "unavailable") for run in recomputed_runs.values()}),
         "artifact_checksums": artifacts.checksums,
         "recomputed_runs": list(recomputed_runs.values()),
         "recomputed_pairs": pairs,
@@ -1745,11 +1764,12 @@ class HostileFixture:
         (self.root / "two_adapter_preflight.json").write_text(json.dumps({
             "schema": "mgpu_voxel_two_adapter_preflight.v2",
             "verification_run_id": "two0",
-            "status": "PASS",
+            "status": "PASS_HARDWARE_COPY_ONLY",
             "provenance": {"schema": "mgpu_research_provenance.v1", "fields": self.fields},
-            "pair": {"distinct_luid": True},
+            "pair": {"distinct_luid": True, "transfer_mode": "CopyOnlyCrossAdapter"},
             "runtime": {
                 "passed": True,
+                "transfer_mode": "CopyOnlyCrossAdapter",
                 "fallback": False,
                 "color_local_to_shared_bytes": 100,
                 "depth_local_to_shared_bytes": 100,
@@ -1792,8 +1812,10 @@ class HostileFixture:
             self.run_row(self.configs[0], 10.0),
             self.run_row(self.configs[1], 5.0),
         ])
-        self.write_csv("paired_runs.csv", ["schema", "run_id", "suite", "session_id", "pair_id", "block_id", "repetition"], [
-            ["mgpu_voxel_paired_runs.v2", "run0", "Smoke", "session0", "pair0", "block0", "0"],
+        self.write_csv("paired_runs.csv", [
+            "schema", "run_id", "suite", "session_id", "pair_id", "block_id", "repetition", "transfer_mode"
+        ], [
+            ["mgpu_voxel_paired_runs.v2", "run0", "Smoke", "session0", "pair0", "block0", "0", "CopyOnlyCrossAdapter"],
         ])
         self.write_csv("invalid_records.csv", ["schema", "run_id", "suite", "reason"], [])
         self.write_csv("telemetry.csv", ["schema", "run_id", "suite", "config_id"], [
@@ -1812,7 +1834,8 @@ class HostileFixture:
             "mgpu_voxel_raw_frame.v2", "run0", "Smoke", frame, cfg["session_id"], cfg["config_id"],
             cfg["pair_id"], cfg["block_id"], cfg["repetition"], cfg["order_index"],
             cfg["block_order_index"], cfg["pair_member_order"], cfg["randomization_seed"],
-            cfg["mode"], cfg["mode"], "", "MixedStaticAndDynamic", "Valid matching benchmark configuration",
+            cfg["mode"], cfg["mode"], "CopyOnlyCrossAdapter" if multi else "unavailable", "",
+            "MixedStaticAndDynamic", "Valid matching benchmark configuration",
             "Decimated" if "Temporal" in cfg["mode"] else "Full", cfg["spatial_lod"], "Benchmark",
             1, 1, 0, 0, 0, 100000, 25000, 125000, 100000, 25000,
             100000, 25000 if multi else 0, 10, 1920, 1080,
@@ -1830,7 +1853,9 @@ class HostileFixture:
     def run_row(self, cfg: dict[str, Any], mean_ms: float) -> list[Any]:
         return [
             "mgpu_voxel_runs.v2", "run0", "Smoke", cfg["session_id"], cfg["config_id"], cfg["pair_id"],
-            cfg["block_id"], cfg["mode"], cfg["mode"], cfg["repetition"], "true", "",
+            cfg["block_id"], cfg["mode"], cfg["mode"],
+            "CopyOnlyCrossAdapter" if cfg["mode"] in MULTI_MODES else "unavailable",
+            cfg["repetition"], "true", "",
             125000, 100000, 25000, cfg["resolved_config_hash"], 2, 2, 0, mean_ms, 1.5, 2.0,
             8.0 if mean_ms == 10.0 else 4.0,
         ]
@@ -1839,7 +1864,7 @@ class HostileFixture:
 RAW_HEADER = [
     "schema", "run_id", "suite", "frame_index", "session_id", "config_id", "pair_id", "block_id",
     "repetition", "randomized_order_index", "block_order_index", "pair_member_order", "randomization_seed",
-    "requested_mode", "actual_mode", "fallback_reason", "profile", "benchmark_config_class",
+    "requested_mode", "actual_mode", "transfer_mode", "fallback_reason", "profile", "benchmark_config_class",
     "temporal_policy", "spatial_lod_policy", "scheduler_mode",
     "requested_fixed_steps", "executed_fixed_steps", "dropped_steps", "dropped_simulation_steps",
     "dropped_simulation_time", "actual_static_voxels", "actual_dynamic_voxels", "total_voxels",
@@ -1862,7 +1887,7 @@ RAW_HEADER = [
 
 RUNS_HEADER = [
     "schema", "run_id", "suite", "session_id", "config_id", "pair_id", "block_id",
-    "requested_mode", "actual_mode", "repetition", "valid", "reason",
+    "requested_mode", "actual_mode", "transfer_mode", "repetition", "valid", "reason",
     "actual_total_count", "actual_static_count", "actual_dynamic_count", "resolved_config_hash",
     "measured_frame_count", "valid_frame_count", "invalid_frame_count",
     "mean_present_to_present_ms", "mean_cpu_submission_ms", "mean_cpu_total_frame_ms",

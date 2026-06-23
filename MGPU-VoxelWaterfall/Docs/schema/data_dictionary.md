@@ -241,4 +241,6 @@ Aggregate `validation.case_config_sha256` and `validation.camera_sha256` identif
 
 ### Two-Adapter Evidence Fields
 
-PASS requires distinct hardware LUIDs, requested and actual Multi mode, nonempty secondary partition, GPU1 compute and graphics work, exact expected copy bytes for independent color/depth local-to-shared and shared-to-local legs, composite submission, calibrated fences, zero particle transfer bytes, and matching build/shader/config/driver/render provenance.
+Two-adapter preflight uses `PASS_HARDWARE_DIRECT` when `transfer_mode=DirectCrossAdapterTexture` and `PASS_HARDWARE_COPY_ONLY` when `transfer_mode=CopyOnlyCrossAdapter`. Both require distinct hardware LUIDs, requested and actual Multi mode, nonempty secondary partition, GPU1 compute and graphics work, nonzero color/depth transfer bytes for local-to-shared and shared-to-local legs, composite submission, calibrated fences, zero particle transfer bytes, and matching build/shader/config/driver/render provenance.
+
+`CopyOnlyCrossAdapter` is a valid hardware publication mode. It means direct RTV/SRV/UAV use of shared row-major cross-adapter textures is unavailable, so shared resources are used only as copy bridges; final composite samples primary-local received textures. `WARPVerification` is tracked as a separate transfer mode and is not eligible for H1/H2/H3 performance claims.

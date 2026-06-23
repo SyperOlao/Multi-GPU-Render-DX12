@@ -31,6 +31,8 @@ struct VoxelWaterfallDebugPanelContext
     std::wstring MultiGpuStatus;
     std::wstring PrimaryAdapterName;
     std::wstring SecondaryAdapterName;
+    std::string TransferMode;
+    bool PublicationEligible = false;
     const std::vector<std::wstring>* AdapterReportLines = nullptr;
     uint64_t SimulationFrameIndex = 0;
     double AccumulatedSimulationTime = 0.0;

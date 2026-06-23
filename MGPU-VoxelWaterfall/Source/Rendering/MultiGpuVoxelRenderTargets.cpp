@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <stdexcept>
 
 using namespace PEPEngine::Graphics;
 
@@ -16,6 +17,69 @@ namespace
     std::wstring FrameName(const wchar_t* baseName, const UINT frameIndex)
     {
         return std::wstring(baseName) + L" Frame " + std::to_wstring(frameIndex);
+    }
+
+    MultiGpuVoxelFrameRenderTargets::CopyOnlyBridge CreateCopyOnlyBridge(
+        const std::shared_ptr<GDevice>& primaryDevice,
+        const std::shared_ptr<GDevice>& secondaryDevice,
+        const D3D12_RESOURCE_DESC& textureDesc,
+        const std::wstring& name)
+    {
+        MultiGpuVoxelFrameRenderTargets::CopyOnlyBridge bridge{};
+        primaryDevice->GetDXDevice()->GetCopyableFootprints(
+            &textureDesc,
+            0,
+            1,
+            0,
+            &bridge.Footprint,
+            &bridge.NumRows,
+            &bridge.RowSizeInBytes,
+            &bridge.TotalBytes);
+
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bridge.TotalBytes);
+        bufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+        const UINT64 heapBytes = (bridge.TotalBytes + D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1) &
+            ~(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1);
+        const CD3DX12_HEAP_DESC heapDesc(
+            heapBytes,
+            D3D12_HEAP_TYPE_DEFAULT,
+            0,
+            D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER);
+
+        ThrowIfFailed(primaryDevice->GetDXDevice()->CreateHeap(
+            &heapDesc,
+            IID_PPV_ARGS(&bridge.PrimeHeap)));
+
+        HANDLE heapHandle = nullptr;
+        ThrowIfFailed(primaryDevice->GetDXDevice()->CreateSharedHandle(
+            bridge.PrimeHeap.Get(),
+            nullptr,
+            GENERIC_ALL,
+            nullptr,
+            &heapHandle));
+
+        const HRESULT openResult = secondaryDevice->GetDXDevice()->OpenSharedHandle(
+            heapHandle,
+            IID_PPV_ARGS(&bridge.SharedHeap));
+        CloseHandle(heapHandle);
+        ThrowIfFailed(openResult);
+
+        bridge.PrimeBuffer = GResource(
+            primaryDevice,
+            bufferDesc,
+            bridge.PrimeHeap,
+            name + L".PrimeCopyBuffer",
+            nullptr,
+            D3D12_RESOURCE_STATE_COMMON);
+        bridge.SharedBuffer = GResource(
+            secondaryDevice,
+            bufferDesc,
+            bridge.SharedHeap,
+            name + L".SecondaryCopyBuffer",
+            nullptr,
+            D3D12_RESOURCE_STATE_COMMON);
+
+        return bridge;
     }
 }
 
@@ -118,9 +182,9 @@ bool MultiGpuVoxelRenderTargets::ValidateCapabilities(
         return false;
     }
 
-    if (!primaryDevice->IsCrossAdapterTextureSupported() || !secondaryDevice->IsCrossAdapterTextureSupported())
+    if (desc.TransferMode == CrossAdapterTransferMode::Unavailable)
     {
-        failureMessage = L"MultiGpu unavailable: cross-adapter row-major texture path is not supported";
+        failureMessage = L"MultiGpu unavailable: cross-adapter transfer mode is unavailable";
         return false;
     }
 
@@ -165,13 +229,47 @@ bool MultiGpuVoxelRenderTargets::ValidateCapabilities(
     try
     {
         auto colorDesc = Texture2DDesc(desc.Width, desc.Height, desc.ColorFormat, D3D12_RESOURCE_FLAG_NONE);
-        GCrossAdapterResource colorBridge(colorDesc, primaryDevice, secondaryDevice, L"Voxel Capability Color Bridge");
         auto depthDesc = Texture2DDesc(desc.Width, desc.Height, desc.LinearDepthFormat, D3D12_RESOURCE_FLAG_NONE);
-        GCrossAdapterResource depthBridge(depthDesc, primaryDevice, secondaryDevice, L"Voxel Capability Depth Bridge");
+        if (desc.TransferMode == CrossAdapterTransferMode::DirectCrossAdapterTexture)
+        {
+            GCrossAdapterResource colorBridge(
+                colorDesc,
+                primaryDevice,
+                secondaryDevice,
+                L"Voxel Capability Color Bridge");
+            GCrossAdapterResource depthBridge(
+                depthDesc,
+                primaryDevice,
+                secondaryDevice,
+                L"Voxel Capability Depth Bridge");
+        }
+        else
+        {
+            auto colorBridge = CreateCopyOnlyBridge(
+                primaryDevice,
+                secondaryDevice,
+                colorDesc,
+                L"Voxel Capability Color Bridge");
+            auto depthBridge = CreateCopyOnlyBridge(
+                primaryDevice,
+                secondaryDevice,
+                depthDesc,
+                L"Voxel Capability Depth Bridge");
+            if (!colorBridge.IsValid() || !depthBridge.IsValid())
+                throw std::runtime_error("copy-only bridge was not initialized");
+        }
     }
     catch (...)
     {
-        failureMessage = L"MultiGpu unavailable: failed to allocate/open cross-adapter color or linear-depth bridge textures";
+        failureMessage =
+            L"MultiGpu unavailable: failed to allocate/open copy-only cross-adapter bridge textures"
+            L"; transferMode=" + std::wstring(CrossAdapterTransferModeNameW(desc.TransferMode)) +
+            L"; primary=" + primaryDevice->GetName() +
+            L"; secondary=" + secondaryDevice->GetName() +
+            L"; resourceFlags=D3D12_RESOURCE_FLAG_NONE"
+            L"; heapFlags=D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER"
+            L"; colorFormat=" + std::to_wstring(static_cast<int>(desc.ColorFormat)) +
+            L"; depthFormat=" + std::to_wstring(static_cast<int>(desc.LinearDepthFormat));
         return false;
     }
 
@@ -195,6 +293,7 @@ bool MultiGpuVoxelRenderTargets::Initialize(
     {
         auto& frame = frames[frameIndex];
         frame.FrameIndex = frameIndex;
+        frame.TransferMode = desc.TransferMode;
 
         frame.SecondaryRtvDescriptors = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2);
         frame.SecondaryDsvDescriptor = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
@@ -229,13 +328,32 @@ bool MultiGpuVoxelRenderTargets::Initialize(
 
         auto bridgeColorDesc = Texture2DDesc(desc.Width, desc.Height, desc.ColorFormat, D3D12_RESOURCE_FLAG_NONE);
         frame.ColorTransferBytes = CopyableTextureBytes(primaryDevice, bridgeColorDesc);
-        frame.CrossAdapterColor = std::make_shared<GCrossAdapterResource>(
-            bridgeColorDesc, primaryDevice, secondaryDevice, FrameName(L"CrossAdapterSecondaryColor", frameIndex));
 
         auto bridgeDepthDesc = Texture2DDesc(desc.Width, desc.Height, desc.LinearDepthFormat, D3D12_RESOURCE_FLAG_NONE);
         frame.LinearDepthTransferBytes = CopyableTextureBytes(primaryDevice, bridgeDepthDesc);
-        frame.CrossAdapterLinearDepth = std::make_shared<GCrossAdapterResource>(
-            bridgeDepthDesc, primaryDevice, secondaryDevice, FrameName(L"CrossAdapterSecondaryLinearDepth", frameIndex));
+        if (desc.TransferMode == CrossAdapterTransferMode::DirectCrossAdapterTexture)
+        {
+            frame.CrossAdapterColor = std::make_shared<GCrossAdapterResource>(
+                bridgeColorDesc, primaryDevice, secondaryDevice, FrameName(L"CrossAdapterSecondaryColor", frameIndex));
+            frame.CrossAdapterLinearDepth = std::make_shared<GCrossAdapterResource>(
+                bridgeDepthDesc, primaryDevice, secondaryDevice,
+                FrameName(L"CrossAdapterSecondaryLinearDepth", frameIndex));
+        }
+        else
+        {
+            frame.CopyOnlyColor = CreateCopyOnlyBridge(
+                primaryDevice,
+                secondaryDevice,
+                bridgeColorDesc,
+                FrameName(L"CrossAdapterSecondaryColor", frameIndex));
+            frame.CopyOnlyLinearDepth = CreateCopyOnlyBridge(
+                primaryDevice,
+                secondaryDevice,
+                bridgeDepthDesc,
+                FrameName(L"CrossAdapterSecondaryLinearDepth", frameIndex));
+            frame.ColorTransferBytes = frame.CopyOnlyColor.TotalBytes;
+            frame.LinearDepthTransferBytes = frame.CopyOnlyLinearDepth.TotalBytes;
+        }
 
         const auto receivedColorName = FrameName(L"PrimaryReceivedSecondaryColor", frameIndex);
         const auto receivedColorDesc = Texture2DDesc(desc.Width, desc.Height, desc.ColorFormat,

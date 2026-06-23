@@ -16,6 +16,8 @@ namespace PEPEngine::Graphics
 enum class TwoAdapterVerificationStatus
 {
     Pass,
+    PassHardwareDirect,
+    PassHardwareCopyOnly,
     Fail,
     Blocked
 };
@@ -47,6 +49,7 @@ struct TwoAdapterRuntimeEvidence
     std::string DepthFormat = "R32_FLOAT";
     VoxelExecutionMode RequestedMode = VoxelExecutionMode::MultiGpuFull;
     VoxelExecutionMode ActualMode = VoxelExecutionMode::SingleGpuFull;
+    CrossAdapterTransferMode TransferMode = CrossAdapterTransferMode::Unavailable;
     bool Fallback = true;
     std::string FallbackReason;
     bool AnyActualMultiMode = false;

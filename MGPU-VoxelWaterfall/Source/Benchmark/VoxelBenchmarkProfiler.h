@@ -50,6 +50,7 @@ public:
         std::string ScenePreset;
         std::string RequestedMode;
         std::string ActualMode;
+        std::string TransferMode = "unavailable";
         std::string TemporalPolicy;
         std::string SpatialLodPolicy;
         std::string PartitionStrategy;
@@ -161,6 +162,7 @@ public:
     {
         std::string RequestedMode;
         std::string ActualMode;
+        std::string TransferMode = "unavailable";
         std::string Preset;
         std::string ProfileName;
         std::string PartitionStrategy;

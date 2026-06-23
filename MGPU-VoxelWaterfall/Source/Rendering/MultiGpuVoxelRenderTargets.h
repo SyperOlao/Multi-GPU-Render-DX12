@@ -2,7 +2,9 @@
 
 #include "GCrossAdapterResource.h"
 #include "GDescriptor.h"
+#include "GResource.h"
 #include "GTexture.h"
+#include "Source/Devices/DeviceSelectionPolicy.h"
 
 #include <memory>
 #include <string>
@@ -17,6 +19,7 @@ struct MultiGpuVoxelRenderTargetDesc
     DXGI_FORMAT ColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     DXGI_FORMAT LinearDepthFormat = DXGI_FORMAT_R32_FLOAT;
     DXGI_FORMAT DepthStencilFormat = DXGI_FORMAT_D32_FLOAT;
+    CrossAdapterTransferMode TransferMode = CrossAdapterTransferMode::Unavailable;
 };
 
 struct MultiGpuVoxelResourceInfo
@@ -33,12 +36,31 @@ struct MultiGpuVoxelResourceInfo
 struct MultiGpuVoxelFrameRenderTargets
 {
     UINT FrameIndex = 0;
+    CrossAdapterTransferMode TransferMode = CrossAdapterTransferMode::Unavailable;
 
     PEPEngine::Graphics::GTexture SecondaryLocalColor;
     PEPEngine::Graphics::GTexture SecondaryLocalLinearDepth;
     PEPEngine::Graphics::GTexture SecondaryLocalDepthStencil;
     std::shared_ptr<GCrossAdapterResource> CrossAdapterColor;
     std::shared_ptr<GCrossAdapterResource> CrossAdapterLinearDepth;
+    struct CopyOnlyBridge
+    {
+        PEPEngine::Graphics::GResource PrimeBuffer;
+        PEPEngine::Graphics::GResource SharedBuffer;
+        Microsoft::WRL::ComPtr<ID3D12Heap> PrimeHeap;
+        Microsoft::WRL::ComPtr<ID3D12Heap> SharedHeap;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT Footprint{};
+        UINT NumRows = 0;
+        UINT64 RowSizeInBytes = 0;
+        UINT64 TotalBytes = 0;
+
+        bool IsValid() const
+        {
+            return PrimeBuffer.IsValid() && SharedBuffer.IsValid() && TotalBytes != 0;
+        }
+    };
+    CopyOnlyBridge CopyOnlyColor;
+    CopyOnlyBridge CopyOnlyLinearDepth;
     PEPEngine::Graphics::GTexture PrimaryReceivedSecondaryColor;
     PEPEngine::Graphics::GTexture PrimaryReceivedSecondaryLinearDepth;
     PEPEngine::Graphics::GTexture PrimaryCompositeColor;

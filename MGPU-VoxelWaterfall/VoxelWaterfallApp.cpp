@@ -1393,7 +1393,8 @@ VoxelWaterfallApp::~VoxelWaterfallApp()
 {
     if (imguiInitialized)
     {
-        Flush();
+        if (!skipDestructorGpuFlush)
+            Flush();
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
@@ -1444,6 +1445,20 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     if (isResizing) return false;
     assert(currentFrameResourceReady && currentFrameResource &&
            "DrawFrame requires a ready frame resource");
+
+    if (hasDeferredExecutionMode)
+    {
+        const auto mode = deferredExecutionMode;
+        hasDeferredExecutionMode = false;
+        ApplyExecutionMode(mode);
+    }
+
+    struct DrawFrameScope
+    {
+        bool& Flag;
+        explicit DrawFrameScope(bool& flag) : Flag(flag) { Flag = true; }
+        ~DrawFrameScope() { Flag = false; }
+    } drawFrameScope(isDrawingFrame);
 
     ApplyPendingVoxelSettings();
     if (benchmarkController.IsAutomaticActive())
@@ -1913,6 +1928,29 @@ void VoxelWaterfallApp::InitDevices()
     auto allDevices = GDeviceFactory::GetAllDevices(false);
     const auto selectedDevices = DeviceSelectionPolicy::Select(allDevices);
     adapterReportLines.clear();
+    for (const auto& info : selectedDevices.Adapters)
+    {
+        std::wstringstream ss;
+        ss << L"[MGPU Adapter] index=" << info.AdapterIndex
+           << L" name=" << info.Name
+           << L" hardware=" << (info.Hardware ? L"true" : L"false")
+           << L" graphics=" << (info.GraphicsQueue ? L"true" : L"false")
+           << L" compute=" << (info.ComputeQueue ? L"true" : L"false")
+           << L" copy=" << (info.CopyQueue ? L"true" : L"false")
+           << L" crossAdapterTexture=" << (info.CrossAdapterTexture ? L"true" : L"false")
+           << L" selectedPrimary=" << (info.SelectedPrimary ? L"true" : L"false")
+           << L" selectedSecondary=" << (info.SelectedSecondary ? L"true" : L"false")
+           << L" status=" << info.Status
+           << L"\n";
+
+        OutputDebugStringW(ss.str().c_str());
+    }
+
+    if (!selectedDevices.MultiGpuUnavailableReason.empty())
+    {
+        std::wstring reason = L"[MGPU Reason] " + selectedDevices.MultiGpuUnavailableReason + L"\n";
+        OutputDebugStringW(reason.c_str());
+    }
     for (const auto& adapter : selectedDevices.Adapters)
     {
         adapterReportLines.push_back(
@@ -1942,9 +1980,17 @@ void VoxelWaterfallApp::InitDevices()
     }
 
     multiGpuAvailable = secondDevice != nullptr && secondDevice != primeDevice;
-    if (multiGpuAvailable && (!primeDevice->IsCrossAdapterTextureSupported() || !secondDevice->IsCrossAdapterTextureSupported()))
+    crossAdapterTransferMode = multiGpuAvailable
+                                   ? selectedDevices.TransferMode
+                                   : CrossAdapterTransferMode::Unavailable;
+    multiGpuPublicationEligible = selectedDevices.PublicationEligible;
+
+    if (crossAdapterTransferMode == CrossAdapterTransferMode::CopyOnlyCrossAdapter)
     {
-        DisableMultiGpu(L"MultiGpu unavailable: cross-adapter row-major texture path is not supported");
+        OutputDebugStringW(
+            L"[MGPU] Direct cross-adapter RTV/SRV/UAV texture path is not supported. "
+            L"Continuing with selected hardware secondary adapter as CopyOnlyCrossAdapter.\n"
+        );
     }
     else if (multiGpuAvailable && !secondDevice->GetCommandQueue(GQueueType::Graphics))
     {
@@ -1964,7 +2010,9 @@ void VoxelWaterfallApp::InitDevices()
         }
         else
         {
-            multiGpuStatus = L"MultiGpu hardware available; render target validation pending";
+            multiGpuStatus = L"MultiGpu hardware available; transfer mode=" +
+                std::wstring(CrossAdapterTransferModeNameW(crossAdapterTransferMode)) +
+                L"; render target validation pending";
         }
     }
     else
@@ -2040,6 +2088,8 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         multiGpuStatus,
         primeDevice ? primeDevice->GetName() : L"unavailable",
         multiGpuAvailable && secondDevice ? secondDevice->GetName() : L"unavailable",
+        CrossAdapterTransferModeName(crossAdapterTransferMode),
+        multiGpuPublicationEligible,
         &adapterReportLines,
         simulationFrameIndex,
         voxelSimulationAccumulator,
@@ -2981,7 +3031,11 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
     twoAdapterVerificationHasResult = true;
     twoAdapterVerificationJsonPath = result.JsonPath;
 
-    if (result.Status != TwoAdapterVerificationStatus::Pass)
+    const bool preflightPassed =
+        result.Status == TwoAdapterVerificationStatus::Pass ||
+        result.Status == TwoAdapterVerificationStatus::PassHardwareDirect ||
+        result.Status == TwoAdapterVerificationStatus::PassHardwareCopyOnly;
+    if (!preflightPassed)
     {
         logQueue.Push(L"Two-GPU runtime verification preflight did not pass; runtime proof was not attempted");
         return result.Status == TwoAdapterVerificationStatus::Blocked ? 3 : 2;
@@ -3055,6 +3109,7 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
     }
     runtime.RequestedMode = VoxelExecutionMode::MultiGpuFull;
     runtime.ActualMode = VoxelExecutionMode::SingleGpuFull;
+    runtime.TransferMode = crossAdapterTransferMode;
 
     for (const auto& partition : voxelWorkload.Partitions)
     {
@@ -3191,11 +3246,28 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
     };
 
     constexpr uint32_t verificationPresentFrames = 12;
+    constexpr uint32_t maxVerificationPumpAttempts = verificationPresentFrames * 240;
     const auto targetPresentCount = totalSuccessfulPresentCount + verificationPresentFrames;
-    while (totalSuccessfulPresentCount < targetPresentCount && !pumpFrameQuitRequested)
+    uint32_t verificationPumpAttempts = 0;
+    while (totalSuccessfulPresentCount < targetPresentCount &&
+           verificationPumpAttempts < maxVerificationPumpAttempts &&
+           !pumpFrameQuitRequested)
     {
+        ++verificationPumpAttempts;
         if (PumpOneFrame())
             accumulateFrameEvidence();
+    }
+    if (totalSuccessfulPresentCount < targetPresentCount)
+    {
+        runtime.Reasons.push_back("two-adapter runtime verification did not reach target presented frame count");
+        runtime.Passed = false;
+        skipDestructorGpuFlush = true;
+        twoAdapterVerificationRunner.ExportRuntimeEvidence(result, runtime);
+        twoAdapterVerificationResult = result;
+        twoAdapterVerificationHasResult = true;
+        twoAdapterVerificationJsonPath = result.JsonPath;
+        logQueue.Push(L"Two-GPU runtime verification FAIL");
+        return 2;
     }
     Flush();
 
@@ -3998,6 +4070,7 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.FrameIndex = simulationFrameIndex;
     metadata.RequestedMode = GetExecutionModeName(requestedExecutionMode);
     metadata.ActualMode = GetExecutionModeName(frameGraphTelemetry.ActualMode);
+    metadata.TransferMode = CrossAdapterTransferModeName(crossAdapterTransferMode);
     metadata.FallbackReason.clear();
     if (metadata.RequestedMode != metadata.ActualMode)
         metadata.FallbackReason = "requested mode unavailable; actual mode selected by runtime capability checks";
@@ -4511,6 +4584,14 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
 
 void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMode)
 {
+    if (isDrawingFrame)
+    {
+        requestedExecutionMode = requestedMode;
+        deferredExecutionMode = requestedMode;
+        hasDeferredExecutionMode = true;
+        return;
+    }
+
     requestedExecutionMode = requestedMode;
     VoxelExecutionMode targetMode = requestedMode;
     const bool requestsMultiGpu = targetMode == VoxelExecutionMode::MultiGpuFull ||
@@ -5070,6 +5151,7 @@ MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetD
     desc.ColorFormat = GetSRGBFormat(BackBufferFormat);
     desc.LinearDepthFormat = DXGI_FORMAT_R32_FLOAT;
     desc.DepthStencilFormat = DepthStencilFormat;
+    desc.TransferMode = crossAdapterTransferMode;
 
     if (antiAliasingPrimePath)
     {
@@ -5101,7 +5183,8 @@ void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
         return;
     }
 
-    multiGpuStatus = L"MultiGpu hardware available; secondary voxel render targets allocated";
+    multiGpuStatus = L"MultiGpu hardware available; secondary voxel render targets allocated; transfer mode=" +
+        std::wstring(CrossAdapterTransferModeNameW(crossAdapterTransferMode));
     logQueue.Push(L"\n" + multiGpuStatus);
     logQueue.Push(L"\nMultiGpu voxel render target frame sets: " +
         std::to_wstring(multiGpuVoxelRenderTargets.GetFrameCount()));
@@ -5110,6 +5193,8 @@ void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
 void VoxelWaterfallApp::DisableMultiGpu(const std::wstring& reason)
 {
     multiGpuAvailable = false;
+    crossAdapterTransferMode = CrossAdapterTransferMode::Unavailable;
+    multiGpuPublicationEligible = false;
     executionMode = VoxelExecutionMode::SingleGpuFull;
     multiGpuStatus = reason.empty() ? L"MultiGpu unavailable: unknown capability failure" : reason;
     multiGpuVoxelRenderTargets.Reset();

@@ -394,6 +394,7 @@ namespace
              << "    \"depth_format\":\"" << EscapeJson(result.Runtime.DepthFormat) << "\",\n"
              << "    \"requested_mode\":\"" << ModeName(result.Runtime.RequestedMode) << "\",\n"
              << "    \"actual_mode\":\"" << ModeName(result.Runtime.ActualMode) << "\",\n"
+             << "    \"transfer_mode\":\"" << CrossAdapterTransferModeName(result.Runtime.TransferMode) << "\",\n"
              << "    \"fallback\":" << (result.Runtime.Fallback ? "true" : "false") << ",\n"
              << "    \"fallback_reason\":\"" << EscapeJson(result.Runtime.FallbackReason) << "\",\n"
              << "    \"any_actual_multi_mode\":" << (result.Runtime.AnyActualMultiMode ? "true" : "false") << ",\n"
@@ -541,6 +542,8 @@ std::string TwoAdapterVerificationRunner::StatusName(const TwoAdapterVerificatio
     switch (status)
     {
     case TwoAdapterVerificationStatus::Pass: return "PASS";
+    case TwoAdapterVerificationStatus::PassHardwareDirect: return "PASS_HARDWARE_DIRECT";
+    case TwoAdapterVerificationStatus::PassHardwareCopyOnly: return "PASS_HARDWARE_COPY_ONLY";
     case TwoAdapterVerificationStatus::Fail: return "FAIL";
     case TwoAdapterVerificationStatus::Blocked: return "BLOCKED";
     default: return "BLOCKED";
@@ -648,11 +651,6 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
 
     if (preconditionMet)
     {
-        if (!selectedDevices.Primary->IsCrossAdapterTextureSupported() ||
-            !selectedDevices.Secondary->IsCrossAdapterTextureSupported())
-        {
-            result.Reasons.push_back("CrossAdapterRowMajorTextureSupported is false on at least one selected adapter");
-        }
         if (!fenceRecord.Passed)
             result.Reasons.push_back("Shared fence create/open verification failed");
         if (!colorRecord.Passed)
@@ -663,12 +661,19 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
         const bool pass = distinctLuid &&
             colorFormatSupported &&
             depthFormatSupported &&
-            selectedDevices.Primary->IsCrossAdapterTextureSupported() &&
-            selectedDevices.Secondary->IsCrossAdapterTextureSupported() &&
             fenceRecord.Passed &&
             colorRecord.Passed &&
             depthRecord.Passed;
-        result.Status = pass ? TwoAdapterVerificationStatus::Pass : TwoAdapterVerificationStatus::Fail;
+        if (pass)
+        {
+            result.Status = selectedDevices.TransferMode == CrossAdapterTransferMode::DirectCrossAdapterTexture
+                                ? TwoAdapterVerificationStatus::PassHardwareDirect
+                                : TwoAdapterVerificationStatus::PassHardwareCopyOnly;
+        }
+        else
+        {
+            result.Status = TwoAdapterVerificationStatus::Fail;
+        }
     }
 
     std::ostringstream pairJson;
@@ -688,6 +693,7 @@ TwoAdapterVerificationResult TwoAdapterVerificationRunner::RunPreflight(
              << ","
              << "\"color_format\":\"R8G8B8A8_UNORM\","
              << "\"depth_format\":\"R32_FLOAT\","
+             << "\"transfer_mode\":\"" << CrossAdapterTransferModeName(selectedDevices.TransferMode) << "\","
              << "\"color_format_supported\":" << (colorFormatSupported ? "true" : "false") << ","
              << "\"depth_format_supported\":" << (depthFormatSupported ? "true" : "false") << "}";
 
@@ -727,10 +733,14 @@ void TwoAdapterVerificationRunner::ExportRuntimeEvidence(TwoAdapterVerificationR
                                                          const TwoAdapterRuntimeEvidence& runtime) const
 {
     result.Runtime = runtime;
-    if (result.Status == TwoAdapterVerificationStatus::Pass)
+    if (result.Status == TwoAdapterVerificationStatus::Pass ||
+        result.Status == TwoAdapterVerificationStatus::PassHardwareDirect ||
+        result.Status == TwoAdapterVerificationStatus::PassHardwareCopyOnly)
     {
         result.Status = runtime.Passed
-                            ? TwoAdapterVerificationStatus::Pass
+                            ? (runtime.TransferMode == CrossAdapterTransferMode::DirectCrossAdapterTexture
+                                   ? TwoAdapterVerificationStatus::PassHardwareDirect
+                                   : TwoAdapterVerificationStatus::PassHardwareCopyOnly)
                             : TwoAdapterVerificationStatus::Fail;
         if (!runtime.Passed)
         {

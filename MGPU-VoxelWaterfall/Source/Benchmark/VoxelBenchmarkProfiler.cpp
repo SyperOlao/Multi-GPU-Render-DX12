@@ -177,7 +177,7 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     csv.imbue(std::locale::classic());
     csv << "frame_index,suite,run_id,session_id,config_id,pair_id,block_id,repetition,"
         << "randomized_order_index,block_order_index,pair_member_order,randomization_seed,"
-        << "profile,scene_preset,requested_mode,actual_mode,fallback_reason,"
+        << "profile,scene_preset,requested_mode,actual_mode,transfer_mode,fallback_reason,"
         << "benchmark_config_class,benchmark_config_reason,temporal_policy,spatial_lod_policy,"
         << "partition_strategy,load_balance_scenario,total_voxels,actual_static_voxels,actual_dynamic_voxels,"
         << "static_budget,dynamic_budget,voxel_size,chunk_size_x,chunk_size_y,chunk_size_z,secondary_share,"
@@ -609,6 +609,7 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << EscapeCsv(frame.Metadata.ScenePreset) << ','
         << EscapeCsv(frame.Metadata.RequestedMode) << ','
         << EscapeCsv(frame.Metadata.ActualMode) << ','
+        << EscapeCsv(frame.Metadata.TransferMode) << ','
         << EscapeCsv(frame.Metadata.FallbackReason) << ','
         << EscapeCsv(frame.Metadata.BenchmarkConfigClass) << ','
         << EscapeCsv(frame.Metadata.BenchmarkConfigReason) << ','
@@ -922,6 +923,7 @@ void VoxelBenchmarkProfiler::FinalizeCompletedSummary()
     completedSummary = {};
     completedSummary.RequestedMode = lastWritten ? lastWritten->Metadata.RequestedMode : "";
     completedSummary.ActualMode = lastWritten ? lastWritten->Metadata.ActualMode : "";
+    completedSummary.TransferMode = lastWritten ? lastWritten->Metadata.TransferMode : "unavailable";
     completedSummary.Preset =
         !currentPresetName.empty()
             ? currentPresetName

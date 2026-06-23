@@ -52,6 +52,7 @@ namespace
     {
         std::string RequestedMode;
         std::string ActualMode;
+        std::string TransferMode;
         std::string Preset;
         std::string ProfileName;
         std::string PartitionStrategy;
@@ -71,12 +72,12 @@ namespace
 
         bool operator<(const AggregateKey& other) const
         {
-            return std::tie(RequestedMode, ActualMode, Preset, ProfileName, PartitionStrategy,
+            return std::tie(RequestedMode, ActualMode, TransferMode, Preset, ProfileName, PartitionStrategy,
                             LoadBalanceScenario, BenchmarkConfigClass, TemporalPolicy, SpatialLodPolicy,
                             PairId, TotalVoxelCount, ActualStaticVoxelCount, ActualDynamicVoxelCount,
                             SecondarySharePermille, RenderWidth, RenderHeight, PrimaryAdapterName,
                             SecondaryAdapterName) <
-                std::tie(other.RequestedMode, other.ActualMode, other.Preset, other.ProfileName,
+                std::tie(other.RequestedMode, other.ActualMode, other.TransferMode, other.Preset, other.ProfileName,
                          other.PartitionStrategy, other.LoadBalanceScenario, other.BenchmarkConfigClass,
                          other.TemporalPolicy, other.SpatialLodPolicy, other.PairId, other.TotalVoxelCount,
                          other.ActualStaticVoxelCount, other.ActualDynamicVoxelCount,
@@ -90,6 +91,7 @@ namespace
         return {
             summary.RequestedMode,
             summary.ActualMode,
+            summary.TransferMode,
             summary.Preset,
             summary.ProfileName,
             summary.PartitionStrategy,
@@ -450,7 +452,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
         return false;
 
     summary.imbue(std::locale::classic());
-    summary << "requested_mode,actual_mode,primary_adapter,secondary_adapter,total_voxels,"
+    summary << "requested_mode,actual_mode,transfer_mode,primary_adapter,secondary_adapter,total_voxels,"
         << "requested_static_budget_label,requested_static_budget,requested_dynamic_budget,"
         << "actual_total_count,"
         << "secondary_share,profile,partition_strategy,load_balance_scenario,benchmark_config_class,"
@@ -477,6 +479,7 @@ bool BenchmarkCsvWriter::WriteAutomaticSummary(
     {
         summary << EscapeCsv(row.RequestedMode) << ','
             << EscapeCsv(row.ActualMode) << ','
+            << EscapeCsv(row.TransferMode) << ','
             << EscapeCsv(row.PrimaryAdapterName) << ','
             << EscapeCsv(row.SecondaryAdapterName) << ','
             << row.TotalVoxelCount << ','
