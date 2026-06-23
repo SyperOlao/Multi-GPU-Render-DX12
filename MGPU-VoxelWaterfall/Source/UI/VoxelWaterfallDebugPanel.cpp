@@ -471,6 +471,11 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricU32("render height", telemetry ? telemetry->RenderHeight : context.Workload.RenderResolutionHeight);
         DrawMetricU32("SSAA width", telemetry ? telemetry->SsaaWidth : 0);
         DrawMetricU32("SSAA height", telemetry ? telemetry->SsaaHeight : 0);
+        DrawMetricU32("SSAA sample multiplier", telemetry ? telemetry->SsaaSampleMultiplier : 1);
+        DrawMetricU32("SSAA linear scale", telemetry ? telemetry->SsaaLinearScale : 1);
+        DrawMetricU64("estimated render memory", telemetry ? telemetry->EstimatedOffscreenMemoryBytes : 0);
+        DrawMetricU64("estimated cross-adapter bytes/frame",
+                      telemetry ? telemetry->EstimatedCrossAdapterBytesPerFrame : 0);
     }
 
     if (ImGui::CollapsingHeader("Spawn Grid", ImGuiTreeNodeFlags_DefaultOpen))

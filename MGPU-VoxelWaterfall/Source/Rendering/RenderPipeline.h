@@ -59,6 +59,10 @@ struct VoxelFrameGraphTelemetry
     uint32_t RenderHeight = 0;
     uint32_t SsaaWidth = 0;
     uint32_t SsaaHeight = 0;
+    uint32_t SsaaSampleMultiplier = 1;
+    uint32_t SsaaLinearScale = 1;
+    uint64_t EstimatedOffscreenMemoryBytes = 0;
+    uint64_t EstimatedCrossAdapterBytesPerFrame = 0;
     uint64_t SuccessfulPresentCount = 0;
     double SimulationStepsPerWallSecond = 0.0;
     bool SecondaryRenderSubmitted = false;

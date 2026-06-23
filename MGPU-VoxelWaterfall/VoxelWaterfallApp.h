@@ -135,8 +135,13 @@ protected:
     void InitSRVMemoryAndMaterials();
     void InitRenderPaths();
     MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc() const;
-    void RebuildOffscreenVoxelRenderTargets();
-    void RebuildMultiGpuVoxelRenderTargets();
+    MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc(UINT width,
+                                                                      UINT height,
+                                                                      DXGI_FORMAT colorFormat) const;
+    bool ValidateOffscreenRenderTargetBudget(UINT renderWidth, UINT renderHeight,
+                                             std::wstring& failureReason);
+    bool RebuildOffscreenVoxelRenderTargets();
+    bool RebuildMultiGpuVoxelRenderTargets();
     void DisableMultiGpu(const std::wstring& reason);
     void LoadStudyTexture();
     void LoadModels();
@@ -259,6 +264,27 @@ protected:
     std::wstring multiGpuStatus = L"MultiGpu is not initialized";
     std::vector<std::wstring> adapterReportLines;
     MultiGpuVoxelRenderTargets multiGpuVoxelRenderTargets;
+    struct OffscreenRenderTargetBudget
+    {
+        UINT RenderWidth = 0;
+        UINT RenderHeight = 0;
+        UINT SsaaSampleMultiplier = 1;
+        UINT SsaaLinearScale = 1;
+        UINT SsaaWidth = 0;
+        UINT SsaaHeight = 0;
+        uint64_t SsaaColorBytes = 0;
+        uint64_t SsaaDepthBytes = 0;
+        uint64_t CompositeBytes = 0;
+        uint64_t CrossAdapterResourceBytes = 0;
+        uint64_t EstimatedTotalBytes = 0;
+        uint64_t EstimatedCrossAdapterBytesPerFrame = 0;
+        uint64_t PrimaryBudgetLimitBytes = 0;
+        uint64_t SecondaryBudgetLimitBytes = 0;
+        uint64_t PrimaryRequiredBytes = 0;
+        uint64_t SecondaryRequiredBytes = 0;
+        std::wstring FailureReason;
+    };
+    OffscreenRenderTargetBudget offscreenRenderTargetBudget{};
     UINT64 primaryComputeQueueFenceValue = 0;
     UINT64 secondaryComputeQueueFenceValue = 0;
     UINT64 crossAdapterRenderReadyFenceValue = 0;

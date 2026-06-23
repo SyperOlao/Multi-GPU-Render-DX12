@@ -12,6 +12,7 @@
 #include <cassert>
 #include <chrono>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <DirectXMath.h>
@@ -55,6 +56,8 @@ namespace
 {
     constexpr float DebugUiScale = 2.25f;
     constexpr const char* VoxelSceneGpuObjectName = "VoxelSceneGpuPartitions";
+    constexpr UINT SsaaSampleMultiplier = 4;
+    constexpr double TargetAllocationBudgetFraction = 0.95;
     uint64_t gProvenanceFileHashCount = 0;
     uint64_t gGitProcessSpawnCount = 0;
 
@@ -663,6 +666,10 @@ namespace
         case DXGI_FORMAT_B8G8R8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
             return 4;
+        case DXGI_FORMAT_R16_UNORM:
+            return 2;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return 8;
         case DXGI_FORMAT_R32_FLOAT:
         case DXGI_FORMAT_D32_FLOAT:
         case DXGI_FORMAT_R32_TYPELESS:
@@ -670,6 +677,143 @@ namespace
         default:
             return 0;
         }
+    }
+
+    UINT LinearScaleForSsaaSampleMultiplier(const UINT sampleMultiplier)
+    {
+        switch (sampleMultiplier)
+        {
+        case 1:
+        case 4:
+        case 16:
+            {
+                const auto linearScale = static_cast<UINT>(
+                    std::sqrt(static_cast<double>(sampleMultiplier)) + 0.5);
+                assert(linearScale * linearScale == sampleMultiplier);
+                return linearScale;
+            }
+        default:
+            assert(false && "SSAA sample multiplier must be 1, 4, or 16");
+            return 1;
+        }
+    }
+
+    bool CheckedMultiply(const uint64_t lhs, const uint64_t rhs, uint64_t& out)
+    {
+        if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
+            return false;
+        out = lhs * rhs;
+        return true;
+    }
+
+    bool CheckedAdd(const uint64_t lhs, const uint64_t rhs, uint64_t& out)
+    {
+        if (rhs > std::numeric_limits<uint64_t>::max() - lhs)
+            return false;
+        out = lhs + rhs;
+        return true;
+    }
+
+    bool CheckedTextureBytes(const UINT width,
+                             const UINT height,
+                             const DXGI_FORMAT format,
+                             const wchar_t* label,
+                             uint64_t& outBytes,
+                             std::wstring& failureReason)
+    {
+        if (width == 0 || height == 0)
+        {
+            failureReason = std::wstring(label) + L" has zero dimensions";
+            return false;
+        }
+        if (width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+        {
+            failureReason = std::wstring(label) + L" exceeds D3D12 maximum Texture2D dimension: " +
+                std::to_wstring(width) + L"x" + std::to_wstring(height) +
+                L" > " + std::to_wstring(D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+            return false;
+        }
+
+        const uint32_t bytesPerPixel = BytesPerPixel(format);
+        if (bytesPerPixel == 0)
+        {
+            failureReason = std::wstring(label) + L" uses unsupported budget format " +
+                std::to_wstring(static_cast<int>(format));
+            return false;
+        }
+
+        uint64_t pixelCount = 0;
+        if (!CheckedMultiply(width, height, pixelCount) ||
+            !CheckedMultiply(pixelCount, bytesPerPixel, outBytes))
+        {
+            failureReason = std::wstring(label) + L" byte size overflow for " +
+                std::to_wstring(width) + L"x" + std::to_wstring(height) +
+                L" bpp=" + std::to_wstring(bytesPerPixel);
+            return false;
+        }
+        return true;
+    }
+
+    D3D12_RESOURCE_DESC BudgetTexture2DDesc(const UINT width,
+                                            const UINT height,
+                                            const DXGI_FORMAT format,
+                                            const D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE)
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Alignment = 0;
+        desc.Width = width;
+        desc.Height = height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = flags;
+        return desc;
+    }
+
+    uint64_t CopyableTextureBytes(
+        const std::shared_ptr<PEPEngine::Graphics::GDevice>& device,
+        const D3D12_RESOURCE_DESC& desc)
+    {
+        if (!device)
+            return 0;
+
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+        UINT numRows = 0;
+        UINT64 rowSizeInBytes = 0;
+        UINT64 totalBytes = 0;
+        device->GetDXDevice()->GetCopyableFootprints(
+            &desc, 0, 1, 0, &layout, &numRows, &rowSizeInBytes, &totalBytes);
+        return totalBytes;
+    }
+
+    uint64_t AvailableLocalVideoMemoryLimit(const std::shared_ptr<PEPEngine::Graphics::GDevice>& device)
+    {
+        if (!device)
+            return 0;
+
+        const auto stats = device->QueryVideoMemoryStats();
+        if (stats.Valid && stats.LocalBudget > stats.LocalCurrentUsage)
+        {
+            const uint64_t available = stats.LocalBudget - stats.LocalCurrentUsage;
+            return static_cast<uint64_t>(static_cast<double>(available) * TargetAllocationBudgetFraction);
+        }
+
+        const uint64_t dedicated = static_cast<uint64_t>(device->GetDesc().DedicatedVideoMemory);
+        return dedicated > 0 ? dedicated / 2 : std::numeric_limits<uint64_t>::max();
+    }
+
+    std::wstring FormatBudgetBytes(const uint64_t bytes)
+    {
+        constexpr double Mib = 1024.0 * 1024.0;
+        std::wostringstream stream;
+        stream << bytes << L" bytes (" << std::fixed << std::setprecision(2)
+               << static_cast<double>(bytes) / Mib << L" MiB)";
+        return stream.str();
     }
 
     std::string FormatName(const DXGI_FORMAT format)
@@ -1596,11 +1740,18 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.SwapchainHeight = backBufferDesc.Height;
     frameGraphTelemetry.RenderWidth = voxelWorkload.RenderResolutionWidth;
     frameGraphTelemetry.RenderHeight = voxelWorkload.RenderResolutionHeight;
+    frameGraphTelemetry.SsaaSampleMultiplier = offscreenRenderTargetBudget.SsaaSampleMultiplier;
+    frameGraphTelemetry.SsaaLinearScale = offscreenRenderTargetBudget.SsaaLinearScale;
+    frameGraphTelemetry.EstimatedOffscreenMemoryBytes = offscreenRenderTargetBudget.EstimatedTotalBytes;
+    frameGraphTelemetry.EstimatedCrossAdapterBytesPerFrame =
+        offscreenRenderTargetBudget.EstimatedCrossAdapterBytesPerFrame;
     if (antiAliasingPrimePath)
     {
         const auto ssaaDesc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
         frameGraphTelemetry.SsaaWidth = static_cast<uint32_t>(ssaaDesc.Width);
         frameGraphTelemetry.SsaaHeight = ssaaDesc.Height;
+        frameGraphTelemetry.SsaaSampleMultiplier = antiAliasingPrimePath->GetSampleMultiplier();
+        frameGraphTelemetry.SsaaLinearScale = antiAliasingPrimePath->GetLinearScale();
     }
     frameGraphTelemetry.RequestedMode = requestedExecutionMode;
     frameGraphTelemetry.ActualMode = simulationResult.UsedMultiGpuMode
@@ -4003,6 +4154,9 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     }
 
     bool renderResolutionChanged = false;
+    const auto previousResolutionPreset = voxelWorkload.ResolutionPreset;
+    const auto previousRenderWidth = voxelWorkload.RenderResolutionWidth;
+    const auto previousRenderHeight = voxelWorkload.RenderResolutionHeight;
     if (changes.RenderResolutionPreset)
     {
         const auto [width, height] = ResolutionForPreset(*changes.RenderResolutionPreset);
@@ -4035,7 +4189,13 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
 
     if (renderResolutionChanged)
     {
-        RebuildOffscreenVoxelRenderTargets();
+        if (!RebuildOffscreenVoxelRenderTargets())
+        {
+            voxelWorkload.ResolutionPreset = previousResolutionPreset;
+            voxelWorkload.RenderResolutionWidth = previousRenderWidth;
+            voxelWorkload.RenderResolutionHeight = previousRenderHeight;
+            renderResolutionChanged = false;
+        }
         renderTargetsRebuilt = multiGpuAvailable && multiGpuVoxelRenderTargets.IsInitialized();
     }
 
@@ -4052,8 +4212,7 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
     {
         if (!renderTargetsRebuilt)
         {
-            RebuildMultiGpuVoxelRenderTargets();
-            renderTargetsRebuilt = true;
+            renderTargetsRebuilt = RebuildMultiGpuVoxelRenderTargets();
         }
         if (!multiGpuVoxelRenderTargets.IsInitialized())
         {
@@ -4238,11 +4397,19 @@ void VoxelWaterfallApp::ApplyResearchLightingPreset(const VoxelResearchLightingP
 void VoxelWaterfallApp::ApplyRenderResolutionPreset(const VoxelRenderResolutionPreset preset)
 {
     assert(!isDrawingFrame && "ApplyRenderResolutionPreset must not be called during DrawFrame");
+    const auto previousResolutionPreset = voxelWorkload.ResolutionPreset;
+    const auto previousRenderWidth = voxelWorkload.RenderResolutionWidth;
+    const auto previousRenderHeight = voxelWorkload.RenderResolutionHeight;
     const auto [width, height] = ResolutionForPreset(preset);
     voxelWorkload.ResolutionPreset = preset;
     voxelWorkload.RenderResolutionWidth = width;
     voxelWorkload.RenderResolutionHeight = height;
-    RebuildOffscreenVoxelRenderTargets();
+    if (!RebuildOffscreenVoxelRenderTargets())
+    {
+        voxelWorkload.ResolutionPreset = previousResolutionPreset;
+        voxelWorkload.RenderResolutionWidth = previousRenderWidth;
+        voxelWorkload.RenderResolutionHeight = previousRenderHeight;
+    }
 }
 
 bool VoxelWaterfallApp::HandleDemoPresetHotkey(const WPARAM key)
@@ -5589,14 +5756,17 @@ void VoxelWaterfallApp::InitRenderPaths()
     auto cmdList = commandQueue->GetCommandList();
     const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
     const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
+    std::wstring failureReason;
+    if (!ValidateOffscreenRenderTargetBudget(renderWidth, renderHeight, failureReason))
+        throw std::runtime_error(NarrowForLog(failureReason));
 
     ambientPrimePath = (std::make_shared<SSAO>(
         primeDevice,
         cmdList,
         renderWidth, renderHeight));
 
-    antiAliasingPrimePath = (std::make_shared<SSAA>(primeDevice, 4, renderWidth, renderHeight));
-    antiAliasingPrimePath->OnResize(renderWidth, renderHeight);
+    antiAliasingPrimePath =
+        std::make_shared<SSAA>(primeDevice, SsaaSampleMultiplier, renderWidth, renderHeight);
 
     commandQueue->WaitForFenceValue(commandQueue->ExecuteCommandList(cmdList));
 
@@ -5608,81 +5778,376 @@ void VoxelWaterfallApp::InitRenderPaths()
 
 MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetDesc() const
 {
-    MultiGpuVoxelRenderTargetDesc desc{};
-    desc.FrameCount = globalCountFrameResources;
-    desc.ColorFormat = GetSRGBFormat(BackBufferFormat);
-    desc.LinearDepthFormat = DXGI_FORMAT_R32_FLOAT;
-    desc.DepthStencilFormat = DepthStencilFormat;
-    desc.TransferMode = crossAdapterTransferMode;
-
     if (antiAliasingPrimePath)
     {
         const auto renderTargetDesc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
-        desc.Width = static_cast<UINT>(renderTargetDesc.Width);
-        desc.Height = renderTargetDesc.Height;
-        desc.ColorFormat = renderTargetDesc.Format;
-    }
-    else if (MainWindow)
-    {
-        desc.Width = std::max(1u, voxelWorkload.RenderResolutionWidth);
-        desc.Height = std::max(1u, voxelWorkload.RenderResolutionHeight);
+        return BuildMultiGpuVoxelRenderTargetDesc(
+            static_cast<UINT>(renderTargetDesc.Width),
+            renderTargetDesc.Height,
+            renderTargetDesc.Format);
     }
 
+    const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
+    const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
+    const UINT linearScale = LinearScaleForSsaaSampleMultiplier(SsaaSampleMultiplier);
+    return BuildMultiGpuVoxelRenderTargetDesc(
+        renderWidth * linearScale,
+        renderHeight * linearScale,
+        GetSRGBFormat(BackBufferFormat));
+}
+
+MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetDesc(
+    const UINT width,
+    const UINT height,
+    const DXGI_FORMAT colorFormat) const
+{
+    MultiGpuVoxelRenderTargetDesc desc{};
+    desc.FrameCount = globalCountFrameResources;
+    desc.Width = width;
+    desc.Height = height;
+    desc.ColorFormat = colorFormat;
+    desc.LinearDepthFormat = DXGI_FORMAT_R32_FLOAT;
+    desc.DepthStencilFormat = DepthStencilFormat;
+    desc.TransferMode = crossAdapterTransferMode;
     return desc;
 }
 
-void VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
+bool VoxelWaterfallApp::ValidateOffscreenRenderTargetBudget(
+    const UINT renderWidth,
+    const UINT renderHeight,
+    std::wstring& failureReason)
+{
+    OffscreenRenderTargetBudget budget{};
+    budget.RenderWidth = renderWidth;
+    budget.RenderHeight = renderHeight;
+    budget.SsaaSampleMultiplier = SsaaSampleMultiplier;
+    budget.SsaaLinearScale = LinearScaleForSsaaSampleMultiplier(SsaaSampleMultiplier);
+    budget.PrimaryBudgetLimitBytes = AvailableLocalVideoMemoryLimit(primeDevice);
+    budget.SecondaryBudgetLimitBytes = multiGpuAvailable
+                                           ? AvailableLocalVideoMemoryLimit(secondDevice)
+                                           : 0;
+
+    uint64_t ssaaWidth = 0;
+    uint64_t ssaaHeight = 0;
+    if (!CheckedMultiply(renderWidth, budget.SsaaLinearScale, ssaaWidth) ||
+        !CheckedMultiply(renderHeight, budget.SsaaLinearScale, ssaaHeight) ||
+        ssaaWidth > std::numeric_limits<UINT>::max() ||
+        ssaaHeight > std::numeric_limits<UINT>::max())
+    {
+        failureReason = L"SSAA internal dimensions overflow for render size " +
+            std::to_wstring(renderWidth) + L"x" + std::to_wstring(renderHeight) +
+            L" sampleMultiplier=" + std::to_wstring(SsaaSampleMultiplier);
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+    budget.SsaaWidth = static_cast<UINT>(ssaaWidth);
+    budget.SsaaHeight = static_cast<UINT>(ssaaHeight);
+
+    uint64_t bytes = 0;
+    if (!CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, GetSRGBFormat(BackBufferFormat),
+                             L"SSAA color target", budget.SsaaColorBytes, failureReason) ||
+        !CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, DepthStencilFormat,
+                             L"SSAA depth target", budget.SsaaDepthBytes, failureReason))
+    {
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+
+    uint64_t primaryRequired = 0;
+    if (!CheckedAdd(primaryRequired, budget.SsaaColorBytes, primaryRequired) ||
+        !CheckedAdd(primaryRequired, budget.SsaaDepthBytes, primaryRequired))
+    {
+        failureReason = L"SSAA memory estimate overflow";
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+
+    uint64_t ssaoNormalBytes = 0;
+    uint64_t ssaoDepthBytes = 0;
+    uint64_t ssaoAmbientBytes = 0;
+    if (!CheckedTextureBytes(renderWidth, renderHeight, SSAO::NormalMapFormat,
+                             L"SSAO normal target", ssaoNormalBytes, failureReason) ||
+        !CheckedTextureBytes(renderWidth, renderHeight, SSAO::DepthMapFormat,
+                             L"SSAO depth target", ssaoDepthBytes, failureReason) ||
+        !CheckedTextureBytes(renderWidth, renderHeight, SSAO::AmbientMapFormat,
+                             L"SSAO ambient target", ssaoAmbientBytes, failureReason))
+    {
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+    if (!CheckedAdd(primaryRequired, ssaoNormalBytes, primaryRequired) ||
+        !CheckedAdd(primaryRequired, ssaoDepthBytes, primaryRequired) ||
+        !CheckedAdd(primaryRequired, ssaoAmbientBytes, primaryRequired) ||
+        !CheckedAdd(primaryRequired, ssaoAmbientBytes, primaryRequired))
+    {
+        failureReason = L"SSAO memory estimate overflow";
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+
+    uint64_t secondaryRequired = 0;
+    if (multiGpuAvailable)
+    {
+        const auto colorFormat = GetSRGBFormat(BackBufferFormat);
+        const auto colorCopyBytes = CopyableTextureBytes(
+            primeDevice,
+            BudgetTexture2DDesc(budget.SsaaWidth, budget.SsaaHeight, colorFormat));
+        const auto depthCopyBytes = CopyableTextureBytes(
+            primeDevice,
+            BudgetTexture2DDesc(budget.SsaaWidth, budget.SsaaHeight, DXGI_FORMAT_R32_FLOAT));
+
+        uint64_t colorBytes = 0;
+        uint64_t linearDepthBytes = 0;
+        uint64_t depthStencilBytes = 0;
+        if (!CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, colorFormat,
+                                 L"Multi-GPU color target", colorBytes, failureReason) ||
+            !CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, DXGI_FORMAT_R32_FLOAT,
+                                 L"Multi-GPU linear depth target", linearDepthBytes, failureReason) ||
+            !CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, DepthStencilFormat,
+                                 L"Multi-GPU depth stencil target", depthStencilBytes, failureReason))
+        {
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+
+        uint64_t perFramePrimary = 0;
+        uint64_t perFrameSecondary = 0;
+        uint64_t perFrameCrossAdapter = 0;
+        if (!CheckedAdd(perFramePrimary, colorBytes, perFramePrimary) ||
+            !CheckedAdd(perFramePrimary, linearDepthBytes, perFramePrimary) ||
+            !CheckedAdd(perFramePrimary, colorBytes, perFramePrimary) ||
+            !CheckedAdd(perFrameSecondary, colorBytes, perFrameSecondary) ||
+            !CheckedAdd(perFrameSecondary, linearDepthBytes, perFrameSecondary) ||
+            !CheckedAdd(perFrameSecondary, depthStencilBytes, perFrameSecondary) ||
+            !CheckedAdd(perFrameCrossAdapter, colorCopyBytes, perFrameCrossAdapter) ||
+            !CheckedAdd(perFrameCrossAdapter, depthCopyBytes, perFrameCrossAdapter))
+        {
+            failureReason = L"Multi-GPU per-frame memory estimate overflow";
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+
+        uint64_t framePrimaryTotal = 0;
+        uint64_t frameSecondaryTotal = 0;
+        uint64_t frameCrossAdapterTotal = 0;
+        if (!CheckedMultiply(perFramePrimary, globalCountFrameResources, framePrimaryTotal) ||
+            !CheckedMultiply(perFrameSecondary, globalCountFrameResources, frameSecondaryTotal) ||
+            !CheckedMultiply(perFrameCrossAdapter, globalCountFrameResources, frameCrossAdapterTotal))
+        {
+            failureReason = L"Multi-GPU frame-count memory estimate overflow";
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+
+        uint64_t crossAdapterBytesBothDirections = 0;
+        if (!CheckedMultiply(perFrameCrossAdapter, 2, crossAdapterBytesBothDirections))
+        {
+            failureReason = L"Cross-adapter bytes-per-frame estimate overflow";
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+
+        if (!CheckedMultiply(colorBytes, globalCountFrameResources, budget.CompositeBytes))
+        {
+            failureReason = L"Composite memory estimate overflow";
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+        budget.CrossAdapterResourceBytes = frameCrossAdapterTotal;
+        budget.EstimatedCrossAdapterBytesPerFrame = crossAdapterBytesBothDirections;
+        if (!CheckedAdd(primaryRequired, framePrimaryTotal, primaryRequired) ||
+            !CheckedAdd(primaryRequired, frameCrossAdapterTotal, primaryRequired) ||
+            !CheckedAdd(secondaryRequired, frameSecondaryTotal, secondaryRequired) ||
+            !CheckedAdd(secondaryRequired, frameCrossAdapterTotal, secondaryRequired))
+        {
+            failureReason = L"Multi-GPU total memory estimate overflow";
+            budget.FailureReason = failureReason;
+            offscreenRenderTargetBudget = budget;
+            return false;
+        }
+    }
+
+    budget.PrimaryRequiredBytes = primaryRequired;
+    budget.SecondaryRequiredBytes = secondaryRequired;
+    if (!CheckedAdd(primaryRequired, secondaryRequired, budget.EstimatedTotalBytes))
+    {
+        failureReason = L"Offscreen render target total memory estimate overflow";
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+
+    if (budget.PrimaryBudgetLimitBytes != std::numeric_limits<uint64_t>::max() &&
+        primaryRequired > budget.PrimaryBudgetLimitBytes)
+    {
+        failureReason = L"Offscreen render targets exceed primary local video memory budget: required=" +
+            FormatBudgetBytes(primaryRequired) + L", limit=" + FormatBudgetBytes(budget.PrimaryBudgetLimitBytes);
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+    if (multiGpuAvailable &&
+        budget.SecondaryBudgetLimitBytes != std::numeric_limits<uint64_t>::max() &&
+        secondaryRequired > budget.SecondaryBudgetLimitBytes)
+    {
+        failureReason = L"Offscreen render targets exceed secondary local video memory budget: required=" +
+            FormatBudgetBytes(secondaryRequired) + L", limit=" + FormatBudgetBytes(budget.SecondaryBudgetLimitBytes);
+        budget.FailureReason = failureReason;
+        offscreenRenderTargetBudget = budget;
+        return false;
+    }
+
+    failureReason.clear();
+    budget.FailureReason.clear();
+    offscreenRenderTargetBudget = budget;
+    return true;
+}
+
+bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
 {
     assert(!isDrawingFrame && "Offscreen voxel render target rebuild must not run during DrawFrame");
     const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
     const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
+    std::wstring failureReason;
+    if (!ValidateOffscreenRenderTargetBudget(renderWidth, renderHeight, failureReason))
+    {
+        multiGpuStatus = failureReason;
+        logQueue.Push(L"\n" + failureReason);
+        return false;
+    }
 
-    RetireOffscreenRenderPaths(std::move(ambientPrimePath), std::move(antiAliasingPrimePath));
-    ++renderTargetGeneration;
-    ++descriptorGeneration;
     if (camera)
         camera->SetAspectRatio(RenderAspectRatio());
 
     auto commandQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
     auto cmdList = commandQueue->GetCommandList();
 
-    ambientPrimePath = std::make_shared<SSAO>(primeDevice, cmdList, renderWidth, renderHeight);
-    antiAliasingPrimePath = std::make_shared<SSAA>(primeDevice, 4, renderWidth, renderHeight);
+    const auto nextRenderTargetGeneration = renderTargetGeneration + 1;
+    const auto nextDescriptorGeneration = descriptorGeneration + 1;
+    std::shared_ptr<SSAO> rebuiltAmbientPath;
+    std::shared_ptr<SSAA> rebuiltAntiAliasingPath;
+    MultiGpuVoxelRenderTargets rebuiltMultiGpuTargets;
+    bool rebuiltMultiGpuTargetsValid = false;
+    try
+    {
+        rebuiltAmbientPath = std::make_shared<SSAO>(primeDevice, cmdList, renderWidth, renderHeight);
+        rebuiltAntiAliasingPath =
+            std::make_shared<SSAA>(primeDevice, SsaaSampleMultiplier, renderWidth, renderHeight);
 
-    const auto initFence = commandQueue->ExecuteCommandList(cmdList);
-    commandQueue->WaitForFenceValue(initFence);
+        if (multiGpuAvailable)
+        {
+            const auto ssaaDesc = rebuiltAntiAliasingPath->GetRenderTarget().GetD3D12ResourceDesc();
+            const auto multiGpuDesc = BuildMultiGpuVoxelRenderTargetDesc(
+                static_cast<UINT>(ssaaDesc.Width),
+                ssaaDesc.Height,
+                ssaaDesc.Format);
+            if (!rebuiltMultiGpuTargets.Initialize(
+                primeDevice,
+                secondDevice,
+                multiGpuDesc,
+                nextRenderTargetGeneration,
+                nextRenderTargetGeneration))
+            {
+                failureReason = rebuiltMultiGpuTargets.GetFailureMessage();
+                multiGpuStatus = failureReason;
+                logQueue.Push(L"\n" + failureReason);
+                return false;
+            }
+            rebuiltMultiGpuTargetsValid = true;
+        }
 
-    if (multiGpuAvailable)
-        RebuildMultiGpuVoxelRenderTargets();
+        const auto initFence = commandQueue->ExecuteCommandList(cmdList);
+        commandQueue->WaitForFenceValue(initFence);
+    }
+    catch (const DxException& ex)
+    {
+        failureReason = L"Offscreen render target rebuild failed: " + ex.ToString();
+        multiGpuStatus = failureReason;
+        logQueue.Push(L"\n" + failureReason);
+        return false;
+    }
+    catch (const std::exception& ex)
+    {
+        const std::string message = ex.what();
+        failureReason = L"Offscreen render target rebuild failed: " +
+            std::wstring(message.begin(), message.end());
+        multiGpuStatus = failureReason;
+        logQueue.Push(L"\n" + failureReason);
+        return false;
+    }
+
+    RetireOffscreenRenderPaths(std::move(ambientPrimePath), std::move(antiAliasingPrimePath));
+    if (multiGpuAvailable && rebuiltMultiGpuTargetsValid)
+        RetireCurrentMultiGpuVoxelRenderTargets();
+    ambientPrimePath = std::move(rebuiltAmbientPath);
+    antiAliasingPrimePath = std::move(rebuiltAntiAliasingPath);
+    if (multiGpuAvailable && rebuiltMultiGpuTargetsValid)
+        multiGpuVoxelRenderTargets = std::move(rebuiltMultiGpuTargets);
+    renderTargetGeneration = nextRenderTargetGeneration;
+    descriptorGeneration = nextDescriptorGeneration;
+    if (multiGpuAvailable && rebuiltMultiGpuTargetsValid)
+    {
+        multiGpuStatus = L"MultiGpu hardware available; secondary voxel render targets allocated; transfer mode=" +
+            std::wstring(CrossAdapterTransferModeNameW(crossAdapterTransferMode));
+        logQueue.Push(L"\n" + multiGpuStatus);
+    }
+    return true;
 }
 
-void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
+bool VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
 {
     assert(!isDrawingFrame && "Multi-GPU voxel render target rebuild must not run during DrawFrame");
-    RetireCurrentMultiGpuVoxelRenderTargets();
-    ++renderTargetGeneration;
-    ++descriptorGeneration;
 
     if (!multiGpuAvailable)
-        return;
+        return true;
 
+    std::wstring failureReason;
+    if (!ValidateOffscreenRenderTargetBudget(
+        std::max(1u, voxelWorkload.RenderResolutionWidth),
+        std::max(1u, voxelWorkload.RenderResolutionHeight),
+        failureReason))
+    {
+        multiGpuStatus = failureReason;
+        logQueue.Push(L"\n" + failureReason);
+        return false;
+    }
+
+    const auto nextRenderTargetGeneration = renderTargetGeneration + 1;
+    const auto nextDescriptorGeneration = descriptorGeneration + 1;
     const auto desc = BuildMultiGpuVoxelRenderTargetDesc();
-    if (!multiGpuVoxelRenderTargets.Initialize(
+    MultiGpuVoxelRenderTargets rebuiltTargets;
+    if (!rebuiltTargets.Initialize(
         primeDevice,
         secondDevice,
         desc,
-        renderTargetGeneration,
-        renderTargetGeneration))
+        nextRenderTargetGeneration,
+        nextRenderTargetGeneration))
     {
-        DisableMultiGpu(multiGpuVoxelRenderTargets.GetFailureMessage());
-        return;
+        multiGpuStatus = rebuiltTargets.GetFailureMessage();
+        logQueue.Push(L"\n" + multiGpuStatus);
+        return false;
     }
 
+    RetireCurrentMultiGpuVoxelRenderTargets();
+    multiGpuVoxelRenderTargets = std::move(rebuiltTargets);
+    renderTargetGeneration = nextRenderTargetGeneration;
+    descriptorGeneration = nextDescriptorGeneration;
     multiGpuStatus = L"MultiGpu hardware available; secondary voxel render targets allocated; transfer mode=" +
         std::wstring(CrossAdapterTransferModeNameW(crossAdapterTransferMode));
     logQueue.Push(L"\n" + multiGpuStatus);
     logQueue.Push(L"\nMultiGpu voxel render target frame sets: " +
         std::to_wstring(multiGpuVoxelRenderTargets.GetFrameCount()));
+    return true;
 }
 
 void VoxelWaterfallApp::DisableMultiGpu(const std::wstring& reason)
@@ -6422,7 +6887,9 @@ int VoxelWaterfallApp::RunMemoryRebuildStressTestOnce(
             if (!multiGpuVoxelRenderTargets.IsInitialized())
             {
                 blocked = true;
-                blockReason = WideToUtf8Local(multiGpuVoxelRenderTargets.GetFailureMessage());
+                blockReason = WideToUtf8Local(multiGpuStatus);
+                if (blockReason.empty())
+                    blockReason = WideToUtf8Local(multiGpuVoxelRenderTargets.GetFailureMessage());
                 if (blockReason.empty())
                     blockReason = "MultiGpu rebuild cycle requested but cross-adapter render targets are not initialized";
                 break;

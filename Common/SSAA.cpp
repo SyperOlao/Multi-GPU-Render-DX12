@@ -3,6 +3,32 @@
 #include "GCommandList.h"
 #include "GDevice.h"
 
+#include <cassert>
+#include <cmath>
+#include <stdexcept>
+
+namespace
+{
+    UINT LinearScaleForSsaaSampleMultiplier(const UINT sampleMultiplier)
+    {
+        switch (sampleMultiplier)
+        {
+        case 1:
+        case 4:
+        case 16:
+            {
+                const auto linearScale = static_cast<UINT>(
+                    std::sqrt(static_cast<double>(sampleMultiplier)) + 0.5);
+                assert(linearScale * linearScale == sampleMultiplier);
+                return linearScale;
+            }
+        default:
+            assert(false && "SSAA sample multiplier must be 1, 4, or 16");
+            throw std::invalid_argument("SSAA sample multiplier must be 1, 4, or 16");
+        }
+    }
+}
+
 
 D3D12_VIEWPORT SSAA::GetViewPort() const
 {
@@ -16,13 +42,24 @@ D3D12_RECT SSAA::GetRect() const
 
 void SSAA::SetMultiplier(const UINT multi, const UINT newWidth, const UINT newHeight)
 {
-    ResolutionMultiplier = multi;
+    SsaaSampleMultiplier = multi;
+    LinearScale = LinearScaleForSsaaSampleMultiplier(multi);
     OnResize(newWidth, newHeight);
 }
 
-float SSAA::GetMultiplier()
+UINT SSAA::GetSampleMultiplier() const
 {
-    return static_cast<float>(ResolutionMultiplier);
+    return SsaaSampleMultiplier;
+}
+
+UINT SSAA::GetLinearScale() const
+{
+    return LinearScale;
+}
+
+float SSAA::GetMultiplier() const
+{
+    return static_cast<float>(SsaaSampleMultiplier);
 }
 
 GTexture& SSAA::GetRenderTarget()
@@ -57,13 +94,13 @@ GDescriptor* SSAA::GetDSV()
 
 void SSAA::OnResize(UINT newWidth, UINT newHeight)
 {
-    if ((viewport.Width == ResolutionMultiplier * newWidth) && (viewport.Height == ResolutionMultiplier * newHeight))
+    if ((viewport.Width == LinearScale * newWidth) && (viewport.Height == LinearScale * newHeight))
     {
         return;
     }
 
-    int width = newWidth * ResolutionMultiplier;
-    int height = newHeight * ResolutionMultiplier;
+    int width = newWidth * LinearScale;
+    int height = newHeight * LinearScale;
 
     viewport.Height = static_cast<float>(height);
     viewport.Width = static_cast<float>(width);
@@ -156,8 +193,12 @@ void SSAA::OnResize(UINT newWidth, UINT newHeight)
     depthMap.CreateDepthStencilView(&dsvDesc, &dsvMemory);
 }
 
-SSAA::SSAA(const std::shared_ptr<GDevice>& device, const UINT multiplier, const UINT width,
-           const UINT height, DXGI_FORMAT depthStencilFormat) : ResolutionMultiplier(multiplier), depthStencilFormat(depthStencilFormat), device(device)
+SSAA::SSAA(const std::shared_ptr<GDevice>& device, const UINT sampleMultiplier, const UINT width,
+           const UINT height, DXGI_FORMAT depthStencilFormat) :
+    SsaaSampleMultiplier(sampleMultiplier),
+    LinearScale(LinearScaleForSsaaSampleMultiplier(sampleMultiplier)),
+    depthStencilFormat(depthStencilFormat),
+    device(device)
 {
     srvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
     rtvMemory = device->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
