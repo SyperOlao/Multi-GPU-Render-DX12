@@ -2482,6 +2482,9 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         multiGpuPublicationEligible,
         &adapterReportLines,
         simulationFrameIndex,
+        currentOverlayFps,
+        currentOverlayFrameTimeMs,
+        currentPresentToPresentMs,
         voxelSimulationAccumulator,
         voxelSimulationStepsThisFrame,
         voxelInterpolationAlpha,
@@ -3909,6 +3912,192 @@ int VoxelWaterfallApp::RunAutomaticBenchmarkSuiteOnce(
     default:
         return 2;
     }
+}
+
+int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSeconds,
+                                                    const std::filesystem::path& outputDirectory)
+{
+    const uint32_t boundedDurationSeconds = std::max(1u, durationSeconds);
+    std::filesystem::path runOutputDirectory = outputDirectory;
+    if (runOutputDirectory.empty())
+    {
+        runOutputDirectory = std::filesystem::path(L"VoxelQuickMetrics") /
+            (FilesystemTimestampToken() + "_" + std::to_string(GetCurrentProcessId()));
+    }
+    else if (DirectoryHasFiles(runOutputDirectory))
+    {
+        logQueue.Push(L"Quick metrics benchmark refused: output directory is not empty");
+        return 3;
+    }
+
+    std::filesystem::create_directories(runOutputDirectory);
+    const auto csvPath = runOutputDirectory / L"quick_metrics.csv";
+    std::ofstream csv(csvPath, std::ios::out | std::ios::trunc);
+    if (!csv.is_open())
+    {
+        logQueue.Push(L"Quick metrics benchmark failed: quick_metrics.csv could not be opened");
+        return 2;
+    }
+
+    csv.imbue(std::locale::classic());
+    csv << "schema,elapsed_seconds,frame_index,simulation_frame_index,requested_mode,actual_mode,"
+        << "fps,frame_time_ms,present_to_present_ms,wall_delta_ms,cpu_wait_ms,"
+        << "total_voxels,static_voxels,dynamic_voxels,primary_rendered_voxels,"
+        << "secondary_rendered_voxels,total_cross_adapter_bytes,render_output_transfer_bytes,"
+        << "color_transfer_bytes,depth_transfer_bytes,secondary_draw_calls\n";
+
+    timer.Reset();
+    pumpFrameQuitRequested = false;
+    const auto start = std::chrono::steady_clock::now();
+    const auto end = start + std::chrono::seconds(boundedDurationSeconds);
+    uint64_t measuredFrames = 0;
+    double frameTimeSumMs = 0.0;
+    double minFrameTimeMs = std::numeric_limits<double>::max();
+    double maxFrameTimeMs = 0.0;
+
+    while (!pumpFrameQuitRequested && std::chrono::steady_clock::now() < end)
+    {
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
+        if (!presented || currentPresentToPresentMs <= 0.0)
+            continue;
+
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsedSeconds = std::chrono::duration<double>(now - start).count();
+        const double frameTimeMs = currentPresentToPresentMs;
+        const double fps = frameTimeMs > 0.0 ? 1000.0 / frameTimeMs : 0.0;
+        frameTimeSumMs += frameTimeMs;
+        minFrameTimeMs = std::min(minFrameTimeMs, frameTimeMs);
+        maxFrameTimeMs = std::max(maxFrameTimeMs, frameTimeMs);
+        ++measuredFrames;
+
+        csv << "mgpu_voxel_quick_metrics.v1,"
+            << elapsedSeconds << ','
+            << measuredFrames << ','
+            << simulationFrameIndex << ','
+            << GetExecutionModeName(requestedExecutionMode) << ','
+            << GetExecutionModeName(frameGraphTelemetry.ActualMode) << ','
+            << fps << ','
+            << frameTimeMs << ','
+            << currentPresentToPresentMs << ','
+            << frameGraphTelemetry.WallDeltaMs << ','
+            << currentPrimaryWaitMs << ','
+            << voxelWorkload.TotalVoxelCount << ','
+            << voxelWorkload.ActualStaticVoxelCount << ','
+            << voxelWorkload.ActualDynamicVoxelCount << ','
+            << frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered() << ','
+            << frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered() << ','
+            << frameGraphTelemetry.TotalCrossAdapterBytes << ','
+            << frameGraphTelemetry.RenderOutputTransferBytes << ','
+            << frameGraphTelemetry.ColorBytesTransferred << ','
+            << frameGraphTelemetry.DepthBytesTransferred << ','
+            << frameGraphTelemetry.SecondaryDrawCalls << '\n';
+    }
+    csv.flush();
+    csv.close();
+
+    const auto finish = std::chrono::steady_clock::now();
+    const double actualDurationSeconds = std::chrono::duration<double>(finish - start).count();
+    const double averageFrameTimeMs = measuredFrames > 0
+                                          ? frameTimeSumMs / static_cast<double>(measuredFrames)
+                                          : 0.0;
+    const double averageFps = averageFrameTimeMs > 0.0 ? 1000.0 / averageFrameTimeMs : 0.0;
+    const auto metadata = BuildBenchmarkMetadata();
+
+    MEMORYSTATUSEX memoryStatus{};
+    memoryStatus.dwLength = sizeof(memoryStatus);
+    const bool memoryStatusAvailable = GlobalMemoryStatusEx(&memoryStatus) != FALSE;
+    SYSTEM_INFO systemInfo{};
+    GetSystemInfo(&systemInfo);
+    const std::string cpuModel = RunCommandTrimmed(
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+        "\"(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)\"");
+    const std::string videoControllers = RunCommandTrimmed(
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+        "\"Get-CimInstance Win32_VideoController | "
+        "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID | ConvertTo-Json -Compress\"");
+    std::ofstream environment(runOutputDirectory / L"environment.json", std::ios::out | std::ios::trunc);
+    environment.imbue(std::locale::classic());
+    environment << "{\n"
+                << "  \"schema\":\"mgpu_voxel_quick_environment.v1\",\n"
+                << "  \"benchmark_kind\":\"quick_metrics_time_boxed\",\n"
+                << "  \"duration_seconds_requested\":" << boundedDurationSeconds << ",\n"
+                << "  \"duration_seconds_actual\":" << actualDurationSeconds << ",\n"
+                << "  \"measured_frames\":" << measuredFrames << ",\n"
+                << "  \"average_fps\":" << averageFps << ",\n"
+                << "  \"average_frame_time_ms\":" << averageFrameTimeMs << ",\n"
+                << "  \"min_frame_time_ms\":" << (measuredFrames > 0 ? minFrameTimeMs : 0.0) << ",\n"
+                << "  \"max_frame_time_ms\":" << maxFrameTimeMs << ",\n"
+                << "  \"requested_mode\":\"" << EscapeJsonString(metadata.RequestedMode) << "\",\n"
+                << "  \"actual_mode\":\"" << EscapeJsonString(metadata.ActualMode) << "\",\n"
+                << "  \"transfer_mode\":\"" << EscapeJsonString(metadata.TransferMode) << "\",\n"
+                << "  \"profile\":\"" << EscapeJsonString(metadata.ProfileName) << "\",\n"
+                << "  \"scene_preset\":\"" << EscapeJsonString(metadata.ScenePreset) << "\",\n"
+                << "  \"temporal_policy\":\"" << EscapeJsonString(metadata.TemporalPolicy) << "\",\n"
+                << "  \"temporal_interval\":" << metadata.TemporalDecimationInterval << ",\n"
+                << "  \"spatial_lod_policy\":\"" << EscapeJsonString(metadata.SpatialLodPolicy) << "\",\n"
+                << "  \"seed\":" << metadata.Seed << ",\n"
+                << "  \"total_voxels\":" << metadata.TotalVoxelCount << ",\n"
+                << "  \"static_voxels\":" << metadata.ActualStaticVoxelCount << ",\n"
+                << "  \"dynamic_particles\":" << metadata.ActualDynamicVoxelCount << ",\n"
+                << "  \"requested_static_budget\":" << metadata.StaticVoxelBudget << ",\n"
+                << "  \"requested_dynamic_budget\":" << metadata.DynamicVoxelBudget << ",\n"
+                << "  \"secondary_share\":" << metadata.SecondaryShare << ",\n"
+                << "  \"render_width\":" << metadata.RenderWidth << ",\n"
+                << "  \"render_height\":" << metadata.RenderHeight << ",\n"
+                << "  \"swapchain_width\":" << metadata.SwapchainWidth << ",\n"
+                << "  \"swapchain_height\":" << metadata.SwapchainHeight << ",\n"
+                << "  \"primary_rendered_voxels\":" << metadata.PrimaryRenderedVoxelCount << ",\n"
+                << "  \"secondary_rendered_voxels\":" << metadata.SecondaryRenderedVoxelCount << ",\n"
+                << "  \"secondary_draw_calls\":" << metadata.SecondaryDrawCalls << ",\n"
+                << "  \"total_cross_adapter_bytes_last_frame\":" << metadata.TotalCrossAdapterBytes << ",\n"
+                << "  \"render_output_transfer_bytes_last_frame\":" << metadata.RenderOutputTransferBytes << ",\n"
+                << "  \"cpu_model\":\"" << EscapeJsonString(cpuModel) << "\",\n"
+                << "  \"logical_processor_count\":" << systemInfo.dwNumberOfProcessors << ",\n"
+                << "  \"ram_bytes\":" << (memoryStatusAvailable ? memoryStatus.ullTotalPhys : 0) << ",\n"
+                << "  \"operating_system\":\"" << EscapeJsonString(metadata.OperatingSystem) << "\",\n"
+                << "  \"build_configuration\":\"" << EscapeJsonString(metadata.BuildConfiguration) << "\",\n"
+                << "  \"git_commit\":\"" << EscapeJsonString(metadata.GitCommit) << "\",\n"
+                << "  \"git_dirty_state\":\"" << EscapeJsonString(metadata.GitDirtyState) << "\",\n"
+                << "  \"primary_gpu\":{\"name\":\"" << EscapeJsonString(WideToUtf8Local(metadata.PrimaryAdapterName))
+                << "\",\"vendor_id\":" << metadata.PrimaryVendorId
+                << ",\"device_id\":" << metadata.PrimaryDeviceId
+                << ",\"dedicated_video_memory_bytes\":" << metadata.PrimaryDedicatedVideoMemory
+                << ",\"luid\":\"" << EscapeJsonString(metadata.PrimaryAdapterLuid) << "\"},\n"
+                << "  \"secondary_gpu\":{\"name\":\"" << EscapeJsonString(WideToUtf8Local(metadata.SecondaryAdapterName))
+                << "\",\"vendor_id\":" << metadata.SecondaryVendorId
+                << ",\"device_id\":" << metadata.SecondaryDeviceId
+                << ",\"dedicated_video_memory_bytes\":" << metadata.SecondaryDedicatedVideoMemory
+                << ",\"luid\":\"" << EscapeJsonString(metadata.SecondaryAdapterLuid) << "\"},\n"
+                << "  \"windows_video_controllers_json\":\"" << EscapeJsonString(videoControllers) << "\",\n"
+                << "  \"artifacts\":{\"quick_metrics_csv\":\"" << EscapeJsonString(csvPath.string())
+                << "\",\"summary\":\""
+                << EscapeJsonString((runOutputDirectory / L"quick_metrics_summary.json").string()) << "\"}\n"
+                << "}\n";
+    environment.close();
+
+    std::ofstream summary(runOutputDirectory / L"quick_metrics_summary.json", std::ios::out | std::ios::trunc);
+    summary.imbue(std::locale::classic());
+    summary << "{\n"
+            << "  \"schema\":\"mgpu_voxel_quick_metrics_summary.v1\",\n"
+            << "  \"duration_seconds\":" << boundedDurationSeconds << ",\n"
+            << "  \"actual_duration_seconds\":" << actualDurationSeconds << ",\n"
+            << "  \"measured_frames\":" << measuredFrames << ",\n"
+            << "  \"average_fps\":" << averageFps << ",\n"
+            << "  \"average_frame_time_ms\":" << averageFrameTimeMs << ",\n"
+            << "  \"min_frame_time_ms\":" << (measuredFrames > 0 ? minFrameTimeMs : 0.0) << ",\n"
+            << "  \"max_frame_time_ms\":" << maxFrameTimeMs << ",\n"
+            << "  \"requested_mode\":\"" << GetExecutionModeName(requestedExecutionMode) << "\",\n"
+            << "  \"actual_mode\":\"" << GetExecutionModeName(frameGraphTelemetry.ActualMode) << "\",\n"
+            << "  \"csv\":\"" << EscapeJsonString(csvPath.string()) << "\",\n"
+            << "  \"environment\":\""
+            << EscapeJsonString((runOutputDirectory / L"environment.json").string()) << "\"\n"
+            << "}\n";
+    summary.close();
+
+    benchmarkController.Shutdown(BuildBenchmarkControllerContext());
+    return pumpFrameQuitRequested ? 4 : 0;
 }
 
 void VoxelWaterfallApp::RequestResearchRunner(const ResearchRunnerRequest& request)
@@ -7071,6 +7260,8 @@ void VoxelWaterfallApp::CalculateFrameStats()
         const uint64_t loopIterationsThisSecond = mainLoopIterationCount;
         const float fps = static_cast<float>(successfulPresentCount);
         const float mspf = fps > 0.0f ? 1000.0f / fps : 0.0f;
+        currentOverlayFps = fps;
+        currentOverlayFrameTimeMs = mspf;
 
         minFps = std::min(fps, minFps);
         if (mspf > 0.0f)

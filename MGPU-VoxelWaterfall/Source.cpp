@@ -53,6 +53,8 @@ namespace
             HasCommandLineFlag(commandLine, "--verify-two-adapter") ||
             HasCommandLineFlag(commandLine, "--benchmark-smoke") ||
             HasCommandLineFlag(commandLine, "--benchmark-full") ||
+            HasCommandLineFlag(commandLine, "--benchmark-quick-5min") ||
+            HasCommandLineFlag(commandLine, "--quick-metrics") ||
             HasCommandLineFlag(commandLine, "--profile-sweep") ||
             HasCommandLineFlag(commandLine, "--runtime-mutation-stress") ||
             HasCommandLineFlag(commandLine, "--asan-runtime-mutation-scenario") ||
@@ -196,6 +198,13 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                     ReadCommandLineUint(cmdLine, "--benchmark-seed=", 0),
                     ReadCommandLineUint(cmdLine, "--benchmark-repetitions=", 0),
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--benchmark-quick-5min") ||
+                     HasCommandLineFlag(cmdLine, "--quick-metrics"))
+                result = theApp.RunQuickMetricsBenchmarkOnce(
+                    ReadCommandLineUint(cmdLine, "--quick-metrics-duration-seconds=", 300),
+                    ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir=").empty()
+                        ? ReadCommandLinePath(cmdLine, "--benchmark-output-dir=")
+                        : ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--profile-sweep"))
                 result = theApp.RunProfileSweepOnce(
                     ReadCommandLineUint(cmdLine, "--profile-sweep-seed=",

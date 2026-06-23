@@ -35,6 +35,9 @@ struct VoxelWaterfallDebugPanelContext
     bool PublicationEligible = false;
     const std::vector<std::wstring>* AdapterReportLines = nullptr;
     uint64_t SimulationFrameIndex = 0;
+    double OverlayFps = 0.0;
+    double OverlayFrameTimeMs = 0.0;
+    double LastPresentToPresentMs = 0.0;
     double AccumulatedSimulationTime = 0.0;
     uint32_t SimulationStepsThisFrame = 0;
     float InterpolationAlpha = 0.0f;

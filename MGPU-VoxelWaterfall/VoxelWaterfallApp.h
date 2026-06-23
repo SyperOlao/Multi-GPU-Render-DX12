@@ -58,6 +58,8 @@ public:
                             uint32_t measuredFrames = 120,
                             uint32_t repetitions = 1,
                             const std::filesystem::path& outputDirectory = {});
+    int RunQuickMetricsBenchmarkOnce(uint32_t durationSeconds = 300,
+                                     const std::filesystem::path& outputDirectory = {});
     int RunRuntimeMutationStressTestOnce(uint32_t frameCount = 1000,
                                          const std::filesystem::path& outputDirectory = {});
     int RunAddressSanitizerRuntimeMutationScenarioOnce(const std::filesystem::path& outputDirectory = {});
@@ -428,6 +430,8 @@ protected:
     std::chrono::steady_clock::time_point frameResourceBackpressureStart{};
     std::chrono::steady_clock::time_point lastSuccessfulPresentTime{};
     double currentPresentToPresentMs = 0.0;
+    double currentOverlayFps = 0.0;
+    double currentOverlayFrameTimeMs = 0.0;
     bool hasSuccessfulPresentTime = false;
     uint64_t frameSerial = 0;
     uint64_t mainLoopIterationCount = 0;

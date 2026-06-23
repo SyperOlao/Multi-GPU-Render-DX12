@@ -377,6 +377,23 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
     }
     ImGui::End();
 
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 performancePivot(1.0f, 0.0f);
+    const ImVec2 performancePos(viewport->WorkPos.x + viewport->WorkSize.x - 10.0f,
+                                viewport->WorkPos.y + 8.0f);
+    ImGui::SetNextWindowPos(performancePos, ImGuiCond_Always, performancePivot);
+    ImGui::SetNextWindowBgAlpha(0.66f);
+    if (ImGui::Begin("VoxelPerformanceOverlay", nullptr, overlayFlags))
+    {
+        const double instantFps = context.LastPresentToPresentMs > 0.0
+                                      ? 1000.0 / context.LastPresentToPresentMs
+                                      : 0.0;
+        ImGui::Text("FPS %.1f", context.OverlayFps);
+        ImGui::Text("Frame %.2f ms", context.OverlayFrameTimeMs);
+        ImGui::Text("Last %.2f ms / %.1f FPS", context.LastPresentToPresentMs, instantFps);
+    }
+    ImGui::End();
+
     ImGui::SetNextWindowPos(ImVec2(10.0f, 42.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430.0f, 0.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("MGPU Voxel Research", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
