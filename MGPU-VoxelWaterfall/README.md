@@ -10,6 +10,18 @@
 - Mode changes rebuild adapter-local partitions after a controlled flush instead of migrating resources between devices.
 - GPU virtual addresses and descriptors are never shared between command lists from different adapters.
 
+## Benchmark Launch
+### Single-GPU
+```bash
+cd F:\projects\Multi-GPU-Render-DX12
+.\x64\Release\MGPU-VoxelWaterfall.exe   --benchmark-full --benchmark-output-dir="F:\projects\Multi-GPU-Render-DX12\artifacts\paper_full_001" ` --benchmark-seed=20260623 ` --benchmark-repetitions=3
+
+```
+### Multi-GPU
+```bash
+cd F:\projects\Multi-GPU-Render-DX12
+.\x64\Release\MGPU-VoxelWaterfall.exe --quick-metrics --quick-metrics-mode=MultiGpuFull --quick-metrics-duration-seconds=100 --quick-metrics-output-dir="F:\projects\Multi-GPU-Render-DX12\artifacts\paper_quick_mgpu_001"
+```
 ## Multi-GPU Frame
 
 GPU 0:

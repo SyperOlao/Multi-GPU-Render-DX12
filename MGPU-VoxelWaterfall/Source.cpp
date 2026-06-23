@@ -105,6 +105,56 @@ namespace
         return text.substr(start, end == std::string::npos ? std::string::npos : end - start);
     }
 
+    std::string ReadCommandLineString(const char* commandLine, const char* key)
+    {
+        if (!commandLine || !key)
+            return {};
+        const std::string text(commandLine);
+        const std::string token(key);
+        const auto pos = text.find(token);
+        if (pos == std::string::npos)
+            return {};
+        const auto start = pos + token.size();
+        if (start >= text.size())
+            return {};
+        if (text[start] == '"')
+        {
+            const auto endQuote = text.find('"', start + 1);
+            return text.substr(start + 1, endQuote == std::string::npos ? std::string::npos : endQuote - start - 1);
+        }
+        const auto end = text.find_first_of(" \t\r\n", start);
+        return text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+
+    bool ReadCommandLineExecutionMode(const char* commandLine, const char* key, VoxelExecutionMode& mode)
+    {
+        const std::string value = ReadCommandLineString(commandLine, key);
+        if (value.empty())
+            return false;
+
+        if (value == "SingleGpuFull")
+        {
+            mode = VoxelExecutionMode::SingleGpuFull;
+            return true;
+        }
+        if (value == "MultiGpuFull")
+        {
+            mode = VoxelExecutionMode::MultiGpuFull;
+            return true;
+        }
+        if (value == "SingleGpuTemporalDecimation")
+        {
+            mode = VoxelExecutionMode::SingleGpuTemporalDecimation;
+            return true;
+        }
+        if (value == "MultiGpuTemporalDecimation")
+        {
+            mode = VoxelExecutionMode::MultiGpuTemporalDecimation;
+            return true;
+        }
+        return false;
+    }
+
     std::string NarrowForArtifact(const std::wstring& value)
     {
         std::string text;
@@ -200,11 +250,19 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                     ReadCommandLinePath(cmdLine, "--benchmark-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--benchmark-quick-5min") ||
                      HasCommandLineFlag(cmdLine, "--quick-metrics"))
+            {
+                VoxelExecutionMode quickMetricsMode = VoxelExecutionMode::SingleGpuFull;
+                if (ReadCommandLineExecutionMode(cmdLine, "--quick-metrics-mode=", quickMetricsMode) ||
+                    ReadCommandLineExecutionMode(cmdLine, "--execution-mode=", quickMetricsMode))
+                {
+                    theApp.SetExecutionModeForResearchCommand(quickMetricsMode);
+                }
                 result = theApp.RunQuickMetricsBenchmarkOnce(
                     ReadCommandLineUint(cmdLine, "--quick-metrics-duration-seconds=", 300),
                     ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir=").empty()
                         ? ReadCommandLinePath(cmdLine, "--benchmark-output-dir=")
                         : ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir="));
+            }
             else if (HasCommandLineFlag(cmdLine, "--profile-sweep"))
                 result = theApp.RunProfileSweepOnce(
                     ReadCommandLineUint(cmdLine, "--profile-sweep-seed=",

@@ -63,6 +63,7 @@ public:
     int RunRuntimeMutationStressTestOnce(uint32_t frameCount = 1000,
                                          const std::filesystem::path& outputDirectory = {});
     int RunAddressSanitizerRuntimeMutationScenarioOnce(const std::filesystem::path& outputDirectory = {});
+    void SetExecutionModeForResearchCommand(VoxelExecutionMode requestedMode);
 
 protected:
     void Update(const GameTimer& gt) override;

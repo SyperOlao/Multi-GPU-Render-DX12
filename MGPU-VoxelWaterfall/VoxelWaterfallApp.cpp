@@ -5984,6 +5984,11 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
     logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
 }
 
+void VoxelWaterfallApp::SetExecutionModeForResearchCommand(const VoxelExecutionMode requestedMode)
+{
+    ApplyExecutionMode(requestedMode);
+}
+
 void VoxelWaterfallApp::ResetVoxelRuntimeAfterPartitionRebuild(const bool resetTimeline)
 {
     voxelSimulationAccumulator = 0.0;
