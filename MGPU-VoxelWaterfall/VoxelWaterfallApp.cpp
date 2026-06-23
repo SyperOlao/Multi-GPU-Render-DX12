@@ -417,6 +417,27 @@ namespace
         }
     }
 
+    VoxelResearchScenePreset ScenePresetForProfile(const VoxelResearchWorkloadProfile profile)
+    {
+        switch (profile)
+        {
+        case VoxelResearchWorkloadProfile::StaticRenderOnly:
+            return VoxelResearchScenePreset::StaticVoxelEnvironment;
+        case VoxelResearchWorkloadProfile::DynamicSimulationAndRender:
+            return VoxelResearchScenePreset::DynamicWaterfall;
+        case VoxelResearchWorkloadProfile::MixedStaticAndDynamic:
+            return VoxelResearchScenePreset::MixedVoxelEnvironment;
+        case VoxelResearchWorkloadProfile::OcclusionValidation:
+            return VoxelResearchScenePreset::OcclusionValidation;
+        case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
+            return VoxelResearchScenePreset::SpatialLodDemonstration;
+        case VoxelResearchWorkloadProfile::DemoMixed:
+            return VoxelResearchScenePreset::DemoMixed;
+        default:
+            return VoxelResearchScenePreset::MixedVoxelEnvironment;
+        }
+    }
+
     const char* ResearchRunnerSuiteName(const ResearchRunnerSuite suite)
     {
         switch (suite)
@@ -1446,13 +1467,6 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     assert(currentFrameResourceReady && currentFrameResource &&
            "DrawFrame requires a ready frame resource");
 
-    if (hasDeferredExecutionMode)
-    {
-        const auto mode = deferredExecutionMode;
-        hasDeferredExecutionMode = false;
-        ApplyExecutionMode(mode);
-    }
-
     struct DrawFrameScope
     {
         bool& Flag;
@@ -1460,12 +1474,6 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         ~DrawFrameScope() { Flag = false; }
     } drawFrameScope(isDrawingFrame);
 
-    ApplyPendingVoxelSettings();
-    if (benchmarkController.IsAutomaticActive())
-    {
-        auto benchmarkContext = BuildBenchmarkControllerContext();
-        benchmarkController.UpdateAutomatic(benchmarkContext);
-    }
     const bool benchmarkWasActive = benchmarkProfiler.IsActive();
     std::optional<VoxelBenchmarkProfiler::FrameMetadata> benchmarkFrameMetadata;
     if (benchmarkWasActive)
@@ -1543,6 +1551,9 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.FrameResourceBackpressurePollCount = currentFrameResourceBackpressurePollCount;
     frameGraphTelemetry.FrameResourceBackpressureMs = currentPrimaryWaitMs;
     frameGraphTelemetry.DrainedMessageCount = currentFrameDrainedMessageCount;
+    frameGraphTelemetry.CurrentFramePumpDepth = currentFramePumpDepth;
+    frameGraphTelemetry.MaximumObservedFramePumpDepth = maximumObservedFramePumpDepth;
+    frameGraphTelemetry.RejectedRecursiveFrameRequests = rejectedRecursiveFrameRequests;
     frameGraphTelemetry.RequestedMode = requestedExecutionMode;
     frameGraphTelemetry.ActualMode = simulationResult.UsedMultiGpuMode
                                           ? executionMode
@@ -1599,16 +1610,16 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             partition.GpuPartition->ConfigureSpatialLod(voxelWorkload.SpatialLod, spatialLodCameraPosition);
     }
 
-    const auto voxelRenderWorkload = BuildVoxelRenderWorkload();
-    ValidateVoxelRenderWorkload(voxelRenderWorkload);
+    const auto voxelFrameRenderPlan = BuildVoxelFrameRenderPlan();
+    ValidateVoxelFrameRenderPlan(voxelFrameRenderPlan);
     std::vector<VoxelPartitionRenderResult> primaryVoxelRenderResults;
     std::vector<VoxelPartitionRenderResult> secondaryVoxelRenderResults;
     const bool hasSecondaryVoxelDrawWork = std::any_of(
-        voxelRenderWorkload.SecondaryOwnedPartitions.begin(),
-        voxelRenderWorkload.SecondaryOwnedPartitions.end(),
-        [](const VoxelAdapterPartition* partition)
+        voxelFrameRenderPlan.SecondaryOwnedPartitions.begin(),
+        voxelFrameRenderPlan.SecondaryOwnedPartitions.end(),
+        [](const VoxelFramePartitionRenderPlan& partition)
         {
-            return partition && partition->GpuPartition && partition->VoxelCount() > 0;
+            return partition.GpuPartition && partition.LogicalVoxelCount > 0;
         });
 
     PrimaryBasePassContext primaryBaseContext{
@@ -1620,9 +1631,9 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         benchmarkProfiler,
         graphicsPassFenceValue,
         &frameGraphTelemetry,
-        &voxelRenderWorkload,
+        &voxelFrameRenderPlan,
         &primaryVoxelRenderResults,
-        [this, &voxelRenderWorkload, &primaryVoxelRenderResults](const std::shared_ptr<GCommandList>& cmdList)
+        [this, &voxelFrameRenderPlan, &primaryVoxelRenderResults](const std::shared_ptr<GCommandList>& cmdList)
         {
             VoxelRenderPassContext basePassContext{
                 primeDeviceSignature,
@@ -1636,7 +1647,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 *antiAliasingPrimePath,
                 defaultPrimePipelineResources,
                 typedRenderer,
-                &voxelRenderWorkload.PrimaryOwnedPartitions,
+                &voxelFrameRenderPlan.PrimaryOwnedPartitions,
                 &primaryVoxelRenderResults,
                 &benchmarkProfiler,
                 MainWindow->GetCurrentBackBuffer()
@@ -1699,7 +1710,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             simulationResult.SecondaryComputeFenceValue,
             timestampHeapIndex,
             *currentFrameResource,
-            voxelRenderWorkload.SecondaryOwnedPartitions,
+            &voxelFrameRenderPlan.SecondaryOwnedPartitions,
             secondaryFrameTargets,
             secondaryViewport,
             secondaryScissor,
@@ -1816,8 +1827,13 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         }
     };
     renderPipeline.SubmitFinalCompositeAndPresentPass(finalPassContext);
+    if (currentFrameResource && currentFrameResource->PrimeRenderFenceValue != 0)
+    {
+        retainedVoxelFrameRenderPlans.push_back(
+            RetainedVoxelFrameRenderPlan{voxelFrameRenderPlan, currentFrameResource->PrimeRenderFenceValue});
+    }
     ValidateVoxelFrameDrawResultsCheap(
-        voxelRenderWorkload,
+        voxelFrameRenderPlan,
         primaryVoxelRenderResults,
         secondaryVoxelRenderResults,
         frameGraphTelemetry.SecondaryGraphicsSubmitted);
@@ -2117,14 +2133,14 @@ void VoxelWaterfallApp::DrawUserInterface(const std::shared_ptr<GCommandList>& c
         researchRunnerOutputPath,
         researchRunnerConfigIndex,
         researchRunnerConfigTotal,
-        [this](const VoxelResearchWorkloadProfile profile) { ApplyResearchWorkloadProfile(profile); },
-        [this](const VoxelResearchCameraMode mode) { ApplyResearchCameraMode(mode); },
-        [this](const VoxelResearchLightingPreset preset) { ApplyResearchLightingPreset(preset); },
-        [this](const VoxelRenderResolutionPreset preset) { ApplyRenderResolutionPreset(preset); },
-        [this](const VoxelExecutionMode mode) { ApplyExecutionMode(mode); },
+        [this](const VoxelResearchWorkloadProfile profile) { pendingRuntimeChanges.WorkloadProfile = profile; },
+        [this](const VoxelResearchCameraMode mode) { pendingRuntimeChanges.CameraMode = mode; },
+        [this](const VoxelResearchLightingPreset preset) { pendingRuntimeChanges.LightingPreset = preset; },
+        [this](const VoxelRenderResolutionPreset preset) { pendingRuntimeChanges.RenderResolutionPreset = preset; },
+        [this](const VoxelExecutionMode mode) { pendingRuntimeChanges.ExecutionMode = mode; },
         [this] { StartManualBenchmark(); },
         [this] { StopManualBenchmark(); },
-        [this] { RunVisualValidation(); },
+        [this] { RequestVisualValidation(); },
         [this] { StartAutomaticBenchmark(); },
         [this] { StopAutomaticBenchmark(); },
         [this] { RequestApplyVoxelWorkloadSettings(); },
@@ -2697,6 +2713,18 @@ void VoxelWaterfallApp::RunVisualValidation(const std::filesystem::path& request
                                             const BenchmarkSuite suite,
                                             const uint32_t seedOverride)
 {
+    if (isPumpingFrame || isDrawingFrame)
+    {
+        ++rejectedRecursiveFrameRequests;
+        assert(false && "RunVisualValidation must be started outside PumpOneFrame/DrawFrame");
+        visualValidationMetrics = {};
+        visualValidationMetrics.HasResult = false;
+        visualValidationMetrics.Passed = false;
+        visualValidationMetrics.FailReason =
+            "RunVisualValidation rejected because it was started during an active frame pump";
+        return;
+    }
+
     VoxelVisualValidationConfig config{};
     auto& snapshot = config.Snapshot;
     snapshot.SchemaVersion = 2;
@@ -3262,7 +3290,10 @@ int VoxelWaterfallApp::RunTwoAdapterVerificationOnce(const std::filesystem::path
            !pumpFrameQuitRequested)
     {
         ++verificationPumpAttempts;
-        if (PumpOneFrame())
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
+        if (presented)
             accumulateFrameEvidence();
         else
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -3478,7 +3509,9 @@ int VoxelWaterfallApp::RunAutomaticBenchmarkSuiteOnce(
     pumpFrameQuitRequested = false;
     while (benchmarkController.IsAutomaticActive())
     {
-        PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
         if (pumpFrameQuitRequested)
         {
             benchmarkController.StopAutomatic(BuildBenchmarkControllerContext());
@@ -3544,6 +3577,9 @@ void VoxelWaterfallApp::CancelResearchRunner()
 
 void VoxelWaterfallApp::AdvanceResearchRunner(const bool presentedFrame)
 {
+    if (isPumpingFrame)
+        return;
+
     if (!researchRunnerActive || !researchRunnerHasRequest)
         return;
 
@@ -3827,7 +3863,9 @@ int VoxelWaterfallApp::RunProfileSweepOnce(
     pumpFrameQuitRequested = false;
     while (researchRunnerActive && !pumpFrameQuitRequested)
     {
-        PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
     }
 
     return researchRunnerPhase == "COMPLETE" ? 0 : 2;
@@ -3835,35 +3873,235 @@ int VoxelWaterfallApp::RunProfileSweepOnce(
 
 void VoxelWaterfallApp::RequestApplyVoxelWorkloadSettings()
 {
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
+}
+
+void VoxelWaterfallApp::RequestVisualValidation(const std::filesystem::path& outputDirectory,
+                                                const BenchmarkSuite suite,
+                                                const uint32_t seedOverride)
+{
+    PendingRuntimeChanges::VisualValidationRequest request{};
+    request.OutputDirectory = outputDirectory;
+    request.Suite = suite;
+    request.SeedOverride = seedOverride;
+    pendingRuntimeChanges.RunVisualValidation = request;
+}
+
+void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
+{
+    assert(!isDrawingFrame && "Pending runtime changes must only be applied at a frame boundary");
+    if (!pendingRuntimeChanges.HasAny())
+        return;
+
+    const PendingRuntimeChanges changes = pendingRuntimeChanges;
+    pendingRuntimeChanges = {};
+
+    const bool voxelSettingsRequested = changes.VoxelWorkloadSettings.value_or(false);
+    bool sceneNeedsRebuild = false;
+    bool renderTargetsRebuilt = false;
+
+    if (changes.WorkloadProfile)
+    {
+        sceneNeedsRebuild =
+            voxelResearchSceneManager.RequestPreset(ScenePresetForProfile(*changes.WorkloadProfile));
+    }
+
+    if (changes.CameraMode)
+    {
+        voxelWorkload.CameraMode = *changes.CameraMode;
+        voxelWorkload.CameraPath = CameraModeName(*changes.CameraMode);
+    }
+
+    if (changes.LightingPreset)
+    {
+        voxelWorkload.LightingMode = *changes.LightingPreset;
+        voxelWorkload.LightingPreset = LightingPresetName(*changes.LightingPreset);
+        voxelWorkload.DynamicShadowsEnabled = false;
+    }
+
+    bool resolutionChanged = false;
+    uint32_t requestedWidth = voxelWorkload.RenderResolutionWidth;
+    uint32_t requestedHeight = voxelWorkload.RenderResolutionHeight;
+    if (changes.RenderResolutionPreset)
+    {
+        const auto [width, height] = ResolutionForPreset(*changes.RenderResolutionPreset);
+        requestedWidth = width;
+        requestedHeight = height;
+        resolutionChanged =
+            MainWindow->GetClientWidth() != static_cast<int>(width) ||
+            MainWindow->GetClientHeight() != static_cast<int>(height);
+        voxelWorkload.ResolutionPreset = *changes.RenderResolutionPreset;
+        voxelWorkload.RenderResolutionWidth = width;
+        voxelWorkload.RenderResolutionHeight = height;
+    }
+
+    const VoxelExecutionMode requestedMode = changes.ExecutionMode.value_or(requestedExecutionMode);
+    const bool executionRequested = changes.ExecutionMode.has_value();
+    if (executionRequested)
+        requestedExecutionMode = requestedMode;
+
+    VoxelExecutionMode targetMode = requestedMode;
+    const bool requestsMultiGpu = targetMode == VoxelExecutionMode::MultiGpuFull ||
+        targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    const bool targetRebuildNeededForMode =
+        requestsMultiGpu && multiGpuAvailable && !multiGpuVoxelRenderTargets.IsInitialized();
+    const bool commonFlushRequired =
+        sceneNeedsRebuild ||
+        resolutionChanged ||
+        voxelSettingsRequested ||
+        targetRebuildNeededForMode ||
+        (executionRequested && executionMode != requestedMode);
+    if (commonFlushRequired)
+        Flush();
+
+    if (resolutionChanged)
+    {
+        MainWindow->SetWidth(static_cast<int>(requestedWidth));
+        MainWindow->SetHeight(static_cast<int>(requestedHeight));
+        suppressResizeFlushForPendingRuntimeChanges = true;
+        OnResize();
+        suppressResizeFlushForPendingRuntimeChanges = false;
+        renderTargetsRebuilt = multiGpuAvailable;
+    }
+
+    if (requestsMultiGpu && !multiGpuAvailable)
+    {
+        targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
+                         ? VoxelExecutionMode::SingleGpuFull
+                         : VoxelExecutionMode::SingleGpuTemporalDecimation;
+        if (multiGpuStatus.empty())
+            multiGpuStatus = L"MultiGpu unavailable: secondary render target capability validation failed";
+    }
+
+    if (requestsMultiGpu && multiGpuAvailable && !multiGpuVoxelRenderTargets.IsInitialized())
+    {
+        if (!renderTargetsRebuilt)
+        {
+            RebuildMultiGpuVoxelRenderTargets();
+            renderTargetsRebuilt = true;
+        }
+        if (!multiGpuVoxelRenderTargets.IsInitialized())
+        {
+            targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
+                             ? VoxelExecutionMode::SingleGpuFull
+                             : VoxelExecutionMode::SingleGpuTemporalDecimation;
+        }
+    }
+
+    const bool executionModeChanged = executionMode != targetMode;
+    if (executionModeChanged)
+    {
+        executionMode = targetMode;
+        voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
+        voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+        if (executionMode == VoxelExecutionMode::MultiGpuFull)
+            multiGpuStatus = L"MultiGpuFull adapter-local partitions active; secondary render-output transfer enabled";
+        else if (executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+            multiGpuStatus = L"MultiGpuTemporalDecimation adapter-local partitions active; secondary render-output transfer enabled";
+        else if (executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
+            multiGpuStatus = L"SingleGpuTemporalDecimation active";
+        else
+            multiGpuStatus = L"SingleGpuFull active";
+        logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
+    }
+
+    if (sceneNeedsRebuild)
+    {
+        assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
+        lights.clear();
+        camera.reset();
+        researchCameraController.reset();
+        VoxelResearchSceneContext sceneContext{
+            primeDevice,
+            secondDevice,
+            *assets,
+            models,
+            srvTexturesMemory,
+            gameObjects,
+            typedRenderer,
+            voxelWorkload,
+            AspectRatio()
+        };
+        voxelResearchSceneManager.RebuildScene(sceneContext);
+        ++voxelSceneGeneration;
+        SortGO();
+    }
+
+    if (voxelSettingsRequested)
+    {
+        const StaticLayerSnapshot staticLayerBefore = CaptureStaticLayerSnapshot(voxelWorkload);
+        const auto activePreset = voxelResearchSceneManager.GetActivePreset();
+        if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
+            activePreset == VoxelResearchScenePreset::MixedVoxelEnvironment ||
+            activePreset == VoxelResearchScenePreset::DemoMixed ||
+            activePreset == VoxelResearchScenePreset::OcclusionValidation ||
+            activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
+        {
+            VoxelResearchEnvironmentGenerator::Settings settings{};
+            settings.Seed = voxelWorkload.StaticGenerationSeed;
+            settings.StaticVoxelBudget = voxelWorkload.StaticVoxelBudget;
+            settings.BudgetPreset = voxelWorkload.StaticBudgetPreset;
+            settings.StorageMode = voxelWorkload.StaticStorageMode;
+            settings.VoxelSize = voxelWorkload.StaticVoxelSize;
+            settings.SecondaryShare = voxelWorkload.SecondaryShare;
+            settings.PartitionStrategy = voxelWorkload.PartitionStrategy;
+            settings.LoadBalanceScenario = voxelWorkload.LoadBalanceScenario;
+            settings.ChunkSize = voxelWorkload.ChunkSize;
+            settings.SpatialLod = voxelWorkload.SpatialLod;
+            auto generated = VoxelResearchEnvironmentGenerator::Generate(settings);
+            voxelWorkload.Layers.clear();
+            voxelWorkload.Layers.push_back(std::move(generated.Layer));
+            voxelWorkload.StaticTelemetry = generated.Telemetry;
+        }
+        else
+        {
+            voxelWorkload.Layers.clear();
+        }
+        if (activePreset == VoxelResearchScenePreset::StaticVoxelEnvironment ||
+            activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
+        {
+            voxelWorkload.DynamicVoxelBudget = 0;
+        }
+        voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
+        ++voxelSceneGeneration;
+        AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
+    }
+
+    if (sceneNeedsRebuild || voxelSettingsRequested || executionModeChanged)
+    {
+        RebuildGpuPartitionsForMode();
+        voxelSimulationAccumulator = 0.0;
+        voxelSimulationTime = 0.0;
+        voxelSimulationStepsThisFrame = 0;
+        voxelInterpolationAlpha = 0.0f;
+        voxelRecycledCount = 0;
+        voxelAliveCount = 0;
+        voxelExpectedCount = voxelWorkload.TotalVoxelCount;
+        simulationFrameIndex = 0;
+    }
+
+    if (changes.CameraMode)
+        ApplyResearchCameraMode(*changes.CameraMode);
+    if (changes.LightingPreset)
+        ApplyResearchLightingPreset(*changes.LightingPreset);
+    if (sceneNeedsRebuild || voxelSettingsRequested || executionModeChanged || changes.CameraMode)
+        spatialLodCameraInitialized = false;
+
+    if (changes.RunVisualValidation)
+    {
+        ResearchRunnerRequest request{};
+        request.Suite = ResearchRunnerSuite::Validation;
+        request.Seed = changes.RunVisualValidation->SeedOverride;
+        request.OutputDirectory = changes.RunVisualValidation->OutputDirectory;
+        request.RunPrerequisites = false;
+        RequestResearchRunner(request);
+    }
 }
 
 void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkloadProfile profile)
 {
-    VoxelResearchScenePreset preset = VoxelResearchScenePreset::MixedVoxelEnvironment;
-    switch (profile)
-    {
-    case VoxelResearchWorkloadProfile::StaticRenderOnly:
-        preset = VoxelResearchScenePreset::StaticVoxelEnvironment;
-        break;
-    case VoxelResearchWorkloadProfile::DynamicSimulationAndRender:
-        preset = VoxelResearchScenePreset::DynamicWaterfall;
-        break;
-    case VoxelResearchWorkloadProfile::MixedStaticAndDynamic:
-        preset = VoxelResearchScenePreset::MixedVoxelEnvironment;
-        break;
-    case VoxelResearchWorkloadProfile::OcclusionValidation:
-        preset = VoxelResearchScenePreset::OcclusionValidation;
-        break;
-    case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
-        preset = VoxelResearchScenePreset::SpatialLodDemonstration;
-        break;
-    case VoxelResearchWorkloadProfile::DemoMixed:
-        preset = VoxelResearchScenePreset::DemoMixed;
-        break;
-    default:
-        break;
-    }
+    assert(!isDrawingFrame && "ApplyResearchWorkloadProfile must not be called during DrawFrame");
+    const VoxelResearchScenePreset preset = ScenePresetForProfile(profile);
 
     if (!voxelResearchSceneManager.RequestPreset(preset))
         return;
@@ -3883,7 +4121,9 @@ void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkload
         voxelWorkload,
         AspectRatio()
     };
+    assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
+    ++voxelSceneGeneration;
     SortGO();
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
@@ -3895,7 +4135,7 @@ void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkload
     voxelExpectedCount = voxelWorkload.TotalVoxelCount;
     simulationFrameIndex = 0;
     spatialLodCameraInitialized = false;
-    voxelWorkloadSettingsPending = false;
+    pendingRuntimeChanges.VoxelWorkloadSettings.reset();
 }
 
 void VoxelWaterfallApp::ApplyResearchCameraMode(const VoxelResearchCameraMode mode)
@@ -3921,6 +4161,7 @@ void VoxelWaterfallApp::ApplyResearchLightingPreset(const VoxelResearchLightingP
 
 void VoxelWaterfallApp::ApplyRenderResolutionPreset(const VoxelRenderResolutionPreset preset)
 {
+    assert(!isDrawingFrame && "ApplyRenderResolutionPreset must not be called during DrawFrame");
     const auto [width, height] = ResolutionForPreset(preset);
     if (MainWindow->GetClientWidth() == static_cast<int>(width) &&
         MainWindow->GetClientHeight() == static_cast<int>(height))
@@ -3948,22 +4189,22 @@ bool VoxelWaterfallApp::HandleDemoPresetHotkey(const WPARAM key)
     switch (key)
     {
     case VK_F1:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::StaticRenderOnly);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::StaticRenderOnly;
         return true;
     case VK_F2:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DynamicSimulationAndRender);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::DynamicSimulationAndRender;
         return true;
     case VK_F3:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::MixedStaticAndDynamic);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::MixedStaticAndDynamic;
         return true;
     case VK_F4:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::OcclusionValidation);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::OcclusionValidation;
         return true;
     case VK_F5:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::SpatialLodDemonstration);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::SpatialLodDemonstration;
         return true;
     case VK_F9:
-        ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile::DemoMixed);
+        pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::DemoMixed;
         return true;
     case VK_F6:
         voxelCompositeDebugView = VoxelCompositeDebugView::PartitionOwnershipColors;
@@ -4434,14 +4675,14 @@ void VoxelWaterfallApp::ApplyBenchmarkVoxelCount(const int totalCount)
         voxelWorkload.StaticVoxelBudget = static_cast<uint32_t>(std::max(1, totalCount));
     else
         voxelWorkload.TotalVoxelCount = static_cast<uint32_t>(std::max(0, totalCount));
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
 }
 
 void VoxelWaterfallApp::ApplyBenchmarkSecondaryShare(const float secondaryShare)
 {
     voxelWorkload.SecondaryShare = std::clamp(secondaryShare, 0.0f, 1.0f);
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
 }
 
@@ -4461,7 +4702,7 @@ void VoxelWaterfallApp::ApplyBenchmarkTemporalInterval(const uint32_t interval)
         voxelWorkload.TemporalPolicy == VoxelTemporalPolicy::Decimated
             ? std::clamp<uint32_t>(interval, 2, 16)
             : 1;
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
 }
 
@@ -4546,7 +4787,7 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
         }
     }
 
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
     ResetBenchmarkDeterministicState();
     Flush();
@@ -4594,14 +4835,7 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
 
 void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMode)
 {
-    if (isDrawingFrame)
-    {
-        requestedExecutionMode = requestedMode;
-        deferredExecutionMode = requestedMode;
-        hasDeferredExecutionMode = true;
-        return;
-    }
-
+    assert(!isDrawingFrame && "ApplyExecutionMode must not be called during DrawFrame");
     requestedExecutionMode = requestedMode;
     VoxelExecutionMode targetMode = requestedMode;
     const bool requestsMultiGpu = targetMode == VoxelExecutionMode::MultiGpuFull ||
@@ -4648,14 +4882,23 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
     {
         multiGpuStatus = L"SingleGpuFull active";
     }
-    voxelWorkloadSettingsPending = true;
-    ApplyPendingVoxelSettings();
+    RebuildGpuPartitionsForMode();
+    voxelSimulationAccumulator = 0.0;
+    voxelSimulationTime = 0.0;
+    voxelSimulationStepsThisFrame = 0;
+    voxelInterpolationAlpha = 0.0f;
+    voxelRecycledCount = 0;
+    voxelAliveCount = 0;
+    voxelExpectedCount = voxelWorkload.TotalVoxelCount;
+    simulationFrameIndex = 0;
+    spatialLodCameraInitialized = false;
     logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
 }
 
 void VoxelWaterfallApp::ApplyPendingVoxelSettings()
 {
-    if (!voxelWorkloadSettingsPending)
+    assert(!isDrawingFrame && "ApplyPendingVoxelSettings must not be called during DrawFrame");
+    if (!pendingRuntimeChanges.VoxelWorkloadSettings.value_or(false))
         return;
 
     const StaticLayerSnapshot staticLayerBefore = CaptureStaticLayerSnapshot(voxelWorkload);
@@ -4692,6 +4935,7 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
         activePreset == VoxelResearchScenePreset::SpatialLodDemonstration)
         voxelWorkload.DynamicVoxelBudget = 0;
     voxelWorkload = VoxelSceneWorkloadBuilder::Build(voxelWorkload);
+    ++voxelSceneGeneration;
     AssertStaticLayerShapePreserved(staticLayerBefore, voxelWorkload);
     RebuildGpuPartitionsForMode();
     voxelSimulationAccumulator = 0.0;
@@ -4703,11 +4947,13 @@ void VoxelWaterfallApp::ApplyPendingVoxelSettings()
     voxelExpectedCount = voxelWorkload.TotalVoxelCount;
     simulationFrameIndex = 0;
     spatialLodCameraInitialized = false;
-    voxelWorkloadSettingsPending = false;
+    pendingRuntimeChanges.VoxelWorkloadSettings.reset();
 }
 
 void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
 {
+    assert(!isDrawingFrame && "Voxel GPU partition rebuild must not run during DrawFrame");
+    ++voxelPartitionGeneration;
     auto voxelObjectIt = std::find_if(
         gameObjects.begin(),
         gameObjects.end(),
@@ -4759,21 +5005,32 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
         ValidateVoxelWorkloadGlobalIdsSlow();
 }
 
-VoxelRenderWorkload VoxelWaterfallApp::BuildVoxelRenderWorkload() const
+VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
 {
-    VoxelRenderWorkload renderWorkload{};
+    VoxelFrameRenderPlan renderPlan{};
+    renderPlan.SceneGeneration = voxelSceneGeneration;
+    renderPlan.PartitionGeneration = voxelPartitionGeneration;
     for (const auto& partition : voxelWorkload.Partitions)
     {
-        renderWorkload.LogicalVoxelCount += partition.VoxelCount();
+        VoxelFramePartitionRenderPlan partitionPlan{};
+        partitionPlan.PartitionId = partition.PartitionId;
+        partitionPlan.AdapterOwner = partition.AdapterOwner;
+        partitionPlan.LogicalVoxelCount = partition.VoxelCount();
+        partitionPlan.DrawStreams = partition.DrawStreams;
+        partitionPlan.GpuPartition = partition.GpuPartition;
+        partitionPlan.SceneGeneration = voxelSceneGeneration;
+        partitionPlan.PartitionGeneration = voxelPartitionGeneration;
+
+        renderPlan.LogicalVoxelCount += partitionPlan.LogicalVoxelCount;
         if (partition.AdapterOwner == VoxelAdapterOwner::Secondary)
-            renderWorkload.SecondaryOwnedPartitions.push_back(&partition);
+            renderPlan.SecondaryOwnedPartitions.push_back(std::move(partitionPlan));
         else
-            renderWorkload.PrimaryOwnedPartitions.push_back(&partition);
+            renderPlan.PrimaryOwnedPartitions.push_back(std::move(partitionPlan));
     }
-    return renderWorkload;
+    return renderPlan;
 }
 
-void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& renderWorkload) const
+void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan& renderPlan) const
 {
     if (typedRenderer.size() > static_cast<size_t>(RenderMode::Particle))
     {
@@ -4782,90 +5039,91 @@ void VoxelWaterfallApp::ValidateVoxelRenderWorkload(const VoxelRenderWorkload& r
                    "VoxelGpuPartition must not be registered in the generic renderer registry");
     }
 
-    for (size_t i = 0; i < renderWorkload.PrimaryOwnedPartitions.size(); ++i)
+    for (size_t i = 0; i < renderPlan.PrimaryOwnedPartitions.size(); ++i)
     {
-        const auto* partition = renderWorkload.PrimaryOwnedPartitions[i];
-        assert(partition != nullptr);
-        assert(partition->AdapterOwner == VoxelAdapterOwner::Primary);
-        for (size_t j = i + 1; j < renderWorkload.PrimaryOwnedPartitions.size(); ++j)
+        const auto& partition = renderPlan.PrimaryOwnedPartitions[i];
+        assert(partition.AdapterOwner == VoxelAdapterOwner::Primary);
+        for (size_t j = i + 1; j < renderPlan.PrimaryOwnedPartitions.size(); ++j)
         {
-            assert(partition != renderWorkload.PrimaryOwnedPartitions[j] &&
+            assert(partition.PartitionId != renderPlan.PrimaryOwnedPartitions[j].PartitionId &&
                    "Duplicate primary voxel partition draw entry");
         }
     }
 
-    for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
     {
-        assert(partition != nullptr);
-        assert(partition->AdapterOwner == VoxelAdapterOwner::Secondary);
-        for (const auto* primaryPartition : renderWorkload.PrimaryOwnedPartitions)
+        assert(partition.AdapterOwner == VoxelAdapterOwner::Secondary);
+        for (const auto& primaryPartition : renderPlan.PrimaryOwnedPartitions)
         {
-            assert(partition != primaryPartition &&
+            assert(partition.PartitionId != primaryPartition.PartitionId &&
                    "Voxel partition is present in both primary and secondary draw lists");
         }
     }
 
-    for (const auto& partition : voxelWorkload.Partitions)
+    auto validatePartition = [this, &renderPlan](const VoxelFramePartitionRenderPlan& partition)
     {
-        const auto expectedOwner = AdapterOwnerForPartition(executionMode, multiGpuAvailable, partition);
-        assert(partition.AdapterOwner == expectedOwner &&
-               "Voxel partition adapter owner does not match current execution mode");
-        assert(partition.VoxelCount() == 0 || partition.GpuPartition &&
+        assert(partition.LogicalVoxelCount == 0 || partition.GpuPartition &&
                "Non-empty voxel partition must have adapter-local GPU object");
         if (!partition.GpuPartition)
-            continue;
+            return;
         assert(partition.GpuPartition->GetAdapterOwner() == partition.AdapterOwner);
-        assert(partition.HasDynamicVoxels() ||
-               !partition.GpuPartition->IsSimulationEnabled());
+        const bool hasDynamicVoxels = std::any_of(
+            partition.DrawStreams.begin(),
+            partition.DrawStreams.end(),
+            [](const VoxelPartitionDrawStream& stream)
+            {
+                return stream.LayerType == VoxelSceneLayerType::Dynamic && stream.VoxelCount() > 0;
+            });
+        assert(hasDynamicVoxels || !partition.GpuPartition->IsSimulationEnabled());
 
         const auto expectedDevice = DeviceForAdapterOwner(partition.AdapterOwner, primeDevice, secondDevice);
         const auto actualDevice = partition.GpuPartition->GetOwningDevice();
         assert(expectedDevice && actualDevice);
         assert(SameAdapterLuid(expectedDevice->GetDesc().AdapterLuid, actualDevice->GetDesc().AdapterLuid) &&
                "Voxel partition GPU object owner device does not match adapter owner");
-    }
+        assert(partition.SceneGeneration == renderPlan.SceneGeneration);
+        assert(partition.PartitionGeneration == renderPlan.PartitionGeneration);
+    };
+    for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
+        validatePartition(partition);
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+        validatePartition(partition);
 
     if (executionMode == VoxelExecutionMode::MultiGpuFull ||
         executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
     {
-        for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
-            assert(partition->PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
+        for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
+            assert(partition.PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
                    "Multi-GPU primary draw list must not contain SecondaryPartition");
-        for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
-            assert(partition->PartitionId != VoxelAdapterPartitionId::PrimaryPartition &&
+        for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+            assert(partition.PartitionId != VoxelAdapterPartitionId::PrimaryPartition &&
                    "Multi-GPU secondary draw list must not contain PrimaryPartition");
     }
 
     if ((executionMode == VoxelExecutionMode::SingleGpuFull ||
         executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
-        && voxelWorkload.TotalVoxelCount > 0)
+        && renderPlan.LogicalVoxelCount > 0)
     {
-        assert(renderWorkload.SecondaryOwnedPartitions.empty() &&
+        assert(renderPlan.SecondaryOwnedPartitions.empty() &&
                "Single-GPU mode must not submit secondary graphics draw list");
-        assert(renderWorkload.PrimaryOwnedPartitions.size() == voxelWorkload.Partitions.size() &&
+        assert(renderPlan.PrimaryOwnedPartitions.size() == VoxelAdapterPartitionCount &&
                "Single-GPU primary draw list must contain both logical voxel partitions");
     }
 }
 
 void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
-    const VoxelRenderWorkload& renderWorkload,
+    const VoxelFrameRenderPlan& renderPlan,
     const std::vector<VoxelPartitionRenderResult>& primaryResults,
     const std::vector<VoxelPartitionRenderResult>& secondaryResults,
     const bool secondaryGraphicsSubmitted) const
 {
-    const uint32_t expectedPartitionVoxelCount = renderWorkload.LogicalVoxelCount;
+    const uint32_t expectedPartitionVoxelCount = renderPlan.LogicalVoxelCount;
 
     uint32_t logicalDrawListVoxelCount = 0;
-    for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
-    {
-        assert(partition != nullptr);
-        logicalDrawListVoxelCount += partition->VoxelCount();
-    }
-    for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
-    {
-        assert(partition != nullptr);
-        logicalDrawListVoxelCount += partition->VoxelCount();
-    }
+    for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
+        logicalDrawListVoxelCount += partition.LogicalVoxelCount;
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+        logicalDrawListVoxelCount += partition.LogicalVoxelCount;
     assert(logicalDrawListVoxelCount == expectedPartitionVoxelCount &&
            "Frame voxel draw lists do not cover the current partition workload count");
 
@@ -4873,16 +5131,16 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     uint32_t secondaryDrawCallCount = 0;
 
     size_t primaryResultIndex = 0;
-    for (const auto* partition : renderWorkload.PrimaryOwnedPartitions)
+    for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
     {
-        if (!partition || partition->VoxelCount() == 0)
+        if (partition.LogicalVoxelCount == 0)
             continue;
         assert(primaryResultIndex < primaryResults.size() &&
                "Primary voxel command list did not record an expected partition");
         const auto& result = primaryResults[primaryResultIndex++];
-        assert(result.PartitionId == partition->PartitionId &&
+        assert(result.PartitionId == partition.PartitionId &&
                "Primary voxel render result does not match the expected partition id");
-        assert(result.LogicalVoxelCount == partition->VoxelCount() &&
+        assert(result.LogicalVoxelCount == partition.LogicalVoxelCount &&
                "Primary voxel render result does not match the expected logical voxel count");
         submittedVoxelCount += result.SubmittedVoxelCount;
     }
@@ -4890,16 +5148,16 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
            "Primary voxel command list recorded unexpected extra partition results");
 
     size_t secondaryResultIndex = 0;
-    for (const auto* partition : renderWorkload.SecondaryOwnedPartitions)
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
     {
-        if (!partition || partition->VoxelCount() == 0)
+        if (partition.LogicalVoxelCount == 0)
             continue;
         assert(secondaryResultIndex < secondaryResults.size() &&
                "Secondary voxel command list did not record an expected partition");
         const auto& result = secondaryResults[secondaryResultIndex++];
-        assert(result.PartitionId == partition->PartitionId &&
+        assert(result.PartitionId == partition.PartitionId &&
                "Secondary voxel render result does not match the expected partition id");
-        assert(result.LogicalVoxelCount == partition->VoxelCount() &&
+        assert(result.LogicalVoxelCount == partition.LogicalVoxelCount &&
                "Secondary voxel render result does not match the expected logical voxel count");
         submittedVoxelCount += result.SubmittedVoxelCount;
         secondaryDrawCallCount += result.DrawCallCount;
@@ -4907,7 +5165,7 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     assert(secondaryResultIndex == secondaryResults.size() &&
            "Secondary voxel command list recorded unexpected extra partition results");
 
-    assert(submittedVoxelCount <= voxelWorkload.TotalVoxelCount &&
+    assert(submittedVoxelCount <= renderPlan.LogicalVoxelCount &&
            "Submitted voxel draw count exceeds logical workload count");
 
     if (executionMode == VoxelExecutionMode::MultiGpuFull ||
@@ -4921,11 +5179,11 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
                    "Multi-GPU secondary command list recorded PrimaryPartition");
 
         const bool hasSecondaryLogicalVoxels = std::any_of(
-            renderWorkload.SecondaryOwnedPartitions.begin(),
-            renderWorkload.SecondaryOwnedPartitions.end(),
-            [](const VoxelAdapterPartition* partition)
+            renderPlan.SecondaryOwnedPartitions.begin(),
+            renderPlan.SecondaryOwnedPartitions.end(),
+            [](const VoxelFramePartitionRenderPlan& partition)
             {
-                return partition && partition->VoxelCount() > 0;
+                return partition.LogicalVoxelCount > 0;
             });
         if (hasSecondaryLogicalVoxels && simulationFrameIndex > 0)
         {
@@ -5182,6 +5440,7 @@ MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetD
 
 void VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
 {
+    assert(!isDrawingFrame && "Multi-GPU voxel render target rebuild must not run during DrawFrame");
     multiGpuVoxelRenderTargets.Reset();
 
     if (!multiGpuAvailable)
@@ -5367,7 +5626,9 @@ void VoxelWaterfallApp::CreateGO()
         voxelWorkload,
         AspectRatio()
     };
+    assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
     voxelResearchSceneManager.RebuildScene(sceneContext);
+    ++voxelSceneGeneration;
     RebuildGpuPartitionsForMode();
 
 #if defined(DEBUG) || defined(_DEBUG)
@@ -5401,7 +5662,7 @@ void VoxelWaterfallApp::RunSceneOwnershipSettingsSelfTest()
     ApplyExecutionMode(VoxelExecutionMode::SingleGpuTemporalDecimation);
     ApplyBenchmarkSecondaryShare(0.25f);
     ApplyBenchmarkSpatialLodEnabled(true);
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
     ApplyBenchmarkTemporalInterval(4);
     AssertStaticLayerShapePreserved(before, voxelWorkload);
@@ -5412,7 +5673,7 @@ void VoxelWaterfallApp::RunSceneOwnershipSettingsSelfTest()
     voxelWorkload.TemporalPolicy = originalTemporalPolicy;
     voxelWorkload.TemporalDecimationInterval = originalTemporalInterval;
     voxelCompositeDebugView = originalCompositeDebugView;
-    voxelWorkloadSettingsPending = true;
+    pendingRuntimeChanges.VoxelWorkloadSettings = true;
     ApplyPendingVoxelSettings();
 
     AssertStaticLayerShapePreserved(before, voxelWorkload);
@@ -5534,7 +5795,9 @@ int VoxelWaterfallApp::Run()
 
     while (!pumpFrameQuitRequested)
     {
-        PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
     }
 
     benchmarkController.Shutdown(BuildBenchmarkControllerContext());
@@ -5594,13 +5857,55 @@ bool VoxelWaterfallApp::TryAcquireCurrentFrameResource()
     return true;
 }
 
+bool VoxelWaterfallApp::AdvanceRuntimeWorkOutsideFrame(const bool presentedFrame)
+{
+    if (isPumpingFrame)
+        return false;
+
+    const bool wasActive = researchRunnerActive;
+    AdvanceResearchRunner(presentedFrame);
+    return wasActive || researchRunnerActive;
+}
+
 bool VoxelWaterfallApp::PumpOneFrame()
 {
+    if (isPumpingFrame)
+    {
+        ++rejectedRecursiveFrameRequests;
+        assert(false && "PumpOneFrame reentrancy is forbidden: recursive frame pump would nest DrawFrame");
+        return false;
+    }
+
+    struct PumpFrameScope
+    {
+        VoxelWaterfallApp& App;
+        explicit PumpFrameScope(VoxelWaterfallApp& app) : App(app)
+        {
+            App.isPumpingFrame = true;
+            ++App.currentFramePumpDepth;
+            App.maximumObservedFramePumpDepth =
+                std::max(App.maximumObservedFramePumpDepth, App.currentFramePumpDepth);
+        }
+        ~PumpFrameScope()
+        {
+            assert(App.currentFramePumpDepth > 0);
+            if (App.currentFramePumpDepth > 0)
+                --App.currentFramePumpDepth;
+            App.isPumpingFrame = false;
+        }
+    } pumpFrameScope(*this);
+
     currentFrameDrainedMessageCount = DrainPendingWin32Messages();
     if (pumpFrameQuitRequested)
         return false;
 
-    AdvanceResearchRunner(false);
+    if (benchmarkController.IsAutomaticActive())
+    {
+        auto benchmarkContext = BuildBenchmarkControllerContext();
+        benchmarkController.UpdateAutomatic(benchmarkContext);
+    }
+
+    ApplyPendingRuntimeChangesAtFrameBoundary();
 
     if (isStopRequested)
     {
@@ -5626,7 +5931,6 @@ bool VoxelWaterfallApp::PumpOneFrame()
         ++frameSerial;
         currentFrameResourceBackpressurePollCount = 0;
         ServiceDeferredResourceLifetime();
-        AdvanceResearchRunner(true);
     }
     return presented;
 }
@@ -5634,7 +5938,23 @@ bool VoxelWaterfallApp::PumpOneFrame()
 void VoxelWaterfallApp::ServiceDeferredResourceLifetime()
 {
     if (primeDevice)
+    {
         primeDevice->ResetAllocators(frameSerial);
+        const auto renderQueue = primeDevice->GetCommandQueue(GQueueType::Graphics);
+        if (renderQueue)
+        {
+            retainedVoxelFrameRenderPlans.erase(
+                std::remove_if(
+                    retainedVoxelFrameRenderPlans.begin(),
+                    retainedVoxelFrameRenderPlans.end(),
+                    [&renderQueue](const RetainedVoxelFrameRenderPlan& retainedPlan)
+                    {
+                        return retainedPlan.PrimaryRenderFenceValue == 0 ||
+                            renderQueue->IsFinish(retainedPlan.PrimaryRenderFenceValue);
+                    }),
+                retainedVoxelFrameRenderPlans.end());
+        }
+    }
     if (secondDevice && secondDevice != primeDevice)
         secondDevice->ResetAllocators(frameSerial);
 }
@@ -6163,7 +6483,8 @@ void VoxelWaterfallApp::OnResize()
 
     if (multiGpuAvailable)
     {
-        Flush();
+        if (!suppressResizeFlushForPendingRuntimeChanges)
+            Flush();
         RebuildMultiGpuVoxelRenderTargets();
     }
 
@@ -6176,6 +6497,7 @@ void VoxelWaterfallApp::Flush()
         primeDevice->Flush();
     if (secondDevice && secondDevice != primeDevice)
         secondDevice->Flush();
+    retainedVoxelFrameRenderPlans.clear();
     lastPrimaryPartitionGraphicsFenceValue = 0;
     lastSecondaryPartitionGraphicsFenceValue = 0;
     lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Primary;

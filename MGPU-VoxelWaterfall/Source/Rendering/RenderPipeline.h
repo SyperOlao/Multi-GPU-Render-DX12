@@ -48,6 +48,9 @@ struct VoxelFrameGraphTelemetry
     uint64_t FrameResourceBackpressurePollCount = 0;
     double FrameResourceBackpressureMs = 0.0;
     uint32_t DrainedMessageCount = 0;
+    uint32_t CurrentFramePumpDepth = 0;
+    uint32_t MaximumObservedFramePumpDepth = 0;
+    uint64_t RejectedRecursiveFrameRequests = 0;
     uint64_t SuccessfulPresentCount = 0;
     double SimulationStepsPerWallSecond = 0.0;
     bool SecondaryRenderSubmitted = false;
@@ -145,7 +148,7 @@ struct PrimaryBasePassContext
     VoxelBenchmarkProfiler& BenchmarkProfiler;
     UINT64& GraphicsPassFenceValue;
     VoxelFrameGraphTelemetry* Telemetry = nullptr;
-    const VoxelRenderWorkload* VoxelWorkload = nullptr;
+    const VoxelFrameRenderPlan* VoxelRenderPlan = nullptr;
     std::vector<VoxelPartitionRenderResult>* PrimaryVoxelRenderResults = nullptr;
     std::function<void(const std::shared_ptr<PEPEngine::Graphics::GCommandList>&)> RecordPrimaryBaseCommands;
 };
@@ -157,7 +160,7 @@ struct SecondaryVoxelGraphicsPassContext
     UINT64 SecondaryComputeFenceValue = 0;
     uint32_t TimestampHeapIndex = 0;
     FrameResource& CurrentFrameResource;
-    std::vector<const VoxelAdapterPartition*> SecondaryPartitions;
+    const std::vector<VoxelFramePartitionRenderPlan>* SecondaryPartitions = nullptr;
     MultiGpuVoxelFrameRenderTargets& RenderTargets;
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};

@@ -173,21 +173,21 @@ void VoxelRenderPasses::RecordPrimaryVoxelPartitions(
     if (!context.PrimaryVoxelPartitions)
         return;
 
-    for (const auto* partition : *context.PrimaryVoxelPartitions)
+    for (const auto& partition : *context.PrimaryVoxelPartitions)
     {
-        if (!partition || !partition->GpuPartition || partition->VoxelCount() == 0)
+        if (!partition.GpuPartition || partition.LogicalVoxelCount == 0)
             continue;
 
-        partition->GpuPartition->UpdateFrameConstants();
-        auto result = partition->GpuPartition->RecordRender(
+        partition.GpuPartition->UpdateFrameConstants();
+        auto result = partition.GpuPartition->RecordRender(
             cmdList,
             VoxelPartitionRenderOutputMode::PrimaryColor,
             context.CurrentFrameResource.PrimePassConstantUploadBuffer.get(),
             context.BenchmarkProfiler,
             VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
             VoxelBenchmarkProfiler::RangeId::PrimaryLodCompaction);
-        result.PartitionId = partition->PartitionId;
-        result.LogicalVoxelCount = partition->VoxelCount();
+        result.PartitionId = partition.PartitionId;
+        result.LogicalVoxelCount = partition.LogicalVoxelCount;
         if (context.PrimaryVoxelRenderResults)
             context.PrimaryVoxelRenderResults->push_back(result);
     }

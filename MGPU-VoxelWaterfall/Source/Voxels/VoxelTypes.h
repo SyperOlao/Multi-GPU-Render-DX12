@@ -434,11 +434,25 @@ struct VoxelPartitionRenderResult
     std::wstring CommandListAdapterName;
 };
 
-struct VoxelRenderWorkload
+struct VoxelFramePartitionRenderPlan
 {
-    std::vector<const VoxelAdapterPartition*> PrimaryOwnedPartitions;
-    std::vector<const VoxelAdapterPartition*> SecondaryOwnedPartitions;
+    VoxelAdapterPartitionId PartitionId = VoxelAdapterPartitionId::PrimaryPartition;
+    VoxelAdapterOwner AdapterOwner = VoxelAdapterOwner::Primary;
     uint32_t LogicalVoxelCount = 0;
+    std::vector<VoxelPartitionDrawStream> DrawStreams;
+    std::shared_ptr<VoxelGpuPartition> GpuPartition;
+    uint64_t SceneGeneration = 0;
+    uint64_t PartitionGeneration = 0;
+};
+
+struct VoxelFrameRenderPlan
+{
+    // Invariant: VoxelFrameRenderPlan must not contain pointers or references into mutable scene containers.
+    std::vector<VoxelFramePartitionRenderPlan> PrimaryOwnedPartitions;
+    std::vector<VoxelFramePartitionRenderPlan> SecondaryOwnedPartitions;
+    uint32_t LogicalVoxelCount = 0;
+    uint64_t SceneGeneration = 0;
+    uint64_t PartitionGeneration = 0;
 };
 
 struct VoxelSceneLayer

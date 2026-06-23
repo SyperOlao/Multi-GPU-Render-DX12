@@ -29,6 +29,7 @@
 #include <array>
 #include <chrono>
 #include <fstream>
+#include <optional>
 #include <vector>
 
 class VoxelWaterfallApp :
@@ -65,6 +66,7 @@ protected:
     bool DrawFrame(const GameTimer& gt);
     bool TryAcquireCurrentFrameResource();
     bool PumpOneFrame();
+    bool AdvanceRuntimeWorkOutsideFrame(bool presentedFrame);
     uint32_t DrainPendingWin32Messages();
 
     void InitDevices();
@@ -83,6 +85,10 @@ protected:
     void CancelResearchRunner();
     void AdvanceResearchRunner(bool presentedFrame);
     void RequestApplyVoxelWorkloadSettings();
+    void RequestVisualValidation(const std::filesystem::path& outputDirectory = {},
+                                 BenchmarkSuite suite = BenchmarkSuite::Smoke,
+                                 uint32_t seedOverride = 0);
+    void ApplyPendingRuntimeChangesAtFrameBoundary();
     void ApplyResearchWorkloadProfile(VoxelResearchWorkloadProfile profile);
     void ApplyResearchCameraMode(VoxelResearchCameraMode mode);
     void ApplyResearchLightingPreset(VoxelResearchLightingPreset preset);
@@ -92,9 +98,9 @@ protected:
     void ApplyPendingVoxelSettings();
     void ApplyExecutionMode(VoxelExecutionMode requestedMode);
     void RebuildGpuPartitionsForMode();
-    VoxelRenderWorkload BuildVoxelRenderWorkload() const;
-    void ValidateVoxelRenderWorkload(const VoxelRenderWorkload& renderWorkload) const;
-    void ValidateVoxelFrameDrawResultsCheap(const VoxelRenderWorkload& renderWorkload,
+    VoxelFrameRenderPlan BuildVoxelFrameRenderPlan() const;
+    void ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan& renderPlan) const;
+    void ValidateVoxelFrameDrawResultsCheap(const VoxelFrameRenderPlan& renderPlan,
                                             const std::vector<VoxelPartitionRenderResult>& primaryResults,
                                             const std::vector<VoxelPartitionRenderResult>& secondaryResults,
                                             bool secondaryGraphicsSubmitted) const;
@@ -179,13 +185,53 @@ protected:
     custom_vector<custom_vector<std::shared_ptr<Renderer>>> typedRenderer = MemoryAllocator::CreateVector<custom_vector<
         std::shared_ptr<Renderer>>>();
 
+    struct PendingRuntimeChanges
+    {
+        struct VisualValidationRequest
+        {
+            std::filesystem::path OutputDirectory;
+            BenchmarkSuite Suite = BenchmarkSuite::Smoke;
+            uint32_t SeedOverride = 0;
+        };
+
+        std::optional<VoxelResearchWorkloadProfile> WorkloadProfile;
+        std::optional<VoxelResearchCameraMode> CameraMode;
+        std::optional<VoxelResearchLightingPreset> LightingPreset;
+        std::optional<VoxelRenderResolutionPreset> RenderResolutionPreset;
+        std::optional<VoxelExecutionMode> ExecutionMode;
+        std::optional<bool> VoxelWorkloadSettings;
+        std::optional<VisualValidationRequest> RunVisualValidation;
+
+        bool HasAny() const
+        {
+            return WorkloadProfile.has_value() ||
+                CameraMode.has_value() ||
+                LightingPreset.has_value() ||
+                RenderResolutionPreset.has_value() ||
+                ExecutionMode.has_value() ||
+                VoxelWorkloadSettings.has_value() ||
+                RunVisualValidation.has_value();
+        }
+    };
+
     VoxelSceneWorkload voxelWorkload{};
-    bool voxelWorkloadSettingsPending = false;
+    PendingRuntimeChanges pendingRuntimeChanges;
+    struct RetainedVoxelFrameRenderPlan
+    {
+        VoxelFrameRenderPlan Plan;
+        UINT64 PrimaryRenderFenceValue = 0;
+    };
+    std::vector<RetainedVoxelFrameRenderPlan> retainedVoxelFrameRenderPlans;
+    uint64_t voxelSceneGeneration = 0;
+    uint64_t voxelPartitionGeneration = 0;
     VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
     VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
-    VoxelExecutionMode deferredExecutionMode = VoxelExecutionMode::SingleGpuFull;
-    bool hasDeferredExecutionMode = false;
     bool isDrawingFrame = false;
+    bool isPumpingFrame = false;
+    uint32_t currentFramePumpDepth = 0;
+    uint32_t maximumObservedFramePumpDepth = 0;
+    uint64_t rejectedRecursiveFrameRequests = 0;
+    bool suppressResizeFlushForPendingRuntimeChanges = false;
     bool multiGpuAvailable = false;
     CrossAdapterTransferMode crossAdapterTransferMode = CrossAdapterTransferMode::Unavailable;
     bool multiGpuPublicationEligible = false;
