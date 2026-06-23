@@ -4630,6 +4630,8 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
         return;
 
     executionMode = targetMode;
+    voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
+    voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
     if (executionMode == VoxelExecutionMode::MultiGpuFull)
     {
         multiGpuStatus = L"MultiGpuFull adapter-local partitions active; secondary render-output transfer enabled";
