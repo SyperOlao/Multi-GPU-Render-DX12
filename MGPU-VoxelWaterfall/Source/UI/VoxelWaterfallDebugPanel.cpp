@@ -24,8 +24,14 @@ namespace
         {
         case VoxelExecutionMode::SingleGpuFull:
             return "SingleGpuFull";
+        case VoxelExecutionMode::SingleGpuRecommended:
+            return "SingleGpuRecommended";
         case VoxelExecutionMode::MultiGpuFull:
             return "MultiGpuFull";
+        case VoxelExecutionMode::MultiGpuAdaptive:
+            return "MultiGpuAdaptive";
+        case VoxelExecutionMode::MultiGpuMinimalLoss:
+            return "MultiGpuMinimalLoss";
         case VoxelExecutionMode::SingleGpuTemporalDecimation:
             return "SingleGpuTemporalDecimation";
         case VoxelExecutionMode::MultiGpuTemporalDecimation:
@@ -38,6 +44,8 @@ namespace
     bool UsesMultiGpuExecution(const VoxelExecutionMode mode)
     {
         return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuAdaptive ||
+            mode == VoxelExecutionMode::MultiGpuMinimalLoss ||
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
@@ -173,6 +181,11 @@ namespace
     {
         const bool requestedTemporal = UsesTemporalExecution(requestedMode);
         const bool workloadTemporal = workload.TemporalPolicy == VoxelTemporalPolicy::Decimated;
+        if (requestedMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+            return "Diagnostic overhead-floor configuration";
+        if (requestedMode == VoxelExecutionMode::MultiGpuAdaptive ||
+            requestedMode == VoxelExecutionMode::SingleGpuRecommended)
+            return "Adaptive heterogeneous-adapter diagnostic";
         if (requestedTemporal != workloadTemporal)
             return "Invalid mixed-quality configuration";
         if (workload.BenchmarkConfigClass == VoxelBenchmarkConfigClass::Diagnostic ||
@@ -400,29 +413,49 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
 
     const char* executionModes[] = {
         "SingleGpuFull",
+        "SingleGpuRecommended",
         "MultiGpuFull",
+        "MultiGpuAdaptive",
+        "MultiGpuMinimalLoss",
         "SingleGpuTemporalDecimation",
         "MultiGpuTemporalDecimation"
     };
     int selectedMode = 0;
-    if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuFull)
+    if (context.RequestedExecutionMode == VoxelExecutionMode::SingleGpuRecommended)
         selectedMode = 1;
-    else if (context.RequestedExecutionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuFull)
         selectedMode = 2;
-    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuAdaptive)
         selectedMode = 3;
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+        selectedMode = 4;
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
+        selectedMode = 5;
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+        selectedMode = 6;
     if (ImGui::Combo("Mode", &selectedMode, executionModes, IM_ARRAYSIZE(executionModes)) &&
         context.ApplyExecutionMode)
     {
         VoxelExecutionMode requestedMode = VoxelExecutionMode::SingleGpuFull;
         if (selectedMode == 1)
-            requestedMode = VoxelExecutionMode::MultiGpuFull;
+            requestedMode = VoxelExecutionMode::SingleGpuRecommended;
         else if (selectedMode == 2)
-            requestedMode = VoxelExecutionMode::SingleGpuTemporalDecimation;
+            requestedMode = VoxelExecutionMode::MultiGpuFull;
         else if (selectedMode == 3)
+            requestedMode = VoxelExecutionMode::MultiGpuAdaptive;
+        else if (selectedMode == 4)
+            requestedMode = VoxelExecutionMode::MultiGpuMinimalLoss;
+        else if (selectedMode == 5)
+            requestedMode = VoxelExecutionMode::SingleGpuTemporalDecimation;
+        else if (selectedMode == 6)
             requestedMode = VoxelExecutionMode::MultiGpuTemporalDecimation;
         context.ApplyExecutionMode(requestedMode);
     }
+    if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+        ImGui::TextUnformatted("overhead-floor diagnostic; excluded from speedup hypothesis");
+    if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuAdaptive ||
+        actualMode == VoxelExecutionMode::SingleGpuRecommended)
+        ImGui::TextUnformatted("adaptive heterogeneous-adapter diagnostic; fallback is explicit");
 
     const char* profiles[] = {
         "StaticRenderOnly",
@@ -531,6 +564,21 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetric("publication eligible", context.PublicationEligible ? "true" : "false");
         DrawMetricU32("primary-owned voxels", primaryOwnedVoxels);
         DrawMetricU32("secondary-owned voxels", secondaryOwnedVoxels);
+        if (telemetry)
+        {
+            DrawMetricU32("adaptive warmup frames", telemetry->AdaptiveCalibrationFrameCount);
+            DrawMetricU32("adaptive warmup target", telemetry->AdaptiveCalibrationWarmupFrames);
+            DrawMetricF64("primary throughput", telemetry->AdaptivePrimaryThroughputVoxelsPerMs, "%.1f vox/ms");
+            DrawMetricF64("secondary throughput", telemetry->AdaptiveSecondaryThroughputVoxelsPerMs, "%.1f vox/ms");
+            DrawMetricF64("transfer bandwidth", telemetry->AdaptiveTransferBandwidthBytesPerMs, "%.1f bytes/ms");
+            DrawMetricF64("composite overhead", telemetry->AdaptiveCompositeOverheadMs, "%.3f ms");
+            DrawMetricF32("recommended secondary share", telemetry->AdaptiveRecommendedSecondaryShare, "%.2f");
+            DrawMetricF64("expected gain/loss", telemetry->AdaptiveExpectedGainMs, "%.3f ms");
+            if (!telemetry->AdaptiveReason.empty())
+                ImGui::TextWrapped("Adaptive reason: %s", telemetry->AdaptiveReason.c_str());
+            if (!telemetry->AdaptiveWarning.empty())
+                ImGui::TextWrapped("Warning: %s", telemetry->AdaptiveWarning.c_str());
+        }
         if (UsesMultiGpuExecution(context.RequestedExecutionMode) || UsesMultiGpuExecution(actualMode))
         {
             float secondaryShare = context.Workload.SecondaryShare;
@@ -569,6 +617,10 @@ void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& conte
         DrawMetricU64("estimated render memory", telemetry ? telemetry->EstimatedOffscreenMemoryBytes : 0);
         DrawMetricU64("estimated cross-adapter bytes/frame",
                       telemetry ? telemetry->EstimatedCrossAdapterBytesPerFrame : 0);
+        DrawMetricF64("frame resource wait", telemetry ? telemetry->FrameResourceBackpressureMs : 0.0, "%.3f ms");
+        DrawMetricF64("secondary GPU CPU wait", telemetry ? telemetry->SecondaryGpuCpuWaitMs : 0.0, "%.3f ms");
+        DrawMetricF64("copy CPU wait", telemetry ? telemetry->CopyCpuWaitMs : 0.0, "%.3f ms");
+        DrawMetricF64("present wait", telemetry ? telemetry->PresentWaitMs : 0.0, "%.3f ms");
         DrawMetric("final source", telemetry ? telemetry->FinalResolveSourceName.c_str()
                                              : FinalResolveSourceName(context.FinalResolveSourceMode));
         DrawMetric("final resource pointer",

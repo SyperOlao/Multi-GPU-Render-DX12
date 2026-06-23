@@ -6,6 +6,7 @@
 #include "GResourceStateTracker.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cfloat>
 #include <cstring>
@@ -42,6 +43,36 @@ namespace
         resource.GetDevice()->GetDXDevice()->GetCopyableFootprints(
             &desc, 0, 1, 0, nullptr, nullptr, nullptr, &totalBytes);
         return totalBytes;
+    }
+
+    void AssertRenderOutputTransferByteBudget(const VoxelFrameGraphTelemetry& telemetry)
+    {
+        if (telemetry.RenderWidth == 0 || telemetry.RenderHeight == 0 ||
+            telemetry.RenderOutputTransferBytes == 0)
+        {
+            return;
+        }
+
+        constexpr UINT64 BytesPerPixel = 4;
+        const UINT64 maxColorAndDepthBytes =
+            static_cast<UINT64>(telemetry.RenderWidth) *
+            static_cast<UINT64>(telemetry.RenderHeight) *
+            BytesPerPixel *
+            2;
+        assert(telemetry.RenderOutputTransferBytes <= maxColorAndDepthBytes &&
+               "render-output transfer must not exceed logical color+depth resolution");
+    }
+
+    void RecomputeRenderOutputTransferTelemetry(VoxelFrameGraphTelemetry& telemetry)
+    {
+        telemetry.ColorBytesTransferred =
+            std::max(telemetry.LocalToSharedColorBytes, telemetry.SharedToLocalColorBytes);
+        telemetry.DepthBytesTransferred =
+            std::max(telemetry.LocalToSharedDepthBytes, telemetry.SharedToLocalDepthBytes);
+        telemetry.TotalCrossAdapterBytes =
+            telemetry.ColorBytesTransferred + telemetry.DepthBytesTransferred;
+        telemetry.RenderOutputTransferBytes = telemetry.TotalCrossAdapterBytes;
+        AssertRenderOutputTransferByteBudget(telemetry);
     }
 
     UINT TextureSubresourceCount(const D3D12_RESOURCE_DESC& desc)
@@ -251,7 +282,10 @@ namespace
         const std::shared_ptr<GCommandList>& cmdList,
         const GResource& destinationBuffer,
         const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& destinationFootprint,
-        const GResource& sourceTexture)
+        const GResource& sourceTexture,
+        const D3D12_BOX* sourceBox = nullptr,
+        const UINT destinationX = 0,
+        const UINT destinationY = 0)
     {
         const auto destinationDesc = destinationBuffer.GetD3D12ResourceDesc();
         const auto sourceDesc = sourceTexture.GetD3D12ResourceDesc();
@@ -277,14 +311,23 @@ namespace
         source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         source.SubresourceIndex = 0;
 
-        cmdList->GetGraphicsCommandList()->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(
+            &destination,
+            destinationX,
+            destinationY,
+            0,
+            &source,
+            sourceBox);
     }
 
     void CopyPlacedBufferToTexture(
         const std::shared_ptr<GCommandList>& cmdList,
         const GResource& destinationTexture,
         const GResource& sourceBuffer,
-        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& sourceFootprint)
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& sourceFootprint,
+        const D3D12_BOX* sourceBox = nullptr,
+        const UINT destinationX = 0,
+        const UINT destinationY = 0)
     {
         const auto destinationDesc = destinationTexture.GetD3D12ResourceDesc();
         const auto sourceDesc = sourceBuffer.GetD3D12ResourceDesc();
@@ -310,7 +353,67 @@ namespace
         source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         source.PlacedFootprint = sourceFootprint;
 
-        cmdList->GetGraphicsCommandList()->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(
+            &destination,
+            destinationX,
+            destinationY,
+            0,
+            &source,
+            sourceBox);
+    }
+
+    D3D12_BOX BoxFromRect(const D3D12_RECT& rect)
+    {
+        D3D12_BOX box{};
+        box.left = static_cast<UINT>(std::max<LONG>(0, rect.left));
+        box.top = static_cast<UINT>(std::max<LONG>(0, rect.top));
+        box.front = 0;
+        box.right = static_cast<UINT>(std::max<LONG>(box.left, rect.right));
+        box.bottom = static_cast<UINT>(std::max<LONG>(box.top, rect.bottom));
+        box.back = 1;
+        return box;
+    }
+
+    UINT RectWidth(const D3D12_RECT& rect)
+    {
+        return static_cast<UINT>(std::max<LONG>(0, rect.right - rect.left));
+    }
+
+    UINT RectHeight(const D3D12_RECT& rect)
+    {
+        return static_cast<UINT>(std::max<LONG>(0, rect.bottom - rect.top));
+    }
+
+    UINT64 DirtyBytesForFootprint(const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
+                                  const D3D12_RECT& rect)
+    {
+        return static_cast<UINT64>(footprint.Footprint.RowPitch) * RectHeight(rect);
+    }
+
+    void CopyTextureRectNoBarrier(
+        const std::shared_ptr<GCommandList>& cmdList,
+        GResource& destinationTexture,
+        GResource& sourceTexture,
+        const D3D12_RECT& rect)
+    {
+        const auto box = BoxFromRect(rect);
+        D3D12_TEXTURE_COPY_LOCATION destination{};
+        destination.pResource = destinationTexture.GetD3D12Resource().Get();
+        destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        destination.SubresourceIndex = 0;
+
+        D3D12_TEXTURE_COPY_LOCATION source{};
+        source.pResource = sourceTexture.GetD3D12Resource().Get();
+        source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        source.SubresourceIndex = 0;
+
+        cmdList->GetGraphicsCommandList()->CopyTextureRegion(
+            &destination,
+            static_cast<UINT>(rect.left),
+            static_cast<UINT>(rect.top),
+            0,
+            &source,
+            &box);
     }
 
 }
@@ -545,21 +648,40 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
 
     if (copyOnly)
     {
+        const bool useDirtyRect = context.UseDirtyRect && RectWidth(context.DirtyRect) > 0 &&
+            RectHeight(context.DirtyRect) > 0;
+        const auto dirtyBox = BoxFromRect(context.DirtyRect);
         CopyTextureToPlacedBuffer(
             cmdList,
             targets.CopyOnlyColor.SharedBuffer,
             targets.CopyOnlyColor.Footprint,
-            targets.SecondaryLocalColor);
+            targets.SecondaryLocalColor,
+            useDirtyRect ? &dirtyBox : nullptr,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.left) : 0,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.top) : 0);
         CopyTextureToPlacedBuffer(
             cmdList,
             targets.CopyOnlyLinearDepth.SharedBuffer,
             targets.CopyOnlyLinearDepth.Footprint,
-            targets.SecondaryLocalLinearDepth);
+            targets.SecondaryLocalLinearDepth,
+            useDirtyRect ? &dirtyBox : nullptr,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.left) : 0,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.top) : 0);
     }
     else
     {
-        cmdList->CopyResourceNoBarrier(*sharedColor, targets.SecondaryLocalColor);
-        cmdList->CopyResourceNoBarrier(*sharedDepth, targets.SecondaryLocalLinearDepth);
+        if (context.UseDirtyRect)
+        {
+            CopyTextureRectNoBarrier(cmdList, const_cast<GResource&>(*sharedColor),
+                                     targets.SecondaryLocalColor, context.DirtyRect);
+            CopyTextureRectNoBarrier(cmdList, const_cast<GResource&>(*sharedDepth),
+                                     targets.SecondaryLocalLinearDepth, context.DirtyRect);
+        }
+        else
+        {
+            cmdList->CopyResourceNoBarrier(*sharedColor, targets.SecondaryLocalColor);
+            cmdList->CopyResourceNoBarrier(*sharedDepth, targets.SecondaryLocalLinearDepth);
+        }
     }
 
     cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COMMON);
@@ -594,12 +716,22 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
 
     if (context.Telemetry)
     {
-        const UINT64 expectedColorBytes = copyOnly
-                                              ? targets.CopyOnlyColor.TotalBytes
-                                              : ExpectedCopyableBytes(targets.SecondaryLocalColor);
-        const UINT64 expectedDepthBytes = copyOnly
-                                              ? targets.CopyOnlyLinearDepth.TotalBytes
-                                              : ExpectedCopyableBytes(targets.SecondaryLocalLinearDepth);
+        const bool useDirtyRect = context.UseDirtyRect && RectWidth(context.DirtyRect) > 0 &&
+            RectHeight(context.DirtyRect) > 0;
+        const UINT64 fullColorBytes = copyOnly
+                                          ? targets.CopyOnlyColor.TotalBytes
+                                          : ExpectedCopyableBytes(targets.SecondaryLocalColor);
+        const UINT64 fullDepthBytes = copyOnly
+                                          ? targets.CopyOnlyLinearDepth.TotalBytes
+                                          : ExpectedCopyableBytes(targets.SecondaryLocalLinearDepth);
+        const UINT64 expectedColorBytes =
+            useDirtyRect && copyOnly
+                ? DirtyBytesForFootprint(targets.CopyOnlyColor.Footprint, context.DirtyRect)
+                : fullColorBytes;
+        const UINT64 expectedDepthBytes =
+            useDirtyRect && copyOnly
+                ? DirtyBytesForFootprint(targets.CopyOnlyLinearDepth.Footprint, context.DirtyRect)
+                : fullDepthBytes;
         context.Telemetry->LocalToSharedCommandListSubmissionCount += 1;
         context.Telemetry->SecondaryLocalToSharedCopyFenceValue =
             context.CurrentFrameResource.SecondaryLocalToSharedCopyFenceValue;
@@ -623,14 +755,10 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
             copyOnly ? targets.CopyOnlyLinearDepth.Footprint.Footprint.RowPitch : 0;
         context.Telemetry->LocalToSharedTimestampBeginQuery = context.TimestampHeapIndex;
         context.Telemetry->LocalToSharedTimestampEndQuery = context.TimestampHeapIndex + 1;
-        context.Telemetry->ColorBytesTransferred += expectedColorBytes;
-        context.Telemetry->DepthBytesTransferred += expectedDepthBytes;
-        context.Telemetry->TotalCrossAdapterBytes =
-            context.Telemetry->ColorBytesTransferred + context.Telemetry->DepthBytesTransferred;
         context.Telemetry->ParticleTransferBytes = 0;
-        context.Telemetry->RenderOutputTransferBytes =
-            context.Telemetry->LocalToSharedColorBytes + context.Telemetry->LocalToSharedDepthBytes +
-            context.Telemetry->SharedToLocalColorBytes + context.Telemetry->SharedToLocalDepthBytes;
+        context.Telemetry->FullFrameTransferBytes = fullColorBytes + fullDepthBytes;
+        context.Telemetry->ActualTransferBytes = expectedColorBytes + expectedDepthBytes;
+        RecomputeRenderOutputTransferTelemetry(*context.Telemetry);
     }
 }
 
@@ -670,21 +798,40 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
 
     if (copyOnly)
     {
+        const bool useDirtyRect = context.UseDirtyRect && RectWidth(context.DirtyRect) > 0 &&
+            RectHeight(context.DirtyRect) > 0;
+        const auto dirtyBox = BoxFromRect(context.DirtyRect);
         CopyPlacedBufferToTexture(
             cmdList,
             targets.PrimaryReceivedSecondaryColor,
             targets.CopyOnlyColor.PrimeBuffer,
-            targets.CopyOnlyColor.Footprint);
+            targets.CopyOnlyColor.Footprint,
+            useDirtyRect ? &dirtyBox : nullptr,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.left) : 0,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.top) : 0);
         CopyPlacedBufferToTexture(
             cmdList,
             targets.PrimaryReceivedSecondaryLinearDepth,
             targets.CopyOnlyLinearDepth.PrimeBuffer,
-            targets.CopyOnlyLinearDepth.Footprint);
+            targets.CopyOnlyLinearDepth.Footprint,
+            useDirtyRect ? &dirtyBox : nullptr,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.left) : 0,
+            useDirtyRect ? static_cast<UINT>(context.DirtyRect.top) : 0);
     }
     else
     {
-        cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryColor, *primeColor);
-        cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryLinearDepth, *primeDepth);
+        if (context.UseDirtyRect)
+        {
+            CopyTextureRectNoBarrier(cmdList, targets.PrimaryReceivedSecondaryColor,
+                                     const_cast<GResource&>(*primeColor), context.DirtyRect);
+            CopyTextureRectNoBarrier(cmdList, targets.PrimaryReceivedSecondaryLinearDepth,
+                                     const_cast<GResource&>(*primeDepth), context.DirtyRect);
+        }
+        else
+        {
+            cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryColor, *primeColor);
+            cmdList->CopyResourceNoBarrier(targets.PrimaryReceivedSecondaryLinearDepth, *primeDepth);
+        }
     }
 
     cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COMMON);
@@ -717,12 +864,22 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
 
     if (context.Telemetry)
     {
-        const UINT64 expectedColorBytes = copyOnly
-                                              ? targets.CopyOnlyColor.TotalBytes
-                                              : ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryColor);
-        const UINT64 expectedDepthBytes = copyOnly
-                                              ? targets.CopyOnlyLinearDepth.TotalBytes
-                                              : ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryLinearDepth);
+        const bool useDirtyRect = context.UseDirtyRect && RectWidth(context.DirtyRect) > 0 &&
+            RectHeight(context.DirtyRect) > 0;
+        const UINT64 fullColorBytes = copyOnly
+                                          ? targets.CopyOnlyColor.TotalBytes
+                                          : ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryColor);
+        const UINT64 fullDepthBytes = copyOnly
+                                          ? targets.CopyOnlyLinearDepth.TotalBytes
+                                          : ExpectedCopyableBytes(targets.PrimaryReceivedSecondaryLinearDepth);
+        const UINT64 expectedColorBytes =
+            useDirtyRect && copyOnly
+                ? DirtyBytesForFootprint(targets.CopyOnlyColor.Footprint, context.DirtyRect)
+                : fullColorBytes;
+        const UINT64 expectedDepthBytes =
+            useDirtyRect && copyOnly
+                ? DirtyBytesForFootprint(targets.CopyOnlyLinearDepth.Footprint, context.DirtyRect)
+                : fullDepthBytes;
         context.Telemetry->SharedToLocalCommandListSubmissionCount += 1;
         context.Telemetry->PrimarySharedToLocalCopyFenceValue =
             context.CurrentFrameResource.PrimarySharedToLocalCopyFenceValue;
@@ -746,13 +903,9 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
             copyOnly ? targets.CopyOnlyLinearDepth.Footprint.Footprint.RowPitch : 0;
         context.Telemetry->SharedToLocalTimestampBeginQuery = context.TimestampHeapIndex;
         context.Telemetry->SharedToLocalTimestampEndQuery = context.TimestampHeapIndex + 1;
-        context.Telemetry->ColorBytesTransferred += expectedColorBytes;
-        context.Telemetry->DepthBytesTransferred += expectedDepthBytes;
-        context.Telemetry->TotalCrossAdapterBytes =
-            context.Telemetry->ColorBytesTransferred + context.Telemetry->DepthBytesTransferred;
-        context.Telemetry->RenderOutputTransferBytes =
-            context.Telemetry->LocalToSharedColorBytes + context.Telemetry->LocalToSharedDepthBytes +
-            context.Telemetry->SharedToLocalColorBytes + context.Telemetry->SharedToLocalDepthBytes;
+        context.Telemetry->FullFrameTransferBytes = fullColorBytes + fullDepthBytes;
+        context.Telemetry->ActualTransferBytes = expectedColorBytes + expectedDepthBytes;
+        RecomputeRenderOutputTransferTelemetry(*context.Telemetry);
     }
 }
 

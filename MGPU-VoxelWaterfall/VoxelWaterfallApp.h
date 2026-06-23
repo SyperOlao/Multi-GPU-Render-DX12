@@ -59,6 +59,7 @@ public:
                             uint32_t repetitions = 1,
                             const std::filesystem::path& outputDirectory = {});
     int RunQuickMetricsBenchmarkOnce(uint32_t durationSeconds = 300,
+                                     uint32_t frameCount = 0,
                                      const std::filesystem::path& outputDirectory = {});
     int RunRuntimeMutationStressTestOnce(uint32_t frameCount = 1000,
                                          const std::filesystem::path& outputDirectory = {});
@@ -110,11 +111,20 @@ protected:
     void RebuildGpuPartitionsForMode();
     VoxelFrameRenderPlan BuildVoxelFrameRenderPlan() const;
     void ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan& renderPlan) const;
+    D3D12_RECT ComputeSecondaryScreenRect(const VoxelFrameRenderPlan& renderPlan,
+                                          UINT renderWidth,
+                                          UINT renderHeight,
+                                          bool& empty,
+                                          bool& fallbackFull,
+                                          double& areaPercent) const;
     void ValidateVoxelFrameDrawResultsCheap(const VoxelFrameRenderPlan& renderPlan,
                                             const std::vector<VoxelPartitionRenderResult>& primaryResults,
                                             const std::vector<VoxelPartitionRenderResult>& secondaryResults,
                                             bool secondaryGraphicsSubmitted) const;
     void ValidateVoxelWorkloadGlobalIdsSlow() const;
+    void ResetAdaptiveSecondaryShareCalibration();
+    void UpdateAdaptiveSecondaryShareCalibration();
+    void PublishAdaptiveSecondaryShareTelemetry();
     std::string GetExecutionModeName() const;
     std::string GetExecutionModeName(VoxelExecutionMode mode) const;
     float RenderAspectRatio() const;
@@ -155,6 +165,8 @@ protected:
     void CreateMaterials();
     void InitSRVMemoryAndMaterials();
     void InitRenderPaths();
+    UINT EffectiveSsaaSampleMultiplier(VoxelExecutionMode mode) const;
+    bool RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged();
     MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc() const;
     MultiGpuVoxelRenderTargetDesc BuildMultiGpuVoxelRenderTargetDesc(UINT width,
                                                                       UINT height,
@@ -257,6 +269,34 @@ protected:
 
     VoxelSceneWorkload voxelWorkload{};
     PendingRuntimeChanges pendingRuntimeChanges;
+    struct AdaptiveSecondaryShareCalibration
+    {
+        static constexpr uint32_t WarmupFrames = 120;
+        bool Active = false;
+        bool Complete = false;
+        bool ApplyQueued = false;
+        bool Applied = false;
+        bool WarningLogged = false;
+        uint32_t FrameCount = 0;
+        uint64_t PrimaryRenderedVoxels = 0;
+        uint64_t SecondaryRenderedVoxels = 0;
+        uint64_t TransferBytes = 0;
+        double PrimaryRenderMs = 0.0;
+        double SecondaryRenderMs = 0.0;
+        double TransferMs = 0.0;
+        double CompositeMs = 0.0;
+        double SyncMs = 0.0;
+        double PrimaryThroughputVoxelsPerMs = 0.0;
+        double SecondaryThroughputVoxelsPerMs = 0.0;
+        double TransferBandwidthBytesPerMs = 0.0;
+        double CompositeOverheadMs = 0.0;
+        double ExpectedGainMs = 0.0;
+        float RecommendedSecondaryShare = 0.0f;
+        bool FallbackRecommended = false;
+        std::string Reason;
+        std::string Warning;
+    };
+    AdaptiveSecondaryShareCalibration adaptiveSecondaryShareCalibration;
     struct RetainedVoxelFrameRenderPlan
     {
         VoxelFrameRenderPlan Plan;
@@ -338,6 +378,7 @@ protected:
     std::wstring multiGpuStatus = L"MultiGpu is not initialized";
     std::vector<std::wstring> adapterReportLines;
     MultiGpuVoxelRenderTargets multiGpuVoxelRenderTargets;
+    std::vector<VoxelFramePartitionRenderPlan> minimalLossSecondaryDiagnosticPartitions;
     struct OffscreenRenderTargetBudget
     {
         UINT RenderWidth = 0;
@@ -346,6 +387,8 @@ protected:
         UINT SsaaLinearScale = 1;
         UINT SsaaWidth = 0;
         UINT SsaaHeight = 0;
+        UINT TransferWidth = 0;
+        UINT TransferHeight = 0;
         uint64_t SsaaColorBytes = 0;
         uint64_t SsaaDepthBytes = 0;
         uint64_t CompositeBytes = 0;
@@ -386,6 +429,7 @@ protected:
 
     VoxelBenchmarkProfiler benchmarkProfiler;
     BenchmarkController benchmarkController;
+    bool quickMetricsBenchmarkActive = false;
     struct BenchmarkProvenanceCache
     {
         bool Initialized = false;
@@ -440,6 +484,12 @@ protected:
     uint64_t totalSuccessfulPresentCount = 0;
     uint32_t interactiveMaxCatchUpSteps = 3;
     double currentPrimaryWaitMs = 0.0;
+    double currentFrameResourceWaitMs = 0.0;
+    double currentSecondaryGpuCpuWaitMs = 0.0;
+    double currentCopyCpuWaitMs = 0.0;
+    double currentPresentWaitMs = 0.0;
+    double currentFrameResourceAcquireCpuMs = 0.0;
+    double currentUpdateCpuMs = 0.0;
     bool currentFrameResourceReady = true;
     bool frameResourceBackpressureActive = false;
     bool pumpFrameQuitRequested = false;

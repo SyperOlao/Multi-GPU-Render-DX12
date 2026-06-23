@@ -137,9 +137,24 @@ namespace
             mode = VoxelExecutionMode::SingleGpuFull;
             return true;
         }
+        if (value == "SingleGpuRecommended")
+        {
+            mode = VoxelExecutionMode::SingleGpuRecommended;
+            return true;
+        }
         if (value == "MultiGpuFull")
         {
             mode = VoxelExecutionMode::MultiGpuFull;
+            return true;
+        }
+        if (value == "MultiGpuAdaptive")
+        {
+            mode = VoxelExecutionMode::MultiGpuAdaptive;
+            return true;
+        }
+        if (value == "MultiGpuMinimalLoss")
+        {
+            mode = VoxelExecutionMode::MultiGpuMinimalLoss;
             return true;
         }
         if (value == "SingleGpuTemporalDecimation")
@@ -259,6 +274,7 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                 }
                 result = theApp.RunQuickMetricsBenchmarkOnce(
                     ReadCommandLineUint(cmdLine, "--quick-metrics-duration-seconds=", 300),
+                    ReadCommandLineUint(cmdLine, "--quick-metrics-frame-count=", 0),
                     ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir=").empty()
                         ? ReadCommandLinePath(cmdLine, "--benchmark-output-dir=")
                         : ReadCommandLinePath(cmdLine, "--quick-metrics-output-dir="));

@@ -26,8 +26,14 @@ namespace
         {
         case VoxelExecutionMode::SingleGpuFull:
             return "SingleGpuFull";
+        case VoxelExecutionMode::SingleGpuRecommended:
+            return "SingleGpuRecommended";
         case VoxelExecutionMode::MultiGpuFull:
             return "MultiGpuFull";
+        case VoxelExecutionMode::MultiGpuAdaptive:
+            return "MultiGpuAdaptive";
+        case VoxelExecutionMode::MultiGpuMinimalLoss:
+            return "MultiGpuMinimalLoss";
         case VoxelExecutionMode::SingleGpuTemporalDecimation:
             return "SingleGpuTemporalDecimation";
         case VoxelExecutionMode::MultiGpuTemporalDecimation:

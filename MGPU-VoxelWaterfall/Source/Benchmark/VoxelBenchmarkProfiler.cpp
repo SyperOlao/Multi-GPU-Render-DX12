@@ -188,7 +188,7 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
         << "wall_delta_ms,accepted_simulation_delta_ms,frame_resource_backpressure_poll_count,"
         << "drained_message_count,successful_present_count,simulation_steps_per_wall_second,"
         << "seed,actual_client_width,actual_client_height,swapchain_width,swapchain_height,"
-        << "render_width,render_height,ssaa_width,ssaa_height,resolved_config_hash,"
+        << "render_width,render_height,ssaa_width,ssaa_height,transfer_width,transfer_height,resolved_config_hash,"
         << "render_resolution_preset,camera_path,camera_fov_degrees,camera_near_plane,camera_far_plane,"
         << "lighting_preset,dynamic_shadows_enabled,"
         << "primary_adapter,secondary_adapter,primary_vendor_id,primary_device_id,"
@@ -200,7 +200,7 @@ bool VoxelBenchmarkProfiler::Start(const std::filesystem::path& outputDirectory,
     WriteQueueCalibrationHeader(csv, "secondary_graphics_queue");
     WriteQueueCalibrationHeader(csv, "secondary_copy_queue");
     WriteQueueCalibrationHeader(csv, "primary_copy_queue");
-    csv << "frame_resource_backpressure_ms,"
+    csv << "frame_resource_backpressure_ms,secondary_gpu_cpu_wait_ms,copy_cpu_wait_ms,present_wait_ms,"
         << "cpu_submission_ms,cpu_total_frame_ms,present_to_present_ms,"
         << "critical_path_gpu_ms,gpu_work_sum_ms,primary_compute_ms,"
         << "primary_lod_compaction_ms,primary_base_graphics_ms,secondary_compute_ms,"
@@ -655,6 +655,8 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
         << frame.Metadata.RenderHeight << ','
         << frame.Metadata.SsaaWidth << ','
         << frame.Metadata.SsaaHeight << ','
+        << frame.Metadata.TransferWidth << ','
+        << frame.Metadata.TransferHeight << ','
         << EscapeCsv(frame.Metadata.ResolvedConfigHash) << ','
         << EscapeCsv(frame.Metadata.RenderResolutionPreset) << ','
         << EscapeCsv(frame.Metadata.CameraPath) << ','
@@ -688,7 +690,10 @@ void VoxelBenchmarkProfiler::WriteFrame(const FrameRecord& frame)
     }
     csv
         << std::fixed << std::setprecision(6)
-        << frame.Metadata.CpuWaitMs << ','
+        << frame.Metadata.FrameResourceWaitMs << ','
+        << frame.Metadata.SecondaryGpuCpuWaitMs << ','
+        << frame.Metadata.CopyCpuWaitMs << ','
+        << frame.Metadata.PresentWaitMs << ','
         << frame.CpuSubmissionMs << ','
         << cpuTotalFrameMs << ','
         << frame.Metadata.PresentToPresentMs << ','
@@ -781,7 +786,11 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
     const bool timestampsValid) const
 {
     const auto& metadata = frame.Metadata;
+    const bool requestedMinimalLoss = metadata.RequestedMode == "MultiGpuMinimalLoss";
+    const bool requestedAdaptive = metadata.RequestedMode == "MultiGpuAdaptive";
     const bool requestedMultiGpu = metadata.RequestedMode == "MultiGpuFull" ||
+        requestedAdaptive ||
+        requestedMinimalLoss ||
         metadata.RequestedMode == "MultiGpuTemporalDecimation";
     if (!timestampsValid)
         return "GPU timestamp query failed";
@@ -802,7 +811,7 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
     if (metadata.ProfileName == "MixedStaticAndDynamic" &&
         (metadata.ActualStaticVoxelCount == 0 || metadata.ActualDynamicVoxelCount == 0))
         return "MixedStaticAndDynamic does not contain both static and dynamic voxels";
-    if (requestedMultiGpu && metadata.ActualMode != metadata.RequestedMode)
+    if (requestedMultiGpu && !requestedAdaptive && metadata.ActualMode != metadata.RequestedMode)
         return "requested multi-GPU mode fell back to a different actual mode";
     if (requestedMultiGpu &&
         metadata.SecondaryPartitionVoxelCount > 0 &&
@@ -812,7 +821,7 @@ std::string VoxelBenchmarkProfiler::ValidateFrameRecord(
         return "particle transfer bytes are non-zero";
     if (metadata.LodProbeOverflowCount > 0)
         return "spatial LOD hash probe overflow";
-    if (requestedMultiGpu && metadata.RenderOutputTransferBytes == 0)
+    if (requestedMultiGpu && !requestedMinimalLoss && !requestedAdaptive && metadata.RenderOutputTransferBytes == 0)
         return "render-output transfer bytes are zero";
     if (!metadata.VisualValidationHasResult)
         return "visual validation metrics are not available";

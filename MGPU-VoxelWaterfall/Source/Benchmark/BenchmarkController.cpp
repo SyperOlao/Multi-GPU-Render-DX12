@@ -77,6 +77,8 @@ namespace
     bool RequestsMultiGpu(const VoxelExecutionMode mode)
     {
         return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuAdaptive ||
+            mode == VoxelExecutionMode::MultiGpuMinimalLoss ||
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 

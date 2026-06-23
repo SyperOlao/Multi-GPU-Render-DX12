@@ -58,7 +58,9 @@ namespace
 {
     constexpr float DebugUiScale = 2.25f;
     constexpr const char* VoxelSceneGpuObjectName = "VoxelSceneGpuPartitions";
-    constexpr UINT SsaaSampleMultiplier = 4;
+    constexpr UINT DefaultSsaaSampleMultiplier = 4;
+    constexpr UINT MultiGpuFullSsaaSampleMultiplier = 1;
+    constexpr float MultiGpuMinimalLossSecondaryShare = 0.02f;
     constexpr double TargetAllocationBudgetFraction = 0.95;
     uint64_t gProvenanceFileHashCount = 0;
     uint64_t gGitProcessSpawnCount = 0;
@@ -375,6 +377,15 @@ namespace
     bool UsesMultiGpuExecution(const VoxelExecutionMode mode)
     {
         return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuAdaptive ||
+            mode == VoxelExecutionMode::MultiGpuMinimalLoss ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
+    bool UsesFullMultiGpuOutputTransfer(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuAdaptive ||
             mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
     }
 
@@ -390,8 +401,14 @@ namespace
         {
         case VoxelExecutionMode::SingleGpuFull:
             return "SingleGpuFull";
+        case VoxelExecutionMode::SingleGpuRecommended:
+            return "SingleGpuRecommended";
         case VoxelExecutionMode::MultiGpuFull:
             return "MultiGpuFull";
+        case VoxelExecutionMode::MultiGpuAdaptive:
+            return "MultiGpuAdaptive";
+        case VoxelExecutionMode::MultiGpuMinimalLoss:
+            return "MultiGpuMinimalLoss";
         case VoxelExecutionMode::SingleGpuTemporalDecimation:
             return "SingleGpuTemporalDecimation";
         case VoxelExecutionMode::MultiGpuTemporalDecimation:
@@ -686,6 +703,12 @@ namespace
             return false;
         out = lhs + rhs;
         return true;
+    }
+
+    double ElapsedMsSince(const std::chrono::steady_clock::time_point start)
+    {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
     }
 
     bool CheckedTextureBytes(const UINT width,
@@ -1358,6 +1381,21 @@ namespace
     {
         const bool requestedTemporal = UsesTemporalExecution(requestedMode);
         const bool workloadTemporal = workload.TemporalPolicy == VoxelTemporalPolicy::Decimated;
+        if (requestedMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+        {
+            return {
+                VoxelBenchmarkConfigClass::Diagnostic,
+                "MultiGpuMinimalLoss is an overhead-floor diagnostic mode; exclude it from speedup hypothesis tests"
+            };
+        }
+        if (requestedMode == VoxelExecutionMode::MultiGpuAdaptive ||
+            requestedMode == VoxelExecutionMode::SingleGpuRecommended)
+        {
+            return {
+                VoxelBenchmarkConfigClass::Diagnostic,
+                "Adaptive heterogeneous-adapter recommendation mode; do not label fallback as MultiGpuFull"
+            };
+        }
         if (requestedTemporal != workloadTemporal)
             return {
                 VoxelBenchmarkConfigClass::InvalidMixedQuality,
@@ -1388,6 +1426,8 @@ namespace
                                                const bool multiGpuAvailable,
                                                const VoxelAdapterPartition& partition)
     {
+        if (mode == VoxelExecutionMode::MultiGpuMinimalLoss)
+            return VoxelAdapterOwner::Primary;
         return UsesMultiGpuExecution(mode) &&
                    multiGpuAvailable &&
                    partition.PartitionId == VoxelAdapterPartitionId::SecondaryPartition
@@ -1434,6 +1474,20 @@ namespace
             }
         }
         return out.str();
+    }
+
+    std::string EscapeCsvField(const std::string& value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size());
+        for (const char c : value)
+        {
+            if (c == '"')
+                escaped += "\"\"";
+            else
+                escaped.push_back(c);
+        }
+        return escaped;
     }
 
     std::string WideToUtf8Local(const std::wstring& value)
@@ -1746,6 +1800,11 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.WallDeltaMs = wallDeltaSeconds * 1000.0;
     frameGraphTelemetry.FrameResourceBackpressurePollCount = currentFrameResourceBackpressurePollCount;
     frameGraphTelemetry.FrameResourceBackpressureMs = currentPrimaryWaitMs;
+    frameGraphTelemetry.SecondaryGpuCpuWaitMs = currentSecondaryGpuCpuWaitMs;
+    frameGraphTelemetry.CopyCpuWaitMs = currentCopyCpuWaitMs;
+    frameGraphTelemetry.PresentWaitMs = currentPresentWaitMs;
+    frameGraphTelemetry.FrameResourceAcquireCpuMs = currentFrameResourceAcquireCpuMs;
+    frameGraphTelemetry.UpdateCpuMs = currentUpdateCpuMs;
     frameGraphTelemetry.DrainedMessageCount = currentFrameDrainedMessageCount;
     frameGraphTelemetry.CurrentFramePumpDepth = currentFramePumpDepth;
     frameGraphTelemetry.MaximumObservedFramePumpDepth = maximumObservedFramePumpDepth;
@@ -1759,6 +1818,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     frameGraphTelemetry.RenderHeight = voxelWorkload.RenderResolutionHeight;
     frameGraphTelemetry.SsaaSampleMultiplier = offscreenRenderTargetBudget.SsaaSampleMultiplier;
     frameGraphTelemetry.SsaaLinearScale = offscreenRenderTargetBudget.SsaaLinearScale;
+    frameGraphTelemetry.TransferWidth = offscreenRenderTargetBudget.TransferWidth;
+    frameGraphTelemetry.TransferHeight = offscreenRenderTargetBudget.TransferHeight;
     frameGraphTelemetry.EstimatedOffscreenMemoryBytes = offscreenRenderTargetBudget.EstimatedTotalBytes;
     frameGraphTelemetry.EstimatedCrossAdapterBytesPerFrame =
         offscreenRenderTargetBudget.EstimatedCrossAdapterBytesPerFrame;
@@ -1775,7 +1836,9 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                                           ? executionMode
                                           : (executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation
                                                  ? VoxelExecutionMode::SingleGpuTemporalDecimation
-                                                 : VoxelExecutionMode::SingleGpuFull);
+                                                 : (executionMode == VoxelExecutionMode::SingleGpuRecommended
+                                                        ? VoxelExecutionMode::SingleGpuRecommended
+                                                        : VoxelExecutionMode::SingleGpuFull));
     frameGraphTelemetry.PrimaryComputeSubmitted = simulationResult.PrimaryComputeSubmitted;
     frameGraphTelemetry.SecondaryComputeSubmitted = simulationResult.SecondaryComputeSubmitted;
     frameGraphTelemetry.SecondaryConfiguredUpdateInterval =
@@ -1882,7 +1945,9 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             voxelRenderPasses.RecordPrimaryBase(cmdList, basePassContext);
         }
     };
+    auto phaseBegin = std::chrono::steady_clock::now();
     renderPipeline.SubmitPrimaryBasePass(primaryBaseContext);
+    frameGraphTelemetry.PrimaryRenderCpuMs = ElapsedMsSince(phaseBegin);
     for (const auto& result : primaryVoxelRenderResults)
     {
         frameGraphTelemetry.PrimarySpatialLodStats.Lod0Rendered += result.LodStats.Lod0Rendered;
@@ -1904,11 +1969,16 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         lastSecondaryPartitionGraphicsFenceValue = currentFrameResource->PrimaryBaseRenderFenceValue;
         lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Primary;
     }
+    const bool minimalLossMode = executionMode == VoxelExecutionMode::MultiGpuMinimalLoss;
     const bool runSecondaryGraphics =
         simulationResult.UsedMultiGpuMode &&
         multiGpuVoxelRenderTargets.IsInitialized() &&
         hasSecondaryVoxelDrawWork;
     bool secondaryImageReadyThisFrame = false;
+    D3D12_RECT secondaryDirtyRect{0, 0, 0, 0};
+    bool secondaryDirtyRectEmpty = true;
+    bool secondaryDirtyRectFallbackFull = false;
+    double secondaryDirtyRectAreaPercent = 0.0;
 
     if (runSecondaryGraphics)
     {
@@ -1932,6 +2002,24 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             static_cast<LONG>(secondaryDesc.Width),
             static_cast<LONG>(secondaryDesc.Height)
         };
+        secondaryDirtyRect = ComputeSecondaryScreenRect(
+            voxelFrameRenderPlan,
+            static_cast<UINT>(secondaryDesc.Width),
+            secondaryDesc.Height,
+            secondaryDirtyRectEmpty,
+            secondaryDirtyRectFallbackFull,
+            secondaryDirtyRectAreaPercent);
+        frameGraphTelemetry.SecondaryRectX = secondaryDirtyRect.left;
+        frameGraphTelemetry.SecondaryRectY = secondaryDirtyRect.top;
+        frameGraphTelemetry.SecondaryRectWidth =
+            static_cast<uint32_t>(std::max<LONG>(0, secondaryDirtyRect.right - secondaryDirtyRect.left));
+        frameGraphTelemetry.SecondaryRectHeight =
+            static_cast<uint32_t>(std::max<LONG>(0, secondaryDirtyRect.bottom - secondaryDirtyRect.top));
+        frameGraphTelemetry.SecondaryRectAreaPercent = secondaryDirtyRectAreaPercent;
+        frameGraphTelemetry.SecondaryRectEmpty = secondaryDirtyRectEmpty;
+        frameGraphTelemetry.SecondaryRectFallbackFull = secondaryDirtyRectFallbackFull;
+        frameGraphTelemetry.FullFrameTransferBytes =
+            secondaryFrameTargets.ColorTransferBytes + secondaryFrameTargets.LinearDepthTransferBytes;
 
         SecondaryVoxelGraphicsPassContext secondaryGraphicsContext{
             secondaryGraphicsQueue,
@@ -1942,48 +2030,73 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             &voxelFrameRenderPlan.SecondaryOwnedPartitions,
             secondaryFrameTargets,
             secondaryViewport,
-            secondaryScissor,
+            secondaryDirtyRectEmpty ? secondaryScissor : secondaryDirtyRect,
             benchmarkProfiler,
             &frameGraphTelemetry,
             &secondaryVoxelRenderResults
         };
+        phaseBegin = std::chrono::steady_clock::now();
         renderPipeline.SubmitSecondaryVoxelPass(secondaryGraphicsContext);
+        frameGraphTelemetry.SecondaryRenderCpuMs = ElapsedMsSince(phaseBegin);
         DrainD3D12InfoQueues(frameSerial, L"secondary submission");
         lastSecondaryPartitionGraphicsFenceValue = currentFrameResource->SecondaryRenderFenceValue;
         lastSecondaryPartitionGraphicsFenceOwner = VoxelAdapterOwner::Secondary;
 
-        SecondaryLocalToSharedCopyPassContext secondaryCopyContext{
-            secondaryCopyQueue,
-            secondaryGraphicsQueue->GetFence(),
-            currentFrameResource->SecondaryRenderFenceValue,
-            secondCrossAdapterRenderReadyFence,
-            crossAdapterRenderReadyFenceValue,
-            timestampHeapIndex,
-            *currentFrameResource,
-            secondaryFrameTargets,
-            benchmarkProfiler,
-            &frameGraphTelemetry
-        };
-        renderPipeline.SubmitSecondaryLocalToSharedCopyPass(secondaryCopyContext);
-        DrainD3D12InfoQueues(frameSerial, L"secondary local-to-shared cross-adapter copy submission");
+        if (!minimalLossMode && !secondaryDirtyRectEmpty)
+        {
+            SecondaryLocalToSharedCopyPassContext secondaryCopyContext{
+                secondaryCopyQueue,
+                secondaryGraphicsQueue->GetFence(),
+                currentFrameResource->SecondaryRenderFenceValue,
+                secondCrossAdapterRenderReadyFence,
+                crossAdapterRenderReadyFenceValue,
+                timestampHeapIndex,
+                *currentFrameResource,
+                secondaryFrameTargets,
+                secondaryDirtyRect,
+                !secondaryDirtyRectFallbackFull,
+                benchmarkProfiler,
+                &frameGraphTelemetry
+            };
+            phaseBegin = std::chrono::steady_clock::now();
+            renderPipeline.SubmitSecondaryLocalToSharedCopyPass(secondaryCopyContext);
+            DrainD3D12InfoQueues(frameSerial, L"secondary local-to-shared cross-adapter copy submission");
 
-        PrimarySharedToLocalCopyPassContext primaryCopyContext{
-            primaryCopyQueue,
-            primeCrossAdapterRenderReadyFence,
-            currentFrameResource->CrossAdapterRenderReadyFenceValue,
-            timestampHeapIndex,
-            *currentFrameResource,
-            secondaryFrameTargets,
-            benchmarkProfiler,
-            &frameGraphTelemetry
-        };
-        renderPipeline.SubmitPrimarySharedToLocalCopyPass(primaryCopyContext);
-        DrainD3D12InfoQueues(frameSerial, L"primary shared-to-local cross-adapter copy submission");
-        secondaryFrameTargets.HasReceivedImage = true;
-        secondaryImageReadyThisFrame = true;
+            PrimarySharedToLocalCopyPassContext primaryCopyContext{
+                primaryCopyQueue,
+                primeCrossAdapterRenderReadyFence,
+                currentFrameResource->CrossAdapterRenderReadyFenceValue,
+                timestampHeapIndex,
+                *currentFrameResource,
+                secondaryFrameTargets,
+                secondaryDirtyRect,
+                !secondaryDirtyRectFallbackFull,
+                benchmarkProfiler,
+                &frameGraphTelemetry
+            };
+            renderPipeline.SubmitPrimarySharedToLocalCopyPass(primaryCopyContext);
+            frameGraphTelemetry.CrossAdapterCopyCpuMs = ElapsedMsSince(phaseBegin);
+            DrainD3D12InfoQueues(frameSerial, L"primary shared-to-local cross-adapter copy submission");
+            secondaryFrameTargets.HasReceivedImage = true;
+            secondaryImageReadyThisFrame = true;
+            const auto actual = frameGraphTelemetry.RenderOutputTransferBytes;
+            const auto full = frameGraphTelemetry.FullFrameTransferBytes;
+            frameGraphTelemetry.ActualTransferBytes = actual;
+            frameGraphTelemetry.SavedTransferPercent =
+                full > 0 && actual <= full
+                    ? 100.0 * (1.0 - static_cast<double>(actual) / static_cast<double>(full))
+                    : 0.0;
+        }
+        else
+        {
+            secondaryFrameTargets.HasReceivedImage = false;
+            currentFrameResource->CrossAdapterRenderReadyFenceValue = 0;
+            currentFrameResource->PrimarySecondaryImageReadyFenceValue = 0;
+        }
     }
 
     const bool hasCurrentSecondaryImage =
+        !minimalLossMode &&
         runSecondaryGraphics &&
         multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex].HasReceivedImage;
     const bool shouldComposeSecondaryImage =
@@ -2099,6 +2212,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
             GTexture* diagnosticPrimaryCompositeSource = nullptr;
             if (shouldComposeSecondaryImage)
             {
+                const auto compositeCpuBegin = std::chrono::steady_clock::now();
                 auto& targets = multiGpuVoxelRenderTargets.GetFrames()[currentFrameResourceIndex];
                 assert(targets.RenderTargetGeneration == frameRenderTargetGeneration &&
                        "command list must not mix render targets from different generations");
@@ -2111,7 +2225,17 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                     antiAliasingPrimePath->GetDepthMap(),
                     targets,
                     antiAliasingPrimePath->GetViewPort(),
-                    antiAliasingPrimePath->GetRect(),
+                    frameGraphTelemetry.SecondaryRectEmpty
+                        ? antiAliasingPrimePath->GetRect()
+                        : D3D12_RECT{
+                            frameGraphTelemetry.SecondaryRectX,
+                            frameGraphTelemetry.SecondaryRectY,
+                            static_cast<LONG>(frameGraphTelemetry.SecondaryRectX +
+                                static_cast<int32_t>(frameGraphTelemetry.SecondaryRectWidth)),
+                            static_cast<LONG>(frameGraphTelemetry.SecondaryRectY +
+                                static_cast<int32_t>(frameGraphTelemetry.SecondaryRectHeight))},
+                    !frameGraphTelemetry.SecondaryRectEmpty &&
+                        !frameGraphTelemetry.SecondaryRectFallbackFull,
                     mainPassCB.NearZ,
                     mainPassCB.FarZ,
                     voxelCompositeDebugView
@@ -2137,6 +2261,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                                                 finalPassContext.ResolveSourceSrvOffset,
                                                 targets.RenderTargetGeneration);
                 }
+                frameGraphTelemetry.CompositeCpuMs = ElapsedMsSince(compositeCpuBegin);
             }
             if (finalResolveSource == FinalResolveSource::ReceivedSecondary && hasCurrentSecondaryImage)
             {
@@ -2156,6 +2281,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                                             finalPassContext.ResolveSourceSrvOffset,
                                             targets.RenderTargetGeneration);
             }
+            const auto finalResolveCpuBegin = std::chrono::steady_clock::now();
             benchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                          VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
             assert((finalPassContext.ResolveSource == FinalResolveSource::SolidColor ||
@@ -2170,13 +2296,18 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
                 finalPassContext.ResolveSource,
                 frameGraphTelemetry.FinalResolveSourceGeneration);
             if (!benchmarkController.IsAutomaticActive())
+            {
+                const auto imguiCpuBegin = std::chrono::steady_clock::now();
                 DrawUserInterface(cmdList);
+                frameGraphTelemetry.ImGuiCpuMs = ElapsedMsSince(imguiCpuBegin);
+            }
             cmdList->TransitionBarrier(MainWindow->GetCurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT);
             cmdList->FlushResourceBarriers();
             benchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                        VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
             benchmarkProfiler.ResolveRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
                                            VoxelBenchmarkProfiler::RangeId::FinalResolveUi);
+            frameGraphTelemetry.FinalResolveCpuMs = ElapsedMsSince(finalResolveCpuBegin);
         }
     };
     auto assertFrameGenerationStable = [&]
@@ -2225,7 +2356,16 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         visualValidationMetrics.PipelinePrimitiveCount;
     frameGraphTelemetry.VisualValidationFailReason = visualValidationMetrics.FailReason;
 
+    const auto presentBegin = std::chrono::steady_clock::now();
     currentFrameResourceIndex = MainWindow->Present();
+    currentPresentWaitMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - presentBegin).count();
+    currentPrimaryWaitMs =
+        currentFrameResourceWaitMs + currentSecondaryGpuCpuWaitMs + currentCopyCpuWaitMs + currentPresentWaitMs;
+    frameGraphTelemetry.FrameResourceBackpressureMs = currentFrameResourceWaitMs;
+    frameGraphTelemetry.SecondaryGpuCpuWaitMs = currentSecondaryGpuCpuWaitMs;
+    frameGraphTelemetry.CopyCpuWaitMs = currentCopyCpuWaitMs;
+    frameGraphTelemetry.PresentWaitMs = currentPresentWaitMs;
     AttachFinalOutputDiagnosticPresentResult(frameSerial, MainWindow->GetLastPresentResult());
     DrainD3D12InfoQueues(frameSerial, L"Present");
     const auto presentTime = std::chrono::steady_clock::now();
@@ -2238,6 +2378,7 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
     ++successfulPresentCount;
     ++totalSuccessfulPresentCount;
     frameGraphTelemetry.SuccessfulPresentCount = totalSuccessfulPresentCount;
+    UpdateAdaptiveSecondaryShareCalibration();
     if (benchmarkProfiler.IsActive() && benchmarkFrameMetadata)
     {
         RefreshBenchmarkFrameTelemetry(*benchmarkFrameMetadata);
@@ -3915,6 +4056,7 @@ int VoxelWaterfallApp::RunAutomaticBenchmarkSuiteOnce(
 }
 
 int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSeconds,
+                                                    const uint32_t frameCount,
                                                     const std::filesystem::path& outputDirectory)
 {
     const uint32_t boundedDurationSeconds = std::max(1u, durationSeconds);
@@ -3932,19 +4074,43 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
 
     std::filesystem::create_directories(runOutputDirectory);
     const auto csvPath = runOutputDirectory / L"quick_metrics.csv";
-    std::ofstream csv(csvPath, std::ios::out | std::ios::trunc);
-    if (!csv.is_open())
+    std::ostringstream csvRows;
+    csvRows.imbue(std::locale::classic());
+    csvRows << "schema,elapsed_seconds,frame_index,simulation_frame_index,requested_mode,actual_mode,"
+        << "fps,frame_time_ms,present_to_present_ms,wall_delta_ms,cpu_wait_ms,"
+        << "frame_resource_wait_ms,secondary_gpu_cpu_wait_ms,copy_cpu_wait_ms,present_wait_ms,"
+        << "frame_resource_acquire_cpu_ms,update_cpu_ms,primary_render_cpu_ms,secondary_render_cpu_ms,"
+        << "cross_adapter_copy_cpu_ms,composite_cpu_ms,final_resolve_cpu_ms,imgui_cpu_ms,"
+        << "metrics_collection_cpu_ms,csv_write_cpu_ms,"
+        << "total_voxels,static_voxels,dynamic_voxels,primary_rendered_voxels,"
+        << "secondary_rendered_voxels,render_width,render_height,internal_width,internal_height,"
+        << "transfer_width,transfer_height,total_cross_adapter_bytes,render_output_transfer_bytes,"
+        << "color_transfer_bytes,depth_transfer_bytes,secondary_draw_calls,secondary_fence_value,"
+        << "secondary_rect_x,secondary_rect_y,secondary_rect_w,secondary_rect_h,"
+        << "secondary_rect_area_percent,full_frame_transfer_bytes,actual_transfer_bytes,"
+        << "saved_transfer_percent,secondary_rect_empty,secondary_rect_fallback_full,"
+        << "adaptive_calibration_frame_count,adaptive_calibration_warmup_frames,"
+        << "adaptive_primary_throughput_voxels_per_ms,adaptive_secondary_throughput_voxels_per_ms,"
+        << "adaptive_transfer_bandwidth_bytes_per_ms,adaptive_composite_overhead_ms,"
+        << "adaptive_recommended_secondary_share,adaptive_expected_gain_ms,"
+        << "adaptive_calibration_complete,adaptive_fallback_recommended,adaptive_reason,adaptive_warning\n";
+    struct QuickMetricsFrameSummary
     {
-        logQueue.Push(L"Quick metrics benchmark failed: quick_metrics.csv could not be opened");
+        uint64_t FrameIndex = 0;
+        double FrameTimeMs = 0.0;
+        VoxelFrameGraphTelemetry Telemetry{};
+    };
+    std::vector<QuickMetricsFrameSummary> quickFrameSummaries;
+    quickFrameSummaries.reserve(frameCount > 0 ? frameCount : 1024);
+
+    quickMetricsBenchmarkActive = true;
+    if (!RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged())
+    {
+        quickMetricsBenchmarkActive = false;
+        RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged();
+        logQueue.Push(L"Quick metrics benchmark failed: render targets could not be rebuilt with SSAA disabled");
         return 2;
     }
-
-    csv.imbue(std::locale::classic());
-    csv << "schema,elapsed_seconds,frame_index,simulation_frame_index,requested_mode,actual_mode,"
-        << "fps,frame_time_ms,present_to_present_ms,wall_delta_ms,cpu_wait_ms,"
-        << "total_voxels,static_voxels,dynamic_voxels,primary_rendered_voxels,"
-        << "secondary_rendered_voxels,total_cross_adapter_bytes,render_output_transfer_bytes,"
-        << "color_transfer_bytes,depth_transfer_bytes,secondary_draw_calls\n";
 
     timer.Reset();
     pumpFrameQuitRequested = false;
@@ -3955,7 +4121,8 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
     double minFrameTimeMs = std::numeric_limits<double>::max();
     double maxFrameTimeMs = 0.0;
 
-    while (!pumpFrameQuitRequested && std::chrono::steady_clock::now() < end)
+    while (!pumpFrameQuitRequested &&
+           (frameCount > 0 ? measuredFrames < frameCount : std::chrono::steady_clock::now() < end))
     {
         AdvanceRuntimeWorkOutsideFrame(false);
         const bool presented = PumpOneFrame();
@@ -3972,30 +4139,82 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
         maxFrameTimeMs = std::max(maxFrameTimeMs, frameTimeMs);
         ++measuredFrames;
 
-        csv << "mgpu_voxel_quick_metrics.v1,"
+        const auto metricsCollectionBegin = std::chrono::steady_clock::now();
+        frameGraphTelemetry.MetricsCollectionCpuMs = 0.0;
+        frameGraphTelemetry.CsvWriteCpuMs = 0.0;
+        auto telemetrySnapshot = frameGraphTelemetry;
+        frameGraphTelemetry.MetricsCollectionCpuMs = ElapsedMsSince(metricsCollectionBegin);
+        telemetrySnapshot.MetricsCollectionCpuMs = frameGraphTelemetry.MetricsCollectionCpuMs;
+
+        const auto csvWriteBegin = std::chrono::steady_clock::now();
+        csvRows << "mgpu_voxel_quick_metrics.v1,"
             << elapsedSeconds << ','
             << measuredFrames << ','
             << simulationFrameIndex << ','
             << GetExecutionModeName(requestedExecutionMode) << ','
-            << GetExecutionModeName(frameGraphTelemetry.ActualMode) << ','
+            << GetExecutionModeName(telemetrySnapshot.ActualMode) << ','
             << fps << ','
             << frameTimeMs << ','
             << currentPresentToPresentMs << ','
-            << frameGraphTelemetry.WallDeltaMs << ','
+            << telemetrySnapshot.WallDeltaMs << ','
             << currentPrimaryWaitMs << ','
+            << telemetrySnapshot.FrameResourceBackpressureMs << ','
+            << telemetrySnapshot.SecondaryGpuCpuWaitMs << ','
+            << telemetrySnapshot.CopyCpuWaitMs << ','
+            << telemetrySnapshot.PresentWaitMs << ','
+            << telemetrySnapshot.FrameResourceAcquireCpuMs << ','
+            << telemetrySnapshot.UpdateCpuMs << ','
+            << telemetrySnapshot.PrimaryRenderCpuMs << ','
+            << telemetrySnapshot.SecondaryRenderCpuMs << ','
+            << telemetrySnapshot.CrossAdapterCopyCpuMs << ','
+            << telemetrySnapshot.CompositeCpuMs << ','
+            << telemetrySnapshot.FinalResolveCpuMs << ','
+            << telemetrySnapshot.ImGuiCpuMs << ','
+            << telemetrySnapshot.MetricsCollectionCpuMs << ','
+            << 0.0 << ','
             << voxelWorkload.TotalVoxelCount << ','
             << voxelWorkload.ActualStaticVoxelCount << ','
             << voxelWorkload.ActualDynamicVoxelCount << ','
-            << frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered() << ','
-            << frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered() << ','
-            << frameGraphTelemetry.TotalCrossAdapterBytes << ','
-            << frameGraphTelemetry.RenderOutputTransferBytes << ','
-            << frameGraphTelemetry.ColorBytesTransferred << ','
-            << frameGraphTelemetry.DepthBytesTransferred << ','
-            << frameGraphTelemetry.SecondaryDrawCalls << '\n';
+            << telemetrySnapshot.PrimarySpatialLodStats.TotalRendered() << ','
+            << telemetrySnapshot.SecondarySpatialLodStats.TotalRendered() << ','
+            << telemetrySnapshot.RenderWidth << ','
+            << telemetrySnapshot.RenderHeight << ','
+            << telemetrySnapshot.SsaaWidth << ','
+            << telemetrySnapshot.SsaaHeight << ','
+            << telemetrySnapshot.TransferWidth << ','
+            << telemetrySnapshot.TransferHeight << ','
+            << telemetrySnapshot.TotalCrossAdapterBytes << ','
+            << telemetrySnapshot.RenderOutputTransferBytes << ','
+            << telemetrySnapshot.ColorBytesTransferred << ','
+            << telemetrySnapshot.DepthBytesTransferred << ','
+            << telemetrySnapshot.SecondaryDrawCalls << ','
+            << telemetrySnapshot.SecondaryGraphicsFenceValue << ','
+            << telemetrySnapshot.SecondaryRectX << ','
+            << telemetrySnapshot.SecondaryRectY << ','
+            << telemetrySnapshot.SecondaryRectWidth << ','
+            << telemetrySnapshot.SecondaryRectHeight << ','
+            << telemetrySnapshot.SecondaryRectAreaPercent << ','
+            << telemetrySnapshot.FullFrameTransferBytes << ','
+            << telemetrySnapshot.ActualTransferBytes << ','
+            << telemetrySnapshot.SavedTransferPercent << ','
+            << (telemetrySnapshot.SecondaryRectEmpty ? 1 : 0) << ','
+            << (telemetrySnapshot.SecondaryRectFallbackFull ? 1 : 0) << ','
+            << telemetrySnapshot.AdaptiveCalibrationFrameCount << ','
+            << telemetrySnapshot.AdaptiveCalibrationWarmupFrames << ','
+            << telemetrySnapshot.AdaptivePrimaryThroughputVoxelsPerMs << ','
+            << telemetrySnapshot.AdaptiveSecondaryThroughputVoxelsPerMs << ','
+            << telemetrySnapshot.AdaptiveTransferBandwidthBytesPerMs << ','
+            << telemetrySnapshot.AdaptiveCompositeOverheadMs << ','
+            << telemetrySnapshot.AdaptiveRecommendedSecondaryShare << ','
+            << telemetrySnapshot.AdaptiveExpectedGainMs << ','
+            << (telemetrySnapshot.AdaptiveCalibrationComplete ? 1 : 0) << ','
+            << (telemetrySnapshot.AdaptiveFallbackRecommended ? 1 : 0) << ','
+            << '"' << EscapeCsvField(telemetrySnapshot.AdaptiveReason) << '"' << ','
+            << '"' << EscapeCsvField(telemetrySnapshot.AdaptiveWarning) << '"' << '\n';
+        frameGraphTelemetry.CsvWriteCpuMs = ElapsedMsSince(csvWriteBegin);
+        telemetrySnapshot.CsvWriteCpuMs = frameGraphTelemetry.CsvWriteCpuMs;
+        quickFrameSummaries.push_back(QuickMetricsFrameSummary{measuredFrames, frameTimeMs, telemetrySnapshot});
     }
-    csv.flush();
-    csv.close();
 
     const auto finish = std::chrono::steady_clock::now();
     const double actualDurationSeconds = std::chrono::duration<double>(finish - start).count();
@@ -4003,7 +4222,69 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
                                           ? frameTimeSumMs / static_cast<double>(measuredFrames)
                                           : 0.0;
     const double averageFps = averageFrameTimeMs > 0.0 ? 1000.0 / averageFrameTimeMs : 0.0;
-    const auto metadata = BuildBenchmarkMetadata();
+    std::vector<double> sortedFrameTimes;
+    sortedFrameTimes.reserve(quickFrameSummaries.size());
+    for (const auto& frame : quickFrameSummaries)
+        sortedFrameTimes.push_back(frame.FrameTimeMs);
+    std::sort(sortedFrameTimes.begin(), sortedFrameTimes.end());
+    const double medianFrameTimeMs = sortedFrameTimes.empty()
+                                         ? 0.0
+                                         : sortedFrameTimes[sortedFrameTimes.size() / 2];
+    const double spikeThresholdMs = medianFrameTimeMs * 3.0;
+    std::ostringstream spikeLog;
+    spikeLog.imbue(std::locale::classic());
+    spikeLog << "Quick metrics spike scan: measured_frames=" << measuredFrames
+             << " median_frame_time_ms=" << medianFrameTimeMs
+             << " threshold_ms=" << spikeThresholdMs << '\n';
+    for (const auto& frame : quickFrameSummaries)
+    {
+        if (medianFrameTimeMs <= 0.0 || frame.FrameTimeMs <= spikeThresholdMs)
+            continue;
+
+        const auto& t = frame.Telemetry;
+        spikeLog << "spike frame_index=" << frame.FrameIndex
+                 << " frame_time_ms=" << frame.FrameTimeMs
+                 << " frame_resource_wait_ms=" << t.FrameResourceBackpressureMs
+                 << " secondary_gpu_cpu_wait_ms=" << t.SecondaryGpuCpuWaitMs
+                 << " copy_cpu_wait_ms=" << t.CopyCpuWaitMs
+                 << " present_wait_ms=" << t.PresentWaitMs
+                 << " frame_resource_acquire_cpu_ms=" << t.FrameResourceAcquireCpuMs
+                 << " update_cpu_ms=" << t.UpdateCpuMs
+                 << " primary_render_cpu_ms=" << t.PrimaryRenderCpuMs
+                 << " secondary_render_cpu_ms=" << t.SecondaryRenderCpuMs
+                 << " cross_adapter_copy_cpu_ms=" << t.CrossAdapterCopyCpuMs
+                 << " composite_cpu_ms=" << t.CompositeCpuMs
+                 << " final_resolve_cpu_ms=" << t.FinalResolveCpuMs
+                 << " imgui_cpu_ms=" << t.ImGuiCpuMs
+                 << " metrics_collection_cpu_ms=" << t.MetricsCollectionCpuMs
+                 << " csv_write_cpu_ms=" << t.CsvWriteCpuMs
+                 << '\n';
+    }
+    const std::string spikeLogText = spikeLog.str();
+    logQueue.Push(std::wstring(spikeLogText.begin(), spikeLogText.end()));
+    {
+        std::ofstream spikeReport(runOutputDirectory / L"quick_metrics_spikes.txt", std::ios::out | std::ios::trunc);
+        if (spikeReport.is_open())
+        {
+            spikeReport.imbue(std::locale::classic());
+            spikeReport << spikeLogText;
+        }
+    }
+
+    std::ofstream csv(csvPath, std::ios::out | std::ios::trunc);
+    if (!csv.is_open())
+    {
+        quickMetricsBenchmarkActive = false;
+        RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged();
+        logQueue.Push(L"Quick metrics benchmark failed: quick_metrics.csv could not be opened");
+        return 2;
+    }
+    csv.imbue(std::locale::classic());
+    csv << csvRows.str();
+    csv.close();
+
+    auto metadata = BuildBenchmarkMetadata();
+    RefreshBenchmarkFrameTelemetry(metadata);
 
     MEMORYSTATUSEX memoryStatus{};
     memoryStatus.dwLength = sizeof(memoryStatus);
@@ -4031,6 +4312,21 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
                 << "  \"max_frame_time_ms\":" << maxFrameTimeMs << ",\n"
                 << "  \"requested_mode\":\"" << EscapeJsonString(metadata.RequestedMode) << "\",\n"
                 << "  \"actual_mode\":\"" << EscapeJsonString(metadata.ActualMode) << "\",\n"
+                << "  \"mode_purpose\":\""
+                << (metadata.ActualMode == "MultiGpuMinimalLoss"
+                        ? "overhead-floor diagnostic"
+                        : (metadata.ActualMode == "SingleGpuRecommended" ||
+                           metadata.RequestedMode == "MultiGpuAdaptive"
+                               ? "adaptive heterogeneous-adapter diagnostic"
+                               : "benchmark")) << "\",\n"
+                << "  \"speedup_hypothesis_eligible\":"
+                << (metadata.ActualMode == "MultiGpuMinimalLoss" ||
+                    metadata.ActualMode == "SingleGpuRecommended" ||
+                    metadata.RequestedMode == "MultiGpuAdaptive" ? "false" : "true") << ",\n"
+                << "  \"benchmark_config_class\":\""
+                << EscapeJsonString(metadata.BenchmarkConfigClass) << "\",\n"
+                << "  \"benchmark_config_reason\":\""
+                << EscapeJsonString(metadata.BenchmarkConfigReason) << "\",\n"
                 << "  \"transfer_mode\":\"" << EscapeJsonString(metadata.TransferMode) << "\",\n"
                 << "  \"profile\":\"" << EscapeJsonString(metadata.ProfileName) << "\",\n"
                 << "  \"scene_preset\":\"" << EscapeJsonString(metadata.ScenePreset) << "\",\n"
@@ -4046,13 +4342,54 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
                 << "  \"secondary_share\":" << metadata.SecondaryShare << ",\n"
                 << "  \"render_width\":" << metadata.RenderWidth << ",\n"
                 << "  \"render_height\":" << metadata.RenderHeight << ",\n"
+                << "  \"internal_width\":" << metadata.SsaaWidth << ",\n"
+                << "  \"internal_height\":" << metadata.SsaaHeight << ",\n"
+                << "  \"transfer_width\":" << metadata.TransferWidth << ",\n"
+                << "  \"transfer_height\":" << metadata.TransferHeight << ",\n"
                 << "  \"swapchain_width\":" << metadata.SwapchainWidth << ",\n"
                 << "  \"swapchain_height\":" << metadata.SwapchainHeight << ",\n"
                 << "  \"primary_rendered_voxels\":" << metadata.PrimaryRenderedVoxelCount << ",\n"
                 << "  \"secondary_rendered_voxels\":" << metadata.SecondaryRenderedVoxelCount << ",\n"
                 << "  \"secondary_draw_calls\":" << metadata.SecondaryDrawCalls << ",\n"
+                << "  \"secondary_fence_value\":" << frameGraphTelemetry.SecondaryGraphicsFenceValue << ",\n"
+                << "  \"secondary_rect_x\":" << metadata.SecondaryRectX << ",\n"
+                << "  \"secondary_rect_y\":" << metadata.SecondaryRectY << ",\n"
+                << "  \"secondary_rect_w\":" << metadata.SecondaryRectWidth << ",\n"
+                << "  \"secondary_rect_h\":" << metadata.SecondaryRectHeight << ",\n"
+                << "  \"secondary_rect_area_percent\":" << metadata.SecondaryRectAreaPercent << ",\n"
+                << "  \"secondary_rect_empty\":" << (metadata.SecondaryRectEmpty ? "true" : "false") << ",\n"
+                << "  \"secondary_rect_fallback_full\":"
+                << (metadata.SecondaryRectFallbackFull ? "true" : "false") << ",\n"
+                << "  \"full_frame_transfer_bytes\":" << metadata.FullFrameTransferBytes << ",\n"
+                << "  \"actual_transfer_bytes\":" << metadata.ActualTransferBytes << ",\n"
+                << "  \"saved_transfer_percent\":" << metadata.SavedTransferPercent << ",\n"
                 << "  \"total_cross_adapter_bytes_last_frame\":" << metadata.TotalCrossAdapterBytes << ",\n"
                 << "  \"render_output_transfer_bytes_last_frame\":" << metadata.RenderOutputTransferBytes << ",\n"
+                << "  \"color_transfer_bytes_last_frame\":" << metadata.ColorTransferBytes << ",\n"
+                << "  \"depth_transfer_bytes_last_frame\":" << metadata.DepthTransferBytes << ",\n"
+                << "  \"cpu_wait_ms_last_frame\":" << metadata.CpuWaitMs << ",\n"
+                << "  \"frame_resource_wait_ms_last_frame\":" << metadata.FrameResourceWaitMs << ",\n"
+                << "  \"secondary_gpu_cpu_wait_ms_last_frame\":" << metadata.SecondaryGpuCpuWaitMs << ",\n"
+                << "  \"copy_cpu_wait_ms_last_frame\":" << metadata.CopyCpuWaitMs << ",\n"
+                << "  \"present_wait_ms_last_frame\":" << metadata.PresentWaitMs << ",\n"
+                << "  \"adaptive_calibration_frame_count\":" << metadata.AdaptiveCalibrationFrameCount << ",\n"
+                << "  \"adaptive_calibration_warmup_frames\":" << metadata.AdaptiveCalibrationWarmupFrames << ",\n"
+                << "  \"adaptive_primary_throughput_voxels_per_ms\":"
+                << metadata.AdaptivePrimaryThroughputVoxelsPerMs << ",\n"
+                << "  \"adaptive_secondary_throughput_voxels_per_ms\":"
+                << metadata.AdaptiveSecondaryThroughputVoxelsPerMs << ",\n"
+                << "  \"adaptive_transfer_bandwidth_bytes_per_ms\":"
+                << metadata.AdaptiveTransferBandwidthBytesPerMs << ",\n"
+                << "  \"adaptive_composite_overhead_ms\":" << metadata.AdaptiveCompositeOverheadMs << ",\n"
+                << "  \"adaptive_recommended_secondary_share\":"
+                << metadata.AdaptiveRecommendedSecondaryShare << ",\n"
+                << "  \"adaptive_expected_gain_ms\":" << metadata.AdaptiveExpectedGainMs << ",\n"
+                << "  \"adaptive_calibration_complete\":"
+                << (metadata.AdaptiveCalibrationComplete ? "true" : "false") << ",\n"
+                << "  \"adaptive_fallback_recommended\":"
+                << (metadata.AdaptiveFallbackRecommended ? "true" : "false") << ",\n"
+                << "  \"adaptive_reason\":\"" << EscapeJsonString(metadata.AdaptiveReason) << "\",\n"
+                << "  \"adaptive_warning\":\"" << EscapeJsonString(metadata.AdaptiveWarning) << "\",\n"
                 << "  \"cpu_model\":\"" << EscapeJsonString(cpuModel) << "\",\n"
                 << "  \"logical_processor_count\":" << systemInfo.dwNumberOfProcessors << ",\n"
                 << "  \"ram_bytes\":" << (memoryStatusAvailable ? memoryStatus.ullTotalPhys : 0) << ",\n"
@@ -4086,17 +4423,44 @@ int VoxelWaterfallApp::RunQuickMetricsBenchmarkOnce(const uint32_t durationSecon
             << "  \"measured_frames\":" << measuredFrames << ",\n"
             << "  \"average_fps\":" << averageFps << ",\n"
             << "  \"average_frame_time_ms\":" << averageFrameTimeMs << ",\n"
+            << "  \"median_frame_time_ms\":" << medianFrameTimeMs << ",\n"
+            << "  \"spike_threshold_ms\":" << spikeThresholdMs << ",\n"
             << "  \"min_frame_time_ms\":" << (measuredFrames > 0 ? minFrameTimeMs : 0.0) << ",\n"
             << "  \"max_frame_time_ms\":" << maxFrameTimeMs << ",\n"
             << "  \"requested_mode\":\"" << GetExecutionModeName(requestedExecutionMode) << "\",\n"
             << "  \"actual_mode\":\"" << GetExecutionModeName(frameGraphTelemetry.ActualMode) << "\",\n"
+            << "  \"mode_purpose\":\""
+            << (GetExecutionModeName(frameGraphTelemetry.ActualMode) == "MultiGpuMinimalLoss"
+                    ? "overhead-floor diagnostic"
+                    : (GetExecutionModeName(frameGraphTelemetry.ActualMode) == "SingleGpuRecommended" ||
+                       GetExecutionModeName(requestedExecutionMode) == "MultiGpuAdaptive"
+                           ? "adaptive heterogeneous-adapter diagnostic"
+                           : "benchmark")) << "\",\n"
+            << "  \"speedup_hypothesis_eligible\":"
+            << (GetExecutionModeName(frameGraphTelemetry.ActualMode) == "MultiGpuMinimalLoss" ||
+                GetExecutionModeName(frameGraphTelemetry.ActualMode) == "SingleGpuRecommended" ||
+                GetExecutionModeName(requestedExecutionMode) == "MultiGpuAdaptive" ? "false" : "true") << ",\n"
+            << "  \"benchmark_config_class\":\""
+            << EscapeJsonString(metadata.BenchmarkConfigClass) << "\",\n"
+            << "  \"benchmark_config_reason\":\""
+            << EscapeJsonString(metadata.BenchmarkConfigReason) << "\",\n"
+            << "  \"adaptive_recommended_secondary_share\":"
+            << metadata.AdaptiveRecommendedSecondaryShare << ",\n"
+            << "  \"adaptive_expected_gain_ms\":" << metadata.AdaptiveExpectedGainMs << ",\n"
+            << "  \"adaptive_fallback_recommended\":"
+            << (metadata.AdaptiveFallbackRecommended ? "true" : "false") << ",\n"
+            << "  \"adaptive_reason\":\"" << EscapeJsonString(metadata.AdaptiveReason) << "\",\n"
             << "  \"csv\":\"" << EscapeJsonString(csvPath.string()) << "\",\n"
+            << "  \"spike_report\":\""
+            << EscapeJsonString((runOutputDirectory / L"quick_metrics_spikes.txt").string()) << "\",\n"
             << "  \"environment\":\""
             << EscapeJsonString((runOutputDirectory / L"environment.json").string()) << "\"\n"
             << "}\n";
     summary.close();
 
     benchmarkController.Shutdown(BuildBenchmarkControllerContext());
+    quickMetricsBenchmarkActive = false;
+    RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged();
     return pumpFrameQuitRequested ? 4 : 0;
 }
 
@@ -4970,17 +5334,25 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
 
     const VoxelExecutionMode requestedMode = changes.ExecutionMode.value_or(requestedExecutionMode);
     const bool executionRequested = changes.ExecutionMode.has_value();
+    if (executionRequested &&
+        requestedMode != executionMode &&
+        requestedMode != VoxelExecutionMode::SingleGpuRecommended &&
+        !adaptiveSecondaryShareCalibration.ApplyQueued)
+        ResetAdaptiveSecondaryShareCalibration();
     if (executionRequested)
         requestedExecutionMode = requestedMode;
+    const UINT desiredSsaaMultiplier = EffectiveSsaaSampleMultiplier(requestedExecutionMode);
+    const bool ssaaPolicyChanged =
+        antiAliasingPrimePath && antiAliasingPrimePath->GetSampleMultiplier() != desiredSsaaMultiplier;
 
     VoxelExecutionMode targetMode = requestedMode;
-    const bool requestsMultiGpu = targetMode == VoxelExecutionMode::MultiGpuFull ||
-        targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    bool requestsMultiGpu = UsesMultiGpuExecution(targetMode);
     const bool targetRebuildNeededForMode =
         requestsMultiGpu && multiGpuAvailable && !multiGpuVoxelRenderTargets.IsInitialized();
     const bool commonFlushRequired =
         sceneNeedsRebuild ||
         renderResolutionChanged ||
+        ssaaPolicyChanged ||
         voxelSettingsRequested ||
         targetRebuildNeededForMode ||
         (executionRequested && executionMode != requestedMode);
@@ -4998,12 +5370,22 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         }
         renderTargetsRebuilt = multiGpuAvailable && multiGpuVoxelRenderTargets.IsInitialized();
     }
+    else if (ssaaPolicyChanged)
+    {
+        renderTargetsRebuilt = RebuildOffscreenVoxelRenderTargets();
+        if (!renderTargetsRebuilt)
+        {
+            requestedExecutionMode = executionMode;
+            targetMode = executionMode;
+            requestsMultiGpu = UsesMultiGpuExecution(targetMode);
+        }
+    }
 
     if (requestsMultiGpu && !multiGpuAvailable)
     {
-        targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
-                         ? VoxelExecutionMode::SingleGpuFull
-                         : VoxelExecutionMode::SingleGpuTemporalDecimation;
+        targetMode = targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation
+                         ? VoxelExecutionMode::SingleGpuTemporalDecimation
+                         : VoxelExecutionMode::SingleGpuFull;
         if (multiGpuStatus.empty())
             multiGpuStatus = L"MultiGpu unavailable: secondary render target capability validation failed";
     }
@@ -5016,9 +5398,9 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         }
         if (!multiGpuVoxelRenderTargets.IsInitialized())
         {
-            targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
-                             ? VoxelExecutionMode::SingleGpuFull
-                             : VoxelExecutionMode::SingleGpuTemporalDecimation;
+            targetMode = targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation
+                             ? VoxelExecutionMode::SingleGpuTemporalDecimation
+                             : VoxelExecutionMode::SingleGpuFull;
         }
     }
 
@@ -5029,12 +5411,24 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         ++partitionGeneration;
         voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
         voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+        if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss && !changes.SecondaryShare)
+        {
+            voxelWorkload.SecondaryShare = MultiGpuMinimalLossSecondaryShare;
+            secondaryShareOverride = MultiGpuMinimalLossSecondaryShare;
+            sceneNeedsRebuild = true;
+        }
         if (executionMode == VoxelExecutionMode::MultiGpuFull)
             multiGpuStatus = L"MultiGpuFull adapter-local partitions active; secondary render-output transfer enabled";
+        else if (executionMode == VoxelExecutionMode::MultiGpuAdaptive)
+            multiGpuStatus = L"MultiGpuAdaptive calibration active; will recommend MultiGpuFull share or SingleGpuRecommended fallback";
+        else if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+            multiGpuStatus = L"MultiGpuMinimalLoss overhead-floor diagnostic active; secondary output transfer disabled";
         else if (executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
             multiGpuStatus = L"MultiGpuTemporalDecimation adapter-local partitions active; secondary render-output transfer enabled";
         else if (executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
             multiGpuStatus = L"SingleGpuTemporalDecimation active";
+        else if (executionMode == VoxelExecutionMode::SingleGpuRecommended)
+            multiGpuStatus = L"SingleGpuRecommended active; adaptive calibration rejected secondary adapter";
         else
             multiGpuStatus = L"SingleGpuFull active";
         logQueue.Push(L"\nVoxel execution mode changed: " + multiGpuStatus);
@@ -5059,6 +5453,13 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
             dynamicSpawnBatchSizeOverride = voxelWorkload.Parameters.DynamicSpawnBatchSize;
         if (!dynamicVoxelBudgetOverride)
             dynamicVoxelBudgetOverride = voxelWorkload.DynamicVoxelBudget;
+    }
+    if (sceneNeedsRebuild &&
+        executionMode == VoxelExecutionMode::MultiGpuMinimalLoss &&
+        !changes.SecondaryShare)
+    {
+        voxelWorkload.SecondaryShare = MultiGpuMinimalLossSecondaryShare;
+        secondaryShareOverride = MultiGpuMinimalLossSecondaryShare;
     }
 
     if (sceneNeedsRebuild)
@@ -5149,6 +5550,8 @@ void VoxelWaterfallApp::ApplyPendingRuntimeChangesAtFrameBoundary()
         request.RunPrerequisites = false;
         RequestResearchRunner(request);
     }
+    if (adaptiveSecondaryShareCalibration.ApplyQueued && executionRequested)
+        adaptiveSecondaryShareCalibration.ApplyQueued = false;
 }
 
 void VoxelWaterfallApp::ApplyResearchWorkloadProfile(const VoxelResearchWorkloadProfile profile)
@@ -5296,6 +5699,180 @@ void VoxelWaterfallApp::ResetBenchmarkDeterministicState()
     }
 }
 
+void VoxelWaterfallApp::ResetAdaptiveSecondaryShareCalibration()
+{
+    adaptiveSecondaryShareCalibration = {};
+}
+
+void VoxelWaterfallApp::PublishAdaptiveSecondaryShareTelemetry()
+{
+    frameGraphTelemetry.AdaptiveCalibrationFrameCount = adaptiveSecondaryShareCalibration.FrameCount;
+    frameGraphTelemetry.AdaptiveCalibrationWarmupFrames =
+        AdaptiveSecondaryShareCalibration::WarmupFrames;
+    frameGraphTelemetry.AdaptivePrimaryThroughputVoxelsPerMs =
+        adaptiveSecondaryShareCalibration.PrimaryThroughputVoxelsPerMs;
+    frameGraphTelemetry.AdaptiveSecondaryThroughputVoxelsPerMs =
+        adaptiveSecondaryShareCalibration.SecondaryThroughputVoxelsPerMs;
+    frameGraphTelemetry.AdaptiveTransferBandwidthBytesPerMs =
+        adaptiveSecondaryShareCalibration.TransferBandwidthBytesPerMs;
+    frameGraphTelemetry.AdaptiveCompositeOverheadMs =
+        adaptiveSecondaryShareCalibration.CompositeOverheadMs;
+    frameGraphTelemetry.AdaptiveExpectedGainMs =
+        adaptiveSecondaryShareCalibration.ExpectedGainMs;
+    frameGraphTelemetry.AdaptiveRecommendedSecondaryShare =
+        adaptiveSecondaryShareCalibration.RecommendedSecondaryShare;
+    frameGraphTelemetry.AdaptiveCalibrationComplete =
+        adaptiveSecondaryShareCalibration.Complete;
+    frameGraphTelemetry.AdaptiveFallbackRecommended =
+        adaptiveSecondaryShareCalibration.FallbackRecommended;
+    frameGraphTelemetry.AdaptiveReason = adaptiveSecondaryShareCalibration.Reason;
+    frameGraphTelemetry.AdaptiveWarning = adaptiveSecondaryShareCalibration.Warning;
+}
+
+void VoxelWaterfallApp::UpdateAdaptiveSecondaryShareCalibration()
+{
+    const bool calibrationMode =
+        executionMode == VoxelExecutionMode::MultiGpuFull ||
+        executionMode == VoxelExecutionMode::MultiGpuAdaptive;
+    if (!calibrationMode)
+    {
+        PublishAdaptiveSecondaryShareTelemetry();
+        return;
+    }
+
+    auto& calibration = adaptiveSecondaryShareCalibration;
+    if (!calibration.Active)
+    {
+        calibration = {};
+        calibration.Active = true;
+    }
+
+    if (!calibration.Complete)
+    {
+        const uint32_t primaryRendered = frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered();
+        const uint32_t secondaryRendered = frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered();
+        if (primaryRendered > 0 && frameGraphTelemetry.PrimaryRenderCpuMs > 0.0)
+        {
+            calibration.PrimaryRenderedVoxels += primaryRendered;
+            calibration.PrimaryRenderMs += frameGraphTelemetry.PrimaryRenderCpuMs;
+        }
+        if (secondaryRendered > 0 && frameGraphTelemetry.SecondaryRenderCpuMs > 0.0)
+        {
+            calibration.SecondaryRenderedVoxels += secondaryRendered;
+            calibration.SecondaryRenderMs += frameGraphTelemetry.SecondaryRenderCpuMs;
+        }
+        if (frameGraphTelemetry.RenderOutputTransferBytes > 0 && frameGraphTelemetry.CrossAdapterCopyCpuMs > 0.0)
+        {
+            calibration.TransferBytes += frameGraphTelemetry.RenderOutputTransferBytes;
+            calibration.TransferMs += frameGraphTelemetry.CrossAdapterCopyCpuMs;
+        }
+        if (frameGraphTelemetry.CompositeCpuMs > 0.0)
+            calibration.CompositeMs += frameGraphTelemetry.CompositeCpuMs;
+        calibration.SyncMs += frameGraphTelemetry.SecondaryGpuCpuWaitMs + frameGraphTelemetry.CopyCpuWaitMs;
+        ++calibration.FrameCount;
+
+        if (calibration.FrameCount >= AdaptiveSecondaryShareCalibration::WarmupFrames)
+        {
+            calibration.PrimaryThroughputVoxelsPerMs =
+                calibration.PrimaryRenderMs > 0.0
+                    ? static_cast<double>(calibration.PrimaryRenderedVoxels) / calibration.PrimaryRenderMs
+                    : 0.0;
+            calibration.SecondaryThroughputVoxelsPerMs =
+                calibration.SecondaryRenderMs > 0.0
+                    ? static_cast<double>(calibration.SecondaryRenderedVoxels) / calibration.SecondaryRenderMs
+                    : 0.0;
+            calibration.TransferBandwidthBytesPerMs =
+                calibration.TransferMs > 0.0
+                    ? static_cast<double>(calibration.TransferBytes) / calibration.TransferMs
+                    : 0.0;
+            calibration.CompositeOverheadMs =
+                calibration.FrameCount > 0 ? calibration.CompositeMs / calibration.FrameCount : 0.0;
+            const double syncOverheadMs =
+                calibration.FrameCount > 0 ? calibration.SyncMs / calibration.FrameCount : 0.0;
+            const double totalRendered =
+                static_cast<double>(std::max<uint64_t>(
+                    1,
+                    calibration.PrimaryRenderedVoxels + calibration.SecondaryRenderedVoxels)) /
+                static_cast<double>(std::max<uint32_t>(1, calibration.FrameCount));
+            const double currentShare = std::max(0.01f, voxelWorkload.SecondaryShare);
+            const double transferMsPerShare =
+                calibration.TransferMs > 0.0
+                    ? (calibration.TransferMs / static_cast<double>(calibration.FrameCount)) / currentShare
+                    : 0.0;
+
+            double bestGainMs = -std::numeric_limits<double>::max();
+            float bestShare = 0.0f;
+            if (calibration.PrimaryThroughputVoxelsPerMs > 0.0 &&
+                calibration.SecondaryThroughputVoxelsPerMs > 0.0)
+            {
+                for (uint32_t shareStep = 1; shareStep <= 50; ++shareStep)
+                {
+                    const float candidateShare = static_cast<float>(shareStep) * 0.01f;
+                    const double candidateVoxels = totalRendered * static_cast<double>(candidateShare);
+                    const double savedPrimaryMs =
+                        candidateVoxels / calibration.PrimaryThroughputVoxelsPerMs;
+                    const double secondaryRenderMs =
+                        candidateVoxels / calibration.SecondaryThroughputVoxelsPerMs;
+                    const double transferMs = transferMsPerShare * static_cast<double>(candidateShare);
+                    const double overheadMs =
+                        secondaryRenderMs + transferMs + calibration.CompositeOverheadMs + syncOverheadMs;
+                    const double gainMs = savedPrimaryMs - overheadMs;
+                    if (gainMs > bestGainMs)
+                    {
+                        bestGainMs = gainMs;
+                        bestShare = candidateShare;
+                    }
+                }
+            }
+
+            calibration.ExpectedGainMs = bestGainMs == -std::numeric_limits<double>::max() ? 0.0 : bestGainMs;
+            calibration.RecommendedSecondaryShare = bestGainMs > 0.0 ? bestShare : 0.0f;
+            calibration.FallbackRecommended = bestGainMs <= 0.0f;
+            calibration.Reason = calibration.FallbackRecommended
+                ? "Secondary adapter is slower than transfer overhead."
+                : "Adaptive calibration found a positive estimated secondary-share gain.";
+            calibration.Warning = calibration.FallbackRecommended
+                ? "MultiGpuFull is expected to be slower on this adapter pair."
+                : "";
+            calibration.Complete = true;
+        }
+    }
+
+    if (calibration.Complete &&
+        executionMode == VoxelExecutionMode::MultiGpuFull &&
+        calibration.FallbackRecommended &&
+        !calibration.WarningLogged)
+    {
+        logQueue.Push(L"\nWarning: MultiGpuFull is expected to be slower on this adapter pair.");
+        calibration.WarningLogged = true;
+    }
+
+    if (calibration.Complete &&
+        executionMode == VoxelExecutionMode::MultiGpuAdaptive &&
+        !calibration.ApplyQueued &&
+        !calibration.Applied)
+    {
+        calibration.ApplyQueued = true;
+        calibration.Applied = true;
+        if (calibration.FallbackRecommended)
+        {
+            pendingRuntimeChanges.ExecutionMode = VoxelExecutionMode::SingleGpuRecommended;
+            pendingRuntimeChanges.SecondaryShare = 0.0f;
+            pendingRuntimeChanges.VoxelWorkloadSettings = true;
+            logQueue.Push(L"\nAdaptive secondary_share fallback: actual_mode=SingleGpuRecommended; reason=Secondary adapter is slower than transfer overhead.");
+        }
+        else
+        {
+            pendingRuntimeChanges.ExecutionMode = VoxelExecutionMode::MultiGpuFull;
+            pendingRuntimeChanges.SecondaryShare = calibration.RecommendedSecondaryShare;
+            pendingRuntimeChanges.VoxelWorkloadSettings = true;
+            logQueue.Push(L"\nAdaptive secondary_share selected a profitable MultiGpuFull share.");
+        }
+    }
+
+    PublishAdaptiveSecondaryShareTelemetry();
+}
+
 std::string VoxelWaterfallApp::GetExecutionModeName() const
 {
     return GetExecutionModeName(executionMode);
@@ -5307,8 +5884,14 @@ std::string VoxelWaterfallApp::GetExecutionModeName(const VoxelExecutionMode mod
     {
     case VoxelExecutionMode::SingleGpuFull:
         return "SingleGpuFull";
+    case VoxelExecutionMode::SingleGpuRecommended:
+        return "SingleGpuRecommended";
     case VoxelExecutionMode::MultiGpuFull:
         return "MultiGpuFull";
+    case VoxelExecutionMode::MultiGpuAdaptive:
+        return "MultiGpuAdaptive";
+    case VoxelExecutionMode::MultiGpuMinimalLoss:
+        return "MultiGpuMinimalLoss";
     case VoxelExecutionMode::SingleGpuTemporalDecimation:
         return "SingleGpuTemporalDecimation";
     case VoxelExecutionMode::MultiGpuTemporalDecimation:
@@ -5379,7 +5962,9 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.ActualMode = GetExecutionModeName(frameGraphTelemetry.ActualMode);
     metadata.TransferMode = CrossAdapterTransferModeName(crossAdapterTransferMode);
     metadata.FallbackReason.clear();
-    if (metadata.RequestedMode != metadata.ActualMode)
+    if (metadata.ActualMode == "SingleGpuRecommended")
+        metadata.FallbackReason = "Secondary adapter is slower than transfer overhead.";
+    else if (metadata.RequestedMode != metadata.ActualMode)
         metadata.FallbackReason = "requested mode unavailable; actual mode selected by runtime capability checks";
 
     uint32_t primaryVoxelCount = 0;
@@ -5419,13 +6004,51 @@ void VoxelWaterfallApp::RefreshBenchmarkFrameTelemetry(
     metadata.RenderHeight = frameGraphTelemetry.RenderHeight;
     metadata.SsaaWidth = frameGraphTelemetry.SsaaWidth;
     metadata.SsaaHeight = frameGraphTelemetry.SsaaHeight;
+    metadata.TransferWidth = frameGraphTelemetry.TransferWidth;
+    metadata.TransferHeight = frameGraphTelemetry.TransferHeight;
     metadata.CpuWaitMs = currentPrimaryWaitMs;
+    metadata.FrameResourceWaitMs = frameGraphTelemetry.FrameResourceBackpressureMs;
+    metadata.SecondaryGpuCpuWaitMs = frameGraphTelemetry.SecondaryGpuCpuWaitMs;
+    metadata.CopyCpuWaitMs = frameGraphTelemetry.CopyCpuWaitMs;
+    metadata.PresentWaitMs = frameGraphTelemetry.PresentWaitMs;
+    metadata.FrameResourceAcquireCpuMs = frameGraphTelemetry.FrameResourceAcquireCpuMs;
+    metadata.UpdateCpuMs = frameGraphTelemetry.UpdateCpuMs;
+    metadata.PrimaryRenderCpuMs = frameGraphTelemetry.PrimaryRenderCpuMs;
+    metadata.SecondaryRenderCpuMs = frameGraphTelemetry.SecondaryRenderCpuMs;
+    metadata.CrossAdapterCopyCpuMs = frameGraphTelemetry.CrossAdapterCopyCpuMs;
+    metadata.CompositeCpuMs = frameGraphTelemetry.CompositeCpuMs;
+    metadata.FinalResolveCpuMs = frameGraphTelemetry.FinalResolveCpuMs;
+    metadata.ImGuiCpuMs = frameGraphTelemetry.ImGuiCpuMs;
+    metadata.MetricsCollectionCpuMs = frameGraphTelemetry.MetricsCollectionCpuMs;
+    metadata.CsvWriteCpuMs = frameGraphTelemetry.CsvWriteCpuMs;
     metadata.PresentToPresentMs = currentPresentToPresentMs;
     metadata.TotalCrossAdapterBytes = frameGraphTelemetry.TotalCrossAdapterBytes;
     metadata.ColorTransferBytes = frameGraphTelemetry.ColorBytesTransferred;
     metadata.DepthTransferBytes = frameGraphTelemetry.DepthBytesTransferred;
     metadata.ParticleTransferBytes = frameGraphTelemetry.ParticleTransferBytes;
     metadata.RenderOutputTransferBytes = frameGraphTelemetry.RenderOutputTransferBytes;
+    metadata.SecondaryRectX = frameGraphTelemetry.SecondaryRectX;
+    metadata.SecondaryRectY = frameGraphTelemetry.SecondaryRectY;
+    metadata.SecondaryRectWidth = frameGraphTelemetry.SecondaryRectWidth;
+    metadata.SecondaryRectHeight = frameGraphTelemetry.SecondaryRectHeight;
+    metadata.SecondaryRectAreaPercent = frameGraphTelemetry.SecondaryRectAreaPercent;
+    metadata.FullFrameTransferBytes = frameGraphTelemetry.FullFrameTransferBytes;
+    metadata.ActualTransferBytes = frameGraphTelemetry.ActualTransferBytes;
+    metadata.SavedTransferPercent = frameGraphTelemetry.SavedTransferPercent;
+    metadata.SecondaryRectEmpty = frameGraphTelemetry.SecondaryRectEmpty;
+    metadata.SecondaryRectFallbackFull = frameGraphTelemetry.SecondaryRectFallbackFull;
+    metadata.AdaptiveCalibrationFrameCount = frameGraphTelemetry.AdaptiveCalibrationFrameCount;
+    metadata.AdaptiveCalibrationWarmupFrames = frameGraphTelemetry.AdaptiveCalibrationWarmupFrames;
+    metadata.AdaptivePrimaryThroughputVoxelsPerMs = frameGraphTelemetry.AdaptivePrimaryThroughputVoxelsPerMs;
+    metadata.AdaptiveSecondaryThroughputVoxelsPerMs = frameGraphTelemetry.AdaptiveSecondaryThroughputVoxelsPerMs;
+    metadata.AdaptiveTransferBandwidthBytesPerMs = frameGraphTelemetry.AdaptiveTransferBandwidthBytesPerMs;
+    metadata.AdaptiveCompositeOverheadMs = frameGraphTelemetry.AdaptiveCompositeOverheadMs;
+    metadata.AdaptiveExpectedGainMs = frameGraphTelemetry.AdaptiveExpectedGainMs;
+    metadata.AdaptiveRecommendedSecondaryShare = frameGraphTelemetry.AdaptiveRecommendedSecondaryShare;
+    metadata.AdaptiveCalibrationComplete = frameGraphTelemetry.AdaptiveCalibrationComplete;
+    metadata.AdaptiveFallbackRecommended = frameGraphTelemetry.AdaptiveFallbackRecommended;
+    metadata.AdaptiveReason = frameGraphTelemetry.AdaptiveReason;
+    metadata.AdaptiveWarning = frameGraphTelemetry.AdaptiveWarning;
     metadata.SecondaryDrawCalls = frameGraphTelemetry.SecondaryDrawCalls;
     metadata.PrimaryRenderedVoxelCount = frameGraphTelemetry.PrimarySpatialLodStats.TotalRendered();
     metadata.SecondaryRenderedVoxelCount = frameGraphTelemetry.SecondarySpatialLodStats.TotalRendered();
@@ -5577,6 +6200,8 @@ VoxelBenchmarkProfiler::FrameMetadata VoxelWaterfallApp::BuildBenchmarkMetadata(
     metadata.SwapchainHeight = frameGraphTelemetry.SwapchainHeight;
     metadata.RenderWidth = voxelWorkload.RenderResolutionWidth;
     metadata.RenderHeight = voxelWorkload.RenderResolutionHeight;
+    metadata.TransferWidth = offscreenRenderTargetBudget.TransferWidth;
+    metadata.TransferHeight = offscreenRenderTargetBudget.TransferHeight;
     if (antiAliasingPrimePath)
     {
         const auto desc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
@@ -5833,7 +6458,10 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
         voxelWorkload.TotalVoxelCount =
             static_cast<uint32_t>(std::max(0, static_cast<int>(result.RequestedLabelCount)));
 
-    voxelWorkload.SecondaryShare = std::clamp(config.SecondaryShare, 0.0f, 1.0f);
+    voxelWorkload.SecondaryShare =
+        config.Mode == VoxelExecutionMode::MultiGpuMinimalLoss
+            ? MultiGpuMinimalLossSecondaryShare
+            : std::clamp(config.SecondaryShare, 0.0f, 1.0f);
     voxelWorkload.SpatialLod.Mode =
         config.SpatialLodEnabled ? VoxelSpatialLodMode::ThreeLevel : VoxelSpatialLodMode::Off;
     voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
@@ -5846,17 +6474,23 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
     const VoxelExecutionMode previousExecutionMode = executionMode;
     requestedExecutionMode = config.Mode;
     executionMode = config.Mode;
-    if ((config.Mode == VoxelExecutionMode::MultiGpuFull ||
-         config.Mode == VoxelExecutionMode::MultiGpuTemporalDecimation) &&
+    if (!RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged())
+    {
+        executionMode = previousExecutionMode;
+        requestedExecutionMode = previousExecutionMode;
+        result.Reason = "failed to rebuild render targets for SSAA policy";
+        return result;
+    }
+    if (UsesMultiGpuExecution(config.Mode) &&
         (!multiGpuAvailable || !multiGpuVoxelRenderTargets.IsInitialized()))
     {
         if (multiGpuAvailable && !multiGpuVoxelRenderTargets.IsInitialized())
             RebuildMultiGpuVoxelRenderTargets();
         if (!multiGpuAvailable || !multiGpuVoxelRenderTargets.IsInitialized())
         {
-            executionMode = config.Mode == VoxelExecutionMode::MultiGpuFull
-                                ? VoxelExecutionMode::SingleGpuFull
-                                : VoxelExecutionMode::SingleGpuTemporalDecimation;
+            executionMode = config.Mode == VoxelExecutionMode::MultiGpuTemporalDecimation
+                                ? VoxelExecutionMode::SingleGpuTemporalDecimation
+                                : VoxelExecutionMode::SingleGpuFull;
         }
     }
     if (executionMode != previousExecutionMode)
@@ -5882,7 +6516,7 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
            << ",\"requested_mode\":\"" << config.ModeName
            << "\",\"requested_static_budget\":" << result.RequestedStaticBudget
            << ",\"requested_static_budget_label\":" << result.RequestedLabelCount
-           << ",\"secondary_share\":" << std::fixed << std::setprecision(8) << config.SecondaryShare
+           << ",\"secondary_share\":" << std::fixed << std::setprecision(8) << voxelWorkload.SecondaryShare
            << ",\"spatial_lod_enabled\":" << (config.SpatialLodEnabled ? "true" : "false")
            << ",\"temporal_interval\":" << config.TemporalInterval << "}";
     result.ResolvedConfigHash = ResearchProvenance::Sha256Hex(stream.str());
@@ -5911,15 +6545,21 @@ BenchmarkConfigurationApplyResult VoxelWaterfallApp::ApplyBenchmarkConfiguration
 void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMode)
 {
     assert(!isDrawingFrame && "ApplyExecutionMode must not be called during DrawFrame");
+    if (requestedMode != executionMode &&
+        requestedMode != VoxelExecutionMode::SingleGpuRecommended &&
+        !adaptiveSecondaryShareCalibration.ApplyQueued)
+        ResetAdaptiveSecondaryShareCalibration();
     requestedExecutionMode = requestedMode;
+    if (!RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged())
+        return;
+
     VoxelExecutionMode targetMode = requestedMode;
-    const bool requestsMultiGpu = targetMode == VoxelExecutionMode::MultiGpuFull ||
-        targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    const bool requestsMultiGpu = UsesMultiGpuExecution(targetMode);
     if (requestsMultiGpu && !multiGpuAvailable)
     {
-        targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
-                         ? VoxelExecutionMode::SingleGpuFull
-                         : VoxelExecutionMode::SingleGpuTemporalDecimation;
+        targetMode = targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation
+                         ? VoxelExecutionMode::SingleGpuTemporalDecimation
+                         : VoxelExecutionMode::SingleGpuFull;
         if (multiGpuStatus.empty())
             multiGpuStatus = L"MultiGpu unavailable: secondary render target capability validation failed";
     }
@@ -5929,9 +6569,9 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
         RebuildMultiGpuVoxelRenderTargets();
         if (!multiGpuVoxelRenderTargets.IsInitialized())
         {
-            targetMode = targetMode == VoxelExecutionMode::MultiGpuFull
-                             ? VoxelExecutionMode::SingleGpuFull
-                             : VoxelExecutionMode::SingleGpuTemporalDecimation;
+            targetMode = targetMode == VoxelExecutionMode::MultiGpuTemporalDecimation
+                             ? VoxelExecutionMode::SingleGpuTemporalDecimation
+                             : VoxelExecutionMode::SingleGpuFull;
         }
     }
 
@@ -5942,9 +6582,21 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
     ++partitionGeneration;
     voxelWorkload.SpatialLod.DebugMode = VoxelSpatialLodDebugMode::None;
     voxelCompositeDebugView = VoxelCompositeDebugView::FinalComposite;
+    if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+    {
+        voxelWorkload.SecondaryShare = MultiGpuMinimalLossSecondaryShare;
+    }
     if (executionMode == VoxelExecutionMode::MultiGpuFull)
     {
         multiGpuStatus = L"MultiGpuFull adapter-local partitions active; secondary render-output transfer enabled";
+    }
+    else if (executionMode == VoxelExecutionMode::MultiGpuAdaptive)
+    {
+        multiGpuStatus = L"MultiGpuAdaptive calibration active; will recommend MultiGpuFull share or SingleGpuRecommended fallback";
+    }
+    else if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+    {
+        multiGpuStatus = L"MultiGpuMinimalLoss overhead-floor diagnostic active; secondary output transfer disabled";
     }
     else if (executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
     {
@@ -5953,6 +6605,10 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
     else if (executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
     {
         multiGpuStatus = L"SingleGpuTemporalDecimation active";
+    }
+    else if (executionMode == VoxelExecutionMode::SingleGpuRecommended)
+    {
+        multiGpuStatus = L"SingleGpuRecommended active; adaptive calibration rejected secondary adapter";
     }
     else
     {
@@ -5975,7 +6631,11 @@ void VoxelWaterfallApp::ApplyExecutionMode(const VoxelExecutionMode requestedMod
         RenderAspectRatio()
     };
     assert(!isDrawingFrame && "Voxel research scene rebuild must not run during DrawFrame");
-    voxelResearchSceneManager.RebuildScene(sceneContext);
+    voxelResearchSceneManager.RebuildScene(
+        sceneContext,
+        executionMode == VoxelExecutionMode::MultiGpuMinimalLoss
+            ? std::optional<float>(MultiGpuMinimalLossSecondaryShare)
+            : std::nullopt);
     ++sceneGeneration;
     SortGO();
     RebuildGpuPartitionsForMode();
@@ -6080,6 +6740,12 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
         if (partition.GpuPartition)
             retiredPartitions.push_back(partition.GpuPartition);
     }
+    for (const auto& partition : minimalLossSecondaryDiagnosticPartitions)
+    {
+        if (partition.GpuPartition)
+            retiredPartitions.push_back(partition.GpuPartition);
+    }
+    minimalLossSecondaryDiagnosticPartitions.clear();
     RetireVoxelGpuPartitions(std::move(retiredPartitions));
 
     auto voxelObjectIt = std::find_if(
@@ -6126,6 +6792,35 @@ void VoxelWaterfallApp::RebuildGpuPartitionsForMode()
         partition.GpuPartition = std::move(gpuPartition);
     }
 
+    if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss && multiGpuAvailable && secondDevice)
+    {
+        for (const auto& partition : voxelWorkload.Partitions)
+        {
+            if (partition.PartitionId != VoxelAdapterPartitionId::SecondaryPartition ||
+                partition.VoxelCount() == 0)
+                continue;
+
+            auto gpuPartition = std::make_shared<VoxelGpuPartition>(
+                secondDevice,
+                partition.DrawStreams,
+                VoxelAdapterOwner::Secondary);
+            gpuPartition->SetSimulationEnabled(false);
+            gpuPartition->SetRenderEnabled(partition.VoxelCount() > 0);
+            (*voxelObjectIt)->AddComponent(gpuPartition);
+
+            VoxelFramePartitionRenderPlan diagnosticPartition{};
+            diagnosticPartition.LayerId = partition.LayerId;
+            diagnosticPartition.PartitionId = partition.PartitionId;
+            diagnosticPartition.AdapterOwner = VoxelAdapterOwner::Secondary;
+            diagnosticPartition.LogicalVoxelCount = partition.VoxelCount();
+            diagnosticPartition.DrawStreams = partition.DrawStreams;
+            diagnosticPartition.GpuPartition = std::move(gpuPartition);
+            diagnosticPartition.SceneGeneration = sceneGeneration;
+            diagnosticPartition.PartitionGeneration = partitionGeneration;
+            minimalLossSecondaryDiagnosticPartitions.push_back(std::move(diagnosticPartition));
+        }
+    }
+
     const auto modeNameUtf8 = GetExecutionModeName(executionMode);
     logQueue.Push(L"\nVoxel GPU partitions rebuilt for " +
         std::wstring(modeNameUtf8.begin(), modeNameUtf8.end()));
@@ -6158,7 +6853,138 @@ VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
         else
             renderPlan.PrimaryOwnedPartitions.push_back(std::move(partitionPlan));
     }
+    if (executionMode == VoxelExecutionMode::MultiGpuMinimalLoss)
+    {
+        renderPlan.SecondaryOwnedPartitions.insert(
+            renderPlan.SecondaryOwnedPartitions.end(),
+            minimalLossSecondaryDiagnosticPartitions.begin(),
+            minimalLossSecondaryDiagnosticPartitions.end());
+        for (auto& partition : renderPlan.SecondaryOwnedPartitions)
+        {
+            partition.SceneGeneration = sceneGeneration;
+            partition.PartitionGeneration = partitionGeneration;
+        }
+    }
     return renderPlan;
+}
+
+D3D12_RECT VoxelWaterfallApp::ComputeSecondaryScreenRect(const VoxelFrameRenderPlan& renderPlan,
+                                                         const UINT renderWidth,
+                                                         const UINT renderHeight,
+                                                         bool& empty,
+                                                         bool& fallbackFull,
+                                                         double& areaPercent) const
+{
+    empty = true;
+    fallbackFull = false;
+    areaPercent = 0.0;
+    const D3D12_RECT full{0, 0, static_cast<LONG>(renderWidth), static_cast<LONG>(renderHeight)};
+    if (!camera || renderWidth == 0 || renderHeight == 0)
+    {
+        empty = false;
+        fallbackFull = true;
+        areaPercent = 100.0;
+        return full;
+    }
+
+    using DirectX::SimpleMath::Matrix;
+    using DirectX::SimpleMath::Vector3;
+    using DirectX::SimpleMath::Vector4;
+
+    const Matrix viewProj = camera->GetViewMatrix() * camera->GetProjectionMatrix();
+    float minX = std::numeric_limits<float>::max();
+    float minY = std::numeric_limits<float>::max();
+    float maxX = -std::numeric_limits<float>::max();
+    float maxY = -std::numeric_limits<float>::max();
+    bool anyProjected = false;
+    bool clippedByNearPlane = false;
+
+    auto includeProjectedPoint = [&](const Vector3& point, const float radiusPixels)
+    {
+        const Vector4 clip = Vector4::Transform(Vector4(point.x, point.y, point.z, 1.0f), viewProj);
+        if (clip.w <= 0.001f)
+        {
+            clippedByNearPlane = true;
+            return;
+        }
+        const float ndcX = clip.x / clip.w;
+        const float ndcY = clip.y / clip.w;
+        const float screenX = (ndcX * 0.5f + 0.5f) * static_cast<float>(renderWidth);
+        const float screenY = (0.5f - ndcY * 0.5f) * static_cast<float>(renderHeight);
+        if (screenX + radiusPixels < 0.0f ||
+            screenX - radiusPixels > static_cast<float>(renderWidth) ||
+            screenY + radiusPixels < 0.0f ||
+            screenY - radiusPixels > static_cast<float>(renderHeight))
+        {
+            return;
+        }
+        minX = std::min(minX, screenX - radiusPixels);
+        minY = std::min(minY, screenY - radiusPixels);
+        maxX = std::max(maxX, screenX + radiusPixels);
+        maxY = std::max(maxY, screenY + radiusPixels);
+        anyProjected = true;
+    };
+
+    for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
+    {
+        for (const auto& stream : partition.DrawStreams)
+        {
+            const float voxelSize = std::max(stream.RenderSettings.VoxelSize, 0.05f);
+            const auto& params = stream.SimulationParameters;
+            const float widthCells = std::max(1.0f, std::floor(params.WaterfallWidth / voxelSize));
+            const float depthCells = std::max(1.0f, std::floor(params.WaterfallDepth / voxelSize));
+            const float radiusPixels = stream.LayerType == VoxelSceneLayerType::Dynamic ? 96.0f : 24.0f;
+            for (const auto& grid : stream.GridCoordinates)
+            {
+                if (stream.LayerType == VoxelSceneLayerType::Dynamic)
+                {
+                    const float x = (static_cast<float>(grid.X) - 0.5f * (widthCells - 1.0f)) * voxelSize;
+                    const float y = params.SpawnHeight - static_cast<float>(grid.Y) * voxelSize;
+                    const float z = (static_cast<float>(grid.Z) - 0.5f * (depthCells - 1.0f)) * voxelSize;
+                    includeProjectedPoint(Vector3(x, y, z), radiusPixels);
+                }
+                else
+                {
+                    const float x = static_cast<float>(grid.X + stream.GridOrigin.X) * voxelSize;
+                    const float y = static_cast<float>(grid.Y + stream.GridOrigin.Y) * voxelSize;
+                    const float z = static_cast<float>(grid.Z + stream.GridOrigin.Z) * voxelSize;
+                    includeProjectedPoint(Vector3(x, y, z), radiusPixels);
+                }
+            }
+        }
+    }
+
+    if (!anyProjected)
+        return D3D12_RECT{0, 0, 0, 0};
+    if (clippedByNearPlane)
+    {
+        empty = false;
+        fallbackFull = true;
+        areaPercent = 100.0;
+        return full;
+    }
+
+    constexpr LONG SafetyMarginPixels = 16;
+    D3D12_RECT rect{
+        std::clamp(static_cast<LONG>(std::floor(minX)) - SafetyMarginPixels, 0L, full.right),
+        std::clamp(static_cast<LONG>(std::floor(minY)) - SafetyMarginPixels, 0L, full.bottom),
+        std::clamp(static_cast<LONG>(std::ceil(maxX)) + SafetyMarginPixels, 0L, full.right),
+        std::clamp(static_cast<LONG>(std::ceil(maxY)) + SafetyMarginPixels, 0L, full.bottom)
+    };
+    if (rect.right <= rect.left || rect.bottom <= rect.top)
+        return D3D12_RECT{0, 0, 0, 0};
+
+    const double area = static_cast<double>(rect.right - rect.left) * static_cast<double>(rect.bottom - rect.top);
+    const double fullArea = static_cast<double>(renderWidth) * static_cast<double>(renderHeight);
+    areaPercent = fullArea > 0.0 ? area * 100.0 / fullArea : 100.0;
+    if (areaPercent > 50.0)
+    {
+        fallbackFull = true;
+        areaPercent = 100.0;
+        rect = full;
+    }
+    empty = false;
+    return rect;
 }
 
 void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan& renderPlan) const
@@ -6187,8 +7013,11 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
         assert(partition.AdapterOwner == VoxelAdapterOwner::Secondary);
         for (const auto& primaryPartition : renderPlan.PrimaryOwnedPartitions)
         {
-            assert((partition.LayerId != primaryPartition.LayerId ||
-                    partition.PartitionId != primaryPartition.PartitionId) &&
+            const bool sameLogicalPartition =
+                partition.LayerId == primaryPartition.LayerId &&
+                partition.PartitionId == primaryPartition.PartitionId;
+            assert((!sameLogicalPartition ||
+                    executionMode == VoxelExecutionMode::MultiGpuMinimalLoss) &&
                    "Voxel partition is present in both primary and secondary draw lists");
         }
     }
@@ -6222,8 +7051,7 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
     for (const auto& partition : renderPlan.SecondaryOwnedPartitions)
         validatePartition(partition);
 
-    if (executionMode == VoxelExecutionMode::MultiGpuFull ||
-        executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+    if (UsesFullMultiGpuOutputTransfer(executionMode))
     {
         for (const auto& partition : renderPlan.PrimaryOwnedPartitions)
             assert(partition.PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
@@ -6234,6 +7062,7 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
     }
 
     if ((executionMode == VoxelExecutionMode::SingleGpuFull ||
+        executionMode == VoxelExecutionMode::SingleGpuRecommended ||
         executionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
         && renderPlan.LogicalVoxelCount > 0)
     {
@@ -6396,8 +7225,7 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
     assert(submittedVoxelCount <= expectedPartitionVoxelCount &&
            "Submitted voxel draw count exceeds logical workload count");
 
-    if (executionMode == VoxelExecutionMode::MultiGpuFull ||
-        executionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+    if (UsesFullMultiGpuOutputTransfer(executionMode))
     {
         for (const auto& result : primaryResults)
             assert(result.PartitionId != VoxelAdapterPartitionId::SecondaryPartition &&
@@ -6405,7 +7233,10 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         for (const auto& result : secondaryResults)
             assert(result.PartitionId != VoxelAdapterPartitionId::PrimaryPartition &&
                    "Multi-GPU secondary command list recorded PrimaryPartition");
+    }
 
+    if (UsesMultiGpuExecution(executionMode))
+    {
         const bool hasSecondaryLogicalVoxels = std::any_of(
             renderPlan.SecondaryOwnedPartitions.begin(),
             renderPlan.SecondaryOwnedPartitions.end(),
@@ -6627,6 +7458,7 @@ void VoxelWaterfallApp::InitRenderPaths()
     auto cmdList = commandQueue->GetCommandList();
     const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
     const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
+    const UINT ssaaSampleMultiplier = EffectiveSsaaSampleMultiplier(requestedExecutionMode);
     std::wstring failureReason;
     if (!ValidateOffscreenRenderTargetBudget(renderWidth, renderHeight, failureReason))
         throw std::runtime_error(NarrowForLog(failureReason));
@@ -6637,7 +7469,7 @@ void VoxelWaterfallApp::InitRenderPaths()
         renderWidth, renderHeight));
 
     antiAliasingPrimePath =
-        std::make_shared<SSAA>(primeDevice, SsaaSampleMultiplier, renderWidth, renderHeight);
+        std::make_shared<SSAA>(primeDevice, ssaaSampleMultiplier, renderWidth, renderHeight);
 
     commandQueue->WaitForFenceValue(commandQueue->ExecuteCommandList(cmdList));
 
@@ -6647,23 +7479,31 @@ void VoxelWaterfallApp::InitRenderPaths()
     RebuildMultiGpuVoxelRenderTargets();
 }
 
+UINT VoxelWaterfallApp::EffectiveSsaaSampleMultiplier(const VoxelExecutionMode mode) const
+{
+    return quickMetricsBenchmarkActive ||
+               mode == VoxelExecutionMode::MultiGpuFull ||
+               mode == VoxelExecutionMode::MultiGpuAdaptive ||
+               mode == VoxelExecutionMode::MultiGpuMinimalLoss
+               ? MultiGpuFullSsaaSampleMultiplier
+               : DefaultSsaaSampleMultiplier;
+}
+
+bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargetsIfSsaaPolicyChanged()
+{
+    const UINT desiredMultiplier = EffectiveSsaaSampleMultiplier(requestedExecutionMode);
+    if (antiAliasingPrimePath && antiAliasingPrimePath->GetSampleMultiplier() == desiredMultiplier)
+        return true;
+    return RebuildOffscreenVoxelRenderTargets();
+}
+
 MultiGpuVoxelRenderTargetDesc VoxelWaterfallApp::BuildMultiGpuVoxelRenderTargetDesc() const
 {
-    if (antiAliasingPrimePath)
-    {
-        const auto renderTargetDesc = antiAliasingPrimePath->GetRenderTarget().GetD3D12ResourceDesc();
-        return BuildMultiGpuVoxelRenderTargetDesc(
-            static_cast<UINT>(renderTargetDesc.Width),
-            renderTargetDesc.Height,
-            renderTargetDesc.Format);
-    }
-
     const UINT renderWidth = std::max(1u, voxelWorkload.RenderResolutionWidth);
     const UINT renderHeight = std::max(1u, voxelWorkload.RenderResolutionHeight);
-    const UINT linearScale = LinearScaleForSsaaSampleMultiplier(SsaaSampleMultiplier);
     return BuildMultiGpuVoxelRenderTargetDesc(
-        renderWidth * linearScale,
-        renderHeight * linearScale,
+        renderWidth,
+        renderHeight,
         GetSRGBFormat(BackBufferFormat));
 }
 
@@ -6691,8 +7531,10 @@ bool VoxelWaterfallApp::ValidateOffscreenRenderTargetBudget(
     OffscreenRenderTargetBudget budget{};
     budget.RenderWidth = renderWidth;
     budget.RenderHeight = renderHeight;
-    budget.SsaaSampleMultiplier = SsaaSampleMultiplier;
-    budget.SsaaLinearScale = LinearScaleForSsaaSampleMultiplier(SsaaSampleMultiplier);
+    budget.SsaaSampleMultiplier = EffectiveSsaaSampleMultiplier(requestedExecutionMode);
+    budget.SsaaLinearScale = LinearScaleForSsaaSampleMultiplier(budget.SsaaSampleMultiplier);
+    budget.TransferWidth = renderWidth;
+    budget.TransferHeight = renderHeight;
     budget.PrimaryBudgetLimitBytes = AvailableLocalVideoMemoryLimit(primeDevice);
     budget.SecondaryBudgetLimitBytes = multiGpuAvailable
                                            ? AvailableLocalVideoMemoryLimit(secondDevice)
@@ -6707,7 +7549,7 @@ bool VoxelWaterfallApp::ValidateOffscreenRenderTargetBudget(
     {
         failureReason = L"SSAA internal dimensions overflow for render size " +
             std::to_wstring(renderWidth) + L"x" + std::to_wstring(renderHeight) +
-            L" sampleMultiplier=" + std::to_wstring(SsaaSampleMultiplier);
+            L" sampleMultiplier=" + std::to_wstring(budget.SsaaSampleMultiplier);
         budget.FailureReason = failureReason;
         offscreenRenderTargetBudget = budget;
         return false;
@@ -6767,19 +7609,19 @@ bool VoxelWaterfallApp::ValidateOffscreenRenderTargetBudget(
         const auto colorFormat = GetSRGBFormat(BackBufferFormat);
         const auto colorCopyBytes = CopyableTextureBytes(
             primeDevice,
-            BudgetTexture2DDesc(budget.SsaaWidth, budget.SsaaHeight, colorFormat));
+            BudgetTexture2DDesc(budget.TransferWidth, budget.TransferHeight, colorFormat));
         const auto depthCopyBytes = CopyableTextureBytes(
             primeDevice,
-            BudgetTexture2DDesc(budget.SsaaWidth, budget.SsaaHeight, DXGI_FORMAT_R32_FLOAT));
+            BudgetTexture2DDesc(budget.TransferWidth, budget.TransferHeight, DXGI_FORMAT_R32_FLOAT));
 
         uint64_t colorBytes = 0;
         uint64_t linearDepthBytes = 0;
         uint64_t depthStencilBytes = 0;
-        if (!CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, colorFormat,
+        if (!CheckedTextureBytes(budget.TransferWidth, budget.TransferHeight, colorFormat,
                                  L"Multi-GPU color target", colorBytes, failureReason) ||
-            !CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, DXGI_FORMAT_R32_FLOAT,
+            !CheckedTextureBytes(budget.TransferWidth, budget.TransferHeight, DXGI_FORMAT_R32_FLOAT,
                                  L"Multi-GPU linear depth target", linearDepthBytes, failureReason) ||
-            !CheckedTextureBytes(budget.SsaaWidth, budget.SsaaHeight, DepthStencilFormat,
+            !CheckedTextureBytes(budget.TransferWidth, budget.TransferHeight, DepthStencilFormat,
                                  L"Multi-GPU depth stencil target", depthStencilBytes, failureReason))
         {
             budget.FailureReason = failureReason;
@@ -6915,15 +7757,17 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
         rebuiltAmbientPath->SetPipelineData(*defaultPrimePipelineResources.GetPSO(RenderMode::Ssao),
                                             *defaultPrimePipelineResources.GetPSO(RenderMode::SsaoBlur));
         rebuiltAntiAliasingPath =
-            std::make_shared<SSAA>(primeDevice, SsaaSampleMultiplier, renderWidth, renderHeight);
+            std::make_shared<SSAA>(primeDevice,
+                                   EffectiveSsaaSampleMultiplier(requestedExecutionMode),
+                                   renderWidth,
+                                   renderHeight);
 
         if (multiGpuAvailable)
         {
-            const auto ssaaDesc = rebuiltAntiAliasingPath->GetRenderTarget().GetD3D12ResourceDesc();
             const auto multiGpuDesc = BuildMultiGpuVoxelRenderTargetDesc(
-                static_cast<UINT>(ssaaDesc.Width),
-                ssaaDesc.Height,
-                ssaaDesc.Format);
+                renderWidth,
+                renderHeight,
+                GetSRGBFormat(BackBufferFormat));
             if (!rebuiltMultiGpuTargets.Initialize(
                 primeDevice,
                 secondDevice,
@@ -7025,6 +7869,27 @@ bool VoxelWaterfallApp::RebuildMultiGpuVoxelRenderTargets()
     logQueue.Push(L"\n" + multiGpuStatus);
     logQueue.Push(L"\nMultiGpu voxel render target frame sets: " +
         std::to_wstring(multiGpuVoxelRenderTargets.GetFrameCount()));
+    logQueue.Push(
+        L"\nMultiGpu render-output transfer sizing: render_width=" +
+        std::to_wstring(offscreenRenderTargetBudget.RenderWidth) +
+        L" render_height=" + std::to_wstring(offscreenRenderTargetBudget.RenderHeight) +
+        L" internal_width=" + std::to_wstring(offscreenRenderTargetBudget.SsaaWidth) +
+        L" internal_height=" + std::to_wstring(offscreenRenderTargetBudget.SsaaHeight) +
+        L" transfer_width=" + std::to_wstring(desc.Width) +
+        L" transfer_height=" + std::to_wstring(desc.Height) +
+        L" color_transfer_bytes=" +
+        std::to_wstring(!multiGpuVoxelRenderTargets.GetFrames().empty()
+                            ? multiGpuVoxelRenderTargets.GetFrames().front().ColorTransferBytes
+                            : 0) +
+        L" depth_transfer_bytes=" +
+        std::to_wstring(!multiGpuVoxelRenderTargets.GetFrames().empty()
+                            ? multiGpuVoxelRenderTargets.GetFrames().front().LinearDepthTransferBytes
+                            : 0) +
+        L" total_cross_adapter_bytes=" +
+        std::to_wstring(!multiGpuVoxelRenderTargets.GetFrames().empty()
+                            ? multiGpuVoxelRenderTargets.GetFrames().front().ColorTransferBytes +
+                              multiGpuVoxelRenderTargets.GetFrames().front().LinearDepthTransferBytes
+                            : 0));
     DrainD3D12InfoQueues(frameSerial, L"multi-gpu target rebuild");
     return true;
 }
@@ -7416,14 +8281,18 @@ bool VoxelWaterfallApp::TryAcquireCurrentFrameResource()
     if (frameResourceBackpressureActive)
     {
         const auto now = std::chrono::steady_clock::now();
-        currentPrimaryWaitMs =
+        currentFrameResourceWaitMs =
             std::chrono::duration<double, std::milli>(now - frameResourceBackpressureStart).count();
         frameResourceBackpressureActive = false;
     }
     else
     {
-        currentPrimaryWaitMs = 0.0;
+        currentFrameResourceWaitMs = 0.0;
     }
+    currentSecondaryGpuCpuWaitMs = 0.0;
+    currentCopyCpuWaitMs = 0.0;
+    currentPresentWaitMs = 0.0;
+    currentPrimaryWaitMs = currentFrameResourceWaitMs;
 
     currentFrameResourceReady = true;
     return true;
@@ -7442,6 +8311,9 @@ bool VoxelWaterfallApp::AdvanceRuntimeWorkOutsideFrame(const bool presentedFrame
 bool VoxelWaterfallApp::ShouldCaptureFinalOutputDiagnostics() const
 {
     if (!primeDevice || !MainWindow)
+        return false;
+
+    if (quickMetricsBenchmarkActive)
         return false;
 
     if (runtimeMutationStressActive ||
@@ -7837,16 +8709,24 @@ bool VoxelWaterfallApp::PumpOneFrame()
         return false;
     }
 
+    const auto acquireBegin = std::chrono::steady_clock::now();
     if (!TryAcquireCurrentFrameResource())
     {
         std::this_thread::yield();
         return false;
     }
+    const double acquireCpuMs = ElapsedMsSince(acquireBegin);
+    currentFrameResourceAcquireCpuMs = acquireCpuMs;
 
     timer.Tick();
     CalculateFrameStats();
+    const auto updateBegin = std::chrono::steady_clock::now();
     UpdateAfterFrameResourceAcquire(timer);
+    const double updateCpuMs = ElapsedMsSince(updateBegin);
+    currentUpdateCpuMs = updateCpuMs;
     const bool presented = DrawFrame(timer);
+    frameGraphTelemetry.FrameResourceAcquireCpuMs = acquireCpuMs;
+    frameGraphTelemetry.UpdateCpuMs = updateCpuMs;
     if (presented)
     {
         ++frameSerial;

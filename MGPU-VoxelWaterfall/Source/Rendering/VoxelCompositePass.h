@@ -22,6 +22,7 @@ struct VoxelCompositePassContext
     MultiGpuVoxelFrameRenderTargets& FrameTargets;
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
+    bool UseDirtyRect = false;
     float NearZ = 0.1f;
     float FarZ = 1000.0f;
     VoxelCompositeDebugView DebugView = VoxelCompositeDebugView::FinalComposite;

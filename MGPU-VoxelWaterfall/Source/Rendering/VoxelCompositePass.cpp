@@ -184,6 +184,13 @@ void VoxelCompositePass::Record(const std::shared_ptr<GCommandList>& cmdList,
     cmdList->SetScissorRects(&context.ScissorRect, 1);
 
     AssertCopyOnlyBeforeCompositeSampling(context);
+    if (context.UseDirtyRect)
+    {
+        cmdList->TransitionBarrier(context.PrimaryBaseColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(context.FrameTargets.PrimaryCompositeColor, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->FlushResourceBarriers();
+        cmdList->CopyResourceNoBarrier(context.FrameTargets.PrimaryCompositeColor, context.PrimaryBaseColor);
+    }
     cmdList->TransitionBarrier(context.PrimaryBaseColor, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(context.PrimaryDepth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cmdList->TransitionBarrier(context.FrameTargets.PrimaryReceivedSecondaryColor,

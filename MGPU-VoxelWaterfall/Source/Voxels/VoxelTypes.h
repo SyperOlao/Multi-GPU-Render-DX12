@@ -14,7 +14,10 @@ class VoxelGpuPartition;
 enum class VoxelExecutionMode
 {
     SingleGpuFull,
+    SingleGpuRecommended,
     MultiGpuFull,
+    MultiGpuAdaptive,
+    MultiGpuMinimalLoss,
     SingleGpuTemporalDecimation,
     MultiGpuTemporalDecimation
 };

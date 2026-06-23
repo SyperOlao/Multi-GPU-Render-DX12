@@ -186,6 +186,8 @@ VoxelSimulationSchedulerResult VoxelSimulationScheduler::DispatchFrame(
     VoxelSimulationSchedulerResult result{};
     result.UsedMultiGpuMode =
         (context.ExecutionMode == VoxelExecutionMode::MultiGpuFull ||
+         context.ExecutionMode == VoxelExecutionMode::MultiGpuAdaptive ||
+         context.ExecutionMode == VoxelExecutionMode::MultiGpuMinimalLoss ||
          context.ExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation) &&
         context.MultiGpuAvailable;
 
