@@ -285,10 +285,18 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
     cmdList->EndQuery(context.TimestampHeapIndex);
     context.BenchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCopy,
                                          VoxelBenchmarkProfiler::RangeId::SecondaryLocalToSharedCopy);
-    cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (copyOnly)
+    {
+        cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    else
+    {
+        cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
     cmdList->FlushResourceBarriers();
 
     if (copyOnly)
@@ -312,8 +320,11 @@ void RenderPipeline::SubmitSecondaryLocalToSharedCopyPass(
 
     cmdList->TransitionBarrier(*sharedColor, D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(*sharedDepth, D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_COMMON);
+    if (!copyOnly)
+    {
+        cmdList->TransitionBarrier(targets.SecondaryLocalColor, D3D12_RESOURCE_STATE_COMMON);
+        cmdList->TransitionBarrier(targets.SecondaryLocalLinearDepth, D3D12_RESOURCE_STATE_COMMON);
+    }
     cmdList->FlushResourceBarriers();
     context.BenchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::SecondaryCopy,
                                        VoxelBenchmarkProfiler::RangeId::SecondaryLocalToSharedCopy);
@@ -393,10 +404,18 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
     cmdList->EndQuery(context.TimestampHeapIndex);
     context.BenchmarkProfiler.BeginRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCopy,
                                          VoxelBenchmarkProfiler::RangeId::PrimarySharedToLocalCopy);
-    cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (copyOnly)
+    {
+        cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+    else
+    {
+        cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
     cmdList->FlushResourceBarriers();
 
     if (copyOnly)
@@ -420,9 +439,12 @@ void RenderPipeline::SubmitPrimarySharedToLocalCopyPass(
 
     cmdList->TransitionBarrier(*primeColor, D3D12_RESOURCE_STATE_COMMON);
     cmdList->TransitionBarrier(*primeDepth, D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_COMMON);
-    cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth,
-                               D3D12_RESOURCE_STATE_COMMON);
+    if (!copyOnly)
+    {
+        cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryColor, D3D12_RESOURCE_STATE_COMMON);
+        cmdList->TransitionBarrier(targets.PrimaryReceivedSecondaryLinearDepth,
+                                   D3D12_RESOURCE_STATE_COMMON);
+    }
     cmdList->FlushResourceBarriers();
     context.BenchmarkProfiler.EndRange(cmdList, VoxelBenchmarkProfiler::QueueId::PrimaryCopy,
                                        VoxelBenchmarkProfiler::RangeId::PrimarySharedToLocalCopy);
