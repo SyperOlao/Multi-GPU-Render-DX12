@@ -430,6 +430,7 @@ struct VoxelAdapterPartition
 
 struct VoxelPartitionRenderResult
 {
+    VoxelLayerId LayerId = 0;
     VoxelAdapterPartitionId PartitionId = VoxelAdapterPartitionId::PrimaryPartition;
     bool DrawIssued = false;
     uint32_t DrawCallCount = 0;
@@ -446,6 +447,7 @@ struct VoxelPartitionRenderResult
 
 struct VoxelFramePartitionRenderPlan
 {
+    VoxelLayerId LayerId = 0;
     VoxelAdapterPartitionId PartitionId = VoxelAdapterPartitionId::PrimaryPartition;
     VoxelAdapterOwner AdapterOwner = VoxelAdapterOwner::Primary;
     uint32_t LogicalVoxelCount = 0;

@@ -909,10 +909,7 @@ namespace PEPEngine::Graphics
                                          const D3D12_RECT* rects,
                                          const size_t rectCount) const
     {
-        if (memory == nullptr || memory->IsNull())
-        {
-            assert("Bad Clear Render Target");
-        }
+        assert(memory != nullptr && !memory->IsNull() && "Bad Clear Render Target");
         cmdList->ClearRenderTargetView(memory->GetCPUHandle(offset), rgba, rectCount, rects);
     }
 
@@ -980,6 +977,7 @@ namespace PEPEngine::Graphics
                                          const FLOAT depthValue,
                                          const UINT stencilValue, const D3D12_RECT* rects, const size_t rectCount) const
     {
+        assert(dsvMemory != nullptr && !dsvMemory->IsNull() && "Bad Clear Depth Stencil");
         cmdList->ClearDepthStencilView(dsvMemory->GetCPUHandle(dsvOffset), flags, depthValue, stencilValue,
                                        rectCount,
                                        rects);

@@ -100,11 +100,11 @@ private:
     GDescriptor ambientMapRtvMemory;
 
 
-    UINT mRenderTargetWidth;
-    UINT mRenderTargetHeight;
+    UINT mRenderTargetWidth = 0;
+    UINT mRenderTargetHeight = 0;
 
     Vector4 mOffsets[14];
 
-    D3D12_VIEWPORT mViewport;
-    D3D12_RECT mScissorRect;
+    D3D12_VIEWPORT mViewport = {};
+    D3D12_RECT mScissorRect = {};
 };

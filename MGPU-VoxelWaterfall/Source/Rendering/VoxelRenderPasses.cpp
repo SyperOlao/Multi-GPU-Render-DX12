@@ -15,7 +15,9 @@
 #include "Source/Rendering/MultiGpuVoxelRenderTargets.h"
 #include "Source/Voxels/VoxelGpuPartition.h"
 
+#include <array>
 #include <cassert>
+#include <vector>
 
 using namespace DirectX;
 using namespace PEPEngine::Graphics;
@@ -52,8 +54,8 @@ namespace
                "final resolve descriptor metadata resource address must match selected source resource");
         assert(metadata.ResourceGeneration == context.CurrentFrameResource.RenderTargetGeneration &&
                "final resolve descriptor resource generation must match the frame render target generation");
-        assert(metadata.DescriptorGeneration == context.CurrentFrameResource.DescriptorGeneration &&
-               "final resolve descriptor generation must match the frame descriptor generation");
+        // Final-resolve SRVs are immutable per render-target generation. The frame descriptor
+        // generation also covers unrelated shader-visible heaps such as material and ImGui heaps.
         assert(metadata.DescriptorGeneration == metadata.ResourceGeneration &&
                "final resolve descriptor generation must match its source resource generation");
         assert(metadata.FrameResourceIndex == context.FrameResourceIndex &&
@@ -85,7 +87,9 @@ void VoxelRenderPasses::RecordPrimaryBase(const std::shared_ptr<GCommandList>& c
     RecordNormalMap(cmdList, context);
     RecordAmbientMap(cmdList, context);
     if (context.DynamicShadowsEnabled)
+    {
         RecordShadowMap(cmdList, context);
+    }
     RecordForwardPath(cmdList, context);
 }
 
@@ -139,8 +143,8 @@ void VoxelRenderPasses::RecordNormalMap(const std::shared_ptr<GCommandList>& cmd
     cmdList->TransitionBarrier(normalMap, D3D12_RESOURCE_STATE_RENDER_TARGET);
     cmdList->TransitionBarrier(normalDepthMap, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     cmdList->FlushResourceBarriers();
-    float clearValue[] = {0.0f, 0.0f, 1.0f, 0.0f};
-    cmdList->ClearRenderTarget(normalMapRtv, 0, clearValue);
+    static constexpr std::array<float, 4> NormalMapClearValue = {0.0f, 0.0f, 1.0f, 0.0f};
+    cmdList->ClearRenderTarget(normalMapRtv, 0, NormalMapClearValue.data());
     cmdList->ClearDepthStencil(normalMapDsv, 0,
                                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0);
 
@@ -242,6 +246,7 @@ void VoxelRenderPasses::RecordPrimaryVoxelPartitions(
             context.BenchmarkProfiler,
             VoxelBenchmarkProfiler::QueueId::PrimaryGraphics,
             VoxelBenchmarkProfiler::RangeId::PrimaryLodCompaction);
+        result.LayerId = partition.LayerId;
         result.PartitionId = partition.PartitionId;
         result.LogicalVoxelCount = partition.LogicalVoxelCount;
         result.SceneGeneration = partition.SceneGeneration;

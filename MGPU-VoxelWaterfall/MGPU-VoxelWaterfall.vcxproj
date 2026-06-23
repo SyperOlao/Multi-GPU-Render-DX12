@@ -13,6 +13,10 @@
             <Configuration>Debug</Configuration>
             <Platform>x64</Platform>
         </ProjectConfiguration>
+        <ProjectConfiguration Include="Debug-ASan|x64">
+            <Configuration>Debug-ASan</Configuration>
+            <Platform>x64</Platform>
+        </ProjectConfiguration>
         <ProjectConfiguration Include="Release|x64">
             <Configuration>Release</Configuration>
             <Platform>x64</Platform>
@@ -46,6 +50,13 @@
         <PlatformToolset>v143</PlatformToolset>
         <CharacterSet>Unicode</CharacterSet>
     </PropertyGroup>
+    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'" Label="Configuration">
+        <ConfigurationType>Application</ConfigurationType>
+        <UseDebugLibraries>true</UseDebugLibraries>
+        <PlatformToolset>v143</PlatformToolset>
+        <CharacterSet>Unicode</CharacterSet>
+        <EnableASAN>true</EnableASAN>
+    </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
         <ConfigurationType>Application</ConfigurationType>
         <UseDebugLibraries>false</UseDebugLibraries>
@@ -67,6 +78,9 @@
     <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
         <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform"/>
     </ImportGroup>
+    <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">
+        <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform"/>
+    </ImportGroup>
     <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
         <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform"/>
     </ImportGroup>
@@ -82,6 +96,11 @@
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
         <LinkIncremental>true</LinkIncremental>
         <LocalDebuggerWorkingDirectory>$(ProjectDir)</LocalDebuggerWorkingDirectory>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">
+        <LinkIncremental>false</LinkIncremental>
+        <LocalDebuggerWorkingDirectory>$(ProjectDir)</LocalDebuggerWorkingDirectory>
+        <NuGetConfiguration>Debug</NuGetConfiguration>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
         <LinkIncremental>false</LinkIncremental>
@@ -134,6 +153,25 @@
         <Link>
             <SubSystem>Windows</SubSystem>
             <GenerateDebugInformation>true</GenerateDebugInformation>
+        </Link>
+    </ItemDefinitionGroup>
+    <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">
+        <ClCompile>
+            <WarningLevel>Level3</WarningLevel>
+            <SDLCheck>true</SDLCheck>
+            <PreprocessorDefinitions>NOMINMAX;_DEBUG;_CONSOLE;_DISABLE_VECTOR_ANNOTATION;_DISABLE_STRING_ANNOTATION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+            <ConformanceMode>false</ConformanceMode>
+            <LanguageStandard>stdcpp17</LanguageStandard>
+            <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Submodule\imgui;$(SolutionDir)Submodule\imgui\backends;$(SolutionDir)\Common;$(SolutionDir)\Utils;$(SolutionDir)Assimp\include;$(SolutionDir)\Graphics;$(SolutionDir)\Allocator;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+            <MultiProcessorCompilation>true</MultiProcessorCompilation>
+            <EnableASAN>true</EnableASAN>
+            <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+            <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+        </ClCompile>
+        <Link>
+            <SubSystem>Windows</SubSystem>
+            <GenerateDebugInformation>true</GenerateDebugInformation>
+            <AdditionalOptions>/INCREMENTAL:NO %(AdditionalOptions)</AdditionalOptions>
         </Link>
     </ItemDefinitionGroup>
     <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -262,112 +300,151 @@
         <None Include="Shaders\Common.hlsl">
             <FileType>Document</FileType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Library</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Library</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Library</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\Default.hlsl">
             <FileType>Document</FileType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Vertex</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\DrawNormals.hlsl">
             <FileType>Document</FileType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Pixel</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">PS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">PS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PS</EntryPointName>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\LightingUtil.hlsl">
             <FileType>Document</FileType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Library</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Library</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Library</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\MipMapCS.hlsl">
             <FileType>Document</FileType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
         </None>
         <None Include="Shaders\Quad.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\FinalResolveSolidColor.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">PS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">PS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\Shadows.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\SkyBoxShader.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\Ssao.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\SsaoBlur.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">VS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">VS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Vertex</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">VS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+            <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">false</ExcludedFromBuild>
             <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
         </None>
         <None Include="Shaders\VoxelComposite.hlsl">
@@ -379,19 +456,25 @@
         <FxCompile Include="Shaders\VoxelValidationCompare.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">CS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">CS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Compute</ShaderType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
         </FxCompile>
         <FxCompile Include="Shaders\VoxelValidationDepthLinearize.hlsl">
             <FileType>Document</FileType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">CS</EntryPointName>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">CS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Compute</ShaderType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
         </FxCompile>
     </ItemGroup>
@@ -404,8 +487,11 @@
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">CS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">CS</EntryPointName>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
@@ -414,6 +500,7 @@
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.1</ShaderModel>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.1</ShaderModel>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <FileType>Document</FileType>
         </None>
@@ -421,14 +508,18 @@
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
+            <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">Pixel</ShaderType>
             <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">PS</EntryPointName>
+            <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">PS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+            <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">5.1</ShaderModel>
             <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PS</EntryPointName>
             <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.1</ShaderModel>
             <EnableUnboundedDescriptorTables Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</EnableUnboundedDescriptorTables>
             <EnableUnboundedDescriptorTables Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</EnableUnboundedDescriptorTables>
             <EnableUnboundedDescriptorTables Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</EnableUnboundedDescriptorTables>
+            <EnableUnboundedDescriptorTables Condition="'$(Configuration)|$(Platform)'=='Debug-ASan|x64'">true</EnableUnboundedDescriptorTables>
             <EnableUnboundedDescriptorTables Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</EnableUnboundedDescriptorTables>
         </FxCompile>
     </ItemGroup>

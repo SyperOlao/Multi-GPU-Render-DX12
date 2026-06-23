@@ -4,6 +4,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 
 using namespace Common;
@@ -54,6 +55,7 @@ namespace
             HasCommandLineFlag(commandLine, "--benchmark-full") ||
             HasCommandLineFlag(commandLine, "--profile-sweep") ||
             HasCommandLineFlag(commandLine, "--runtime-mutation-stress") ||
+            HasCommandLineFlag(commandLine, "--asan-runtime-mutation-scenario") ||
             HasCommandLineFlag(commandLine, "--memory-soak") ||
             HasCommandLineFlag(commandLine, "--memory-rebuild-stress");
     }
@@ -206,6 +208,9 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
                 result = theApp.RunRuntimeMutationStressTestOnce(
                     ReadCommandLineUint(cmdLine, "--runtime-mutation-frames=", 1000),
                     ReadCommandLinePath(cmdLine, "--runtime-mutation-output-dir="));
+            else if (HasCommandLineFlag(cmdLine, "--asan-runtime-mutation-scenario"))
+                result = theApp.RunAddressSanitizerRuntimeMutationScenarioOnce(
+                    ReadCommandLinePath(cmdLine, "--asan-runtime-output-dir="));
             else if (HasCommandLineFlag(cmdLine, "--memory-soak"))
                 result = theApp.RunMemorySoakTestOnce(
                     ReadCommandLineUint(cmdLine, "--memory-duration-seconds=", 600),
@@ -218,7 +223,7 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
             else
                 result = theApp.Run();
         }
-        ExitProcess(static_cast<UINT>(result));
+        return result;
     }
     catch (DxException& e)
     {
@@ -230,7 +235,11 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
             return 3;
         }
         if (IsResearchCommand(cmdLine))
+        {
+            std::cerr << "Research command failed with DxException: "
+                      << NarrowForArtifact(e.ToString()) << std::endl;
             return 2;
+        }
         MessageBox(nullptr, e.ToString().c_str(), L"HR Failed", MB_OK);
         return 0;
     }
@@ -244,7 +253,11 @@ int WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE prevInstance,
             return 3;
         }
         if (IsResearchCommand(cmdLine))
+        {
+            std::cerr << "Research command failed with exception: "
+                      << e.what() << std::endl;
             return 2;
+        }
         MessageBoxA(nullptr, e.what(), "Unhandled exception", MB_OK);
         return 0;
     }

@@ -60,6 +60,7 @@ public:
                             const std::filesystem::path& outputDirectory = {});
     int RunRuntimeMutationStressTestOnce(uint32_t frameCount = 1000,
                                          const std::filesystem::path& outputDirectory = {});
+    int RunAddressSanitizerRuntimeMutationScenarioOnce(const std::filesystem::path& outputDirectory = {});
 
 protected:
     void Update(const GameTimer& gt) override;
@@ -311,8 +312,8 @@ protected:
     uint64_t partitionGeneration = 0;
     uint64_t renderTargetGeneration = 0;
     uint64_t descriptorGeneration = 0;
-    VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::SingleGpuFull;
-    VoxelExecutionMode executionMode = VoxelExecutionMode::SingleGpuFull;
+    VoxelExecutionMode requestedExecutionMode = VoxelExecutionMode::MultiGpuFull;
+    VoxelExecutionMode executionMode = VoxelExecutionMode::MultiGpuFull;
     bool isDrawingFrame = false;
     bool isPumpingFrame = false;
     uint32_t currentFramePumpDepth = 0;

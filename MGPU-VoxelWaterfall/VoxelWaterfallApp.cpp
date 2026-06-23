@@ -1885,7 +1885,8 @@ bool VoxelWaterfallApp::DrawFrame(const GameTimer& gt)
         &frameGraphTelemetry,
         &voxelFrameRenderPlan,
         &primaryVoxelRenderResults,
-        [this, &voxelFrameRenderPlan, &primaryVoxelRenderResults](const std::shared_ptr<GCommandList>& cmdList)
+        [this, &voxelFrameRenderPlan, &primaryVoxelRenderResults](
+            const std::shared_ptr<GCommandList>& cmdList)
         {
             VoxelRenderPassContext basePassContext{
                 primeDeviceSignature,
@@ -4176,7 +4177,7 @@ void VoxelWaterfallApp::AdvanceResearchRunner(const bool presentedFrame)
     {
     case ResearchRunnerSuite::Validation:
         researchRunnerPhase = "Validation";
-        RunVisualValidation();
+        RunVisualValidation(researchRunnerRequest.OutputDirectory, BenchmarkSuite::Smoke, researchRunnerRequest.Seed);
         researchRunnerOutputPath = visualValidationMetrics.CsvPath;
         finishWithStatus(visualValidationMetrics.Passed ? "COMPLETE" : "INVALID",
                          visualValidationMetrics.Passed ? "" : visualValidationMetrics.FailReason);
@@ -4498,6 +4499,189 @@ int VoxelWaterfallApp::RunRuntimeMutationStressTestOnce(
     csv << "# PASS\n";
     csv.flush();
     logQueue.Push(L"\nRuntimeMutationStress PASS");
+    return 0;
+}
+
+int VoxelWaterfallApp::RunAddressSanitizerRuntimeMutationScenarioOnce(const std::filesystem::path& outputDirectory)
+{
+    std::filesystem::path runOutputDirectory = outputDirectory;
+    if (runOutputDirectory.empty())
+    {
+        runOutputDirectory = std::filesystem::path(L"Artifacts") / L"asan_runtime_mutation" /
+            (FilesystemTimestampToken() + "_" + std::to_string(GetCurrentProcessId()));
+    }
+    std::filesystem::create_directories(runOutputDirectory);
+
+    std::ofstream csv(runOutputDirectory / L"asan_runtime_mutation_scenario.csv", std::ios::out | std::ios::trunc);
+    csv << "phase,iteration,presented_frame,frame_serial,profile,requested_mode,actual_mode,resolution,final_resolve,"
+        << "scene_generation,partition_generation,render_target_generation,descriptor_generation\n";
+    csv.flush();
+
+    auto fail = [&](const int code, const std::string& reason)
+    {
+        csv << "# FAIL," << code << ",\"" << EscapeJsonString(reason) << "\"\n";
+        csv.flush();
+        logQueue.Push(L"\nASan runtime mutation scenario FAIL: " + std::wstring(reason.begin(), reason.end()));
+        return code;
+    };
+
+    auto* timerPtr = GetTimer();
+    timerPtr->Reset();
+    pumpFrameQuitRequested = false;
+    currentFramePumpDepth = 0;
+    maximumObservedFramePumpDepth = 0;
+    rejectedRecursiveFrameRequests = 0;
+    DrainD3D12InfoQueues(frameSerial, L"asan runtime mutation scenario start");
+    const uint64_t initialD3D12Errors = d3d12ErrorOrCorruptionMessageCount;
+
+    uint32_t presentedFrames = 0;
+    auto pumpUntilPresented = [&](const char* phase, const uint32_t iteration) -> bool
+    {
+        for (uint32_t attempts = 0; attempts < 1800u && !pumpFrameQuitRequested; ++attempts)
+        {
+            if (attempts % 30u == 0u)
+            {
+                csv << "# progress," << phase << ',' << iteration << ",attempt=" << attempts
+                    << ",frame_serial=" << frameSerial << '\n';
+                csv.flush();
+            }
+            AdvanceRuntimeWorkOutsideFrame(false);
+            const bool presented = PumpOneFrame();
+            AdvanceRuntimeWorkOutsideFrame(presented);
+            if (!presented)
+                continue;
+
+            ++presentedFrames;
+            DrainD3D12InfoQueues(frameSerial, L"asan runtime mutation scenario frame");
+            ProcessCompletedFinalOutputDiagnostics();
+            ServiceDeferredResourceLifetime();
+
+            csv << phase << ','
+                << iteration << ','
+                << presentedFrames << ','
+                << frameSerial << ','
+                << ProfileName(voxelWorkload.Profile) << ','
+                << GetExecutionModeName(requestedExecutionMode) << ','
+                << GetExecutionModeName(executionMode) << ','
+                << ResolutionPresetName(voxelWorkload.ResolutionPreset) << ','
+                << FinalResolveSourceName(finalResolveSource) << ','
+                << sceneGeneration << ','
+                << partitionGeneration << ','
+                << renderTargetGeneration << ','
+                << descriptorGeneration << '\n';
+            csv.flush();
+
+            return true;
+        }
+        return false;
+    };
+
+    auto verifyFrameContracts = [&]() -> std::optional<std::string>
+    {
+        if (frameGraphTelemetry.CurrentFramePumpDepth != 1 ||
+            currentFramePumpDepth != 0 ||
+            maximumObservedFramePumpDepth != 1)
+        {
+            return "PumpOneFrame depth contract failed";
+        }
+        if (rejectedRecursiveFrameRequests != 0)
+            return "recursive frame request was rejected during ASan scenario";
+        if (d3d12ErrorOrCorruptionMessageCount != initialD3D12Errors)
+            return "D3D12 ERROR/CORRUPTION was reported during ASan scenario";
+        return {};
+    };
+
+    auto runMutationFrame = [&](const char* phase, const uint32_t iteration) -> int
+    {
+        if (!pumpUntilPresented(phase, iteration))
+            return fail(4, std::string("timed out waiting for presented frame in phase ") + phase);
+        if (const auto contractFailure = verifyFrameContracts())
+            return fail(2, *contractFailure);
+        return 0;
+    };
+
+    pendingRuntimeChanges.WorkloadProfile = VoxelResearchWorkloadProfile::MixedStaticAndDynamic;
+    pendingRuntimeChanges.RenderResolutionPreset = VoxelRenderResolutionPreset::R1280x720;
+    if (const int result = runMutationFrame("open_mixed_static_and_dynamic", 0); result != 0)
+        return result;
+
+    const std::array<VoxelResearchWorkloadProfile, 3> profiles =
+    {
+        VoxelResearchWorkloadProfile::StaticRenderOnly,
+        VoxelResearchWorkloadProfile::DynamicSimulationAndRender,
+        VoxelResearchWorkloadProfile::MixedStaticAndDynamic
+    };
+    for (uint32_t i = 0; i < 200u; ++i)
+    {
+        pendingRuntimeChanges.WorkloadProfile = profiles[i % profiles.size()];
+        if (const int result = runMutationFrame("profile_switch", i); result != 0)
+            return result;
+    }
+
+    const std::array<VoxelExecutionMode, 2> modes =
+    {
+        VoxelExecutionMode::SingleGpuFull,
+        VoxelExecutionMode::MultiGpuFull
+    };
+    for (uint32_t i = 0; i < 200u; ++i)
+    {
+        pendingRuntimeChanges.ExecutionMode = modes[i % modes.size()];
+        if (const int result = runMutationFrame("execution_mode_switch", i); result != 0)
+            return result;
+    }
+
+    const std::array<VoxelRenderResolutionPreset, 4> resolutions =
+    {
+        VoxelRenderResolutionPreset::R1280x720,
+        VoxelRenderResolutionPreset::R1920x1080,
+        VoxelRenderResolutionPreset::R2560x1440,
+        VoxelRenderResolutionPreset::R3840x2160
+    };
+    for (uint32_t i = 0; i < 100u; ++i)
+    {
+        pendingRuntimeChanges.RenderResolutionPreset = resolutions[i % resolutions.size()];
+        if (const int result = runMutationFrame("resolution_switch", i); result != 0)
+            return result;
+    }
+
+    RequestVisualValidation(runOutputDirectory / L"visual_validation", BenchmarkSuite::Smoke, 0);
+    while ((pendingRuntimeChanges.HasAny() || researchRunnerActive) && !pumpFrameQuitRequested)
+    {
+        AdvanceRuntimeWorkOutsideFrame(false);
+        const bool presented = PumpOneFrame();
+        AdvanceRuntimeWorkOutsideFrame(presented);
+        if (presented)
+        {
+            ++presentedFrames;
+            DrainD3D12InfoQueues(frameSerial, L"asan runtime mutation validation frame");
+            ProcessCompletedFinalOutputDiagnostics();
+            ServiceDeferredResourceLifetime();
+        }
+    }
+    if (pumpFrameQuitRequested)
+        return fail(4, "ASan scenario interrupted by window quit during visual validation");
+    if (!visualValidationMetrics.HasResult || !visualValidationMetrics.Passed)
+    {
+        return fail(2, visualValidationMetrics.FailReason.empty()
+                           ? "visual validation did not pass during ASan scenario"
+                           : visualValidationMetrics.FailReason);
+    }
+    if (const auto contractFailure = verifyFrameContracts())
+        return fail(2, *contractFailure);
+
+    const int stressResult = RunRuntimeMutationStressTestOnce(1000, runOutputDirectory / L"runtime_mutation_stress");
+    if (stressResult != 0)
+        return fail(stressResult, "RuntimeMutationStress failed during ASan scenario");
+
+    Flush();
+    ServiceDeferredResourceLifetime();
+    ProcessCompletedFinalOutputDiagnostics();
+    if (d3d12ErrorOrCorruptionMessageCount != initialD3D12Errors)
+        return fail(3, "D3D12 ERROR/CORRUPTION was reported during ASan scenario");
+
+    csv << "# PASS\n";
+    csv.flush();
+    logQueue.Push(L"\nASan runtime mutation scenario PASS");
     return 0;
 }
 
@@ -5677,6 +5861,7 @@ VoxelFrameRenderPlan VoxelWaterfallApp::BuildVoxelFrameRenderPlan() const
     for (const auto& partition : voxelWorkload.Partitions)
     {
         VoxelFramePartitionRenderPlan partitionPlan{};
+        partitionPlan.LayerId = partition.LayerId;
         partitionPlan.PartitionId = partition.PartitionId;
         partitionPlan.AdapterOwner = partition.AdapterOwner;
         partitionPlan.LogicalVoxelCount = partition.VoxelCount();
@@ -5709,7 +5894,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
         assert(partition.AdapterOwner == VoxelAdapterOwner::Primary);
         for (size_t j = i + 1; j < renderPlan.PrimaryOwnedPartitions.size(); ++j)
         {
-            assert(partition.PartitionId != renderPlan.PrimaryOwnedPartitions[j].PartitionId &&
+            assert((partition.LayerId != renderPlan.PrimaryOwnedPartitions[j].LayerId ||
+                    partition.PartitionId != renderPlan.PrimaryOwnedPartitions[j].PartitionId) &&
                    "Duplicate primary voxel partition draw entry");
         }
     }
@@ -5719,7 +5905,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
         assert(partition.AdapterOwner == VoxelAdapterOwner::Secondary);
         for (const auto& primaryPartition : renderPlan.PrimaryOwnedPartitions)
         {
-            assert(partition.PartitionId != primaryPartition.PartitionId &&
+            assert((partition.LayerId != primaryPartition.LayerId ||
+                    partition.PartitionId != primaryPartition.PartitionId) &&
                    "Voxel partition is present in both primary and secondary draw lists");
         }
     }
@@ -5770,8 +5957,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameRenderPlan(const VoxelFrameRenderPlan&
     {
         assert(renderPlan.SecondaryOwnedPartitions.empty() &&
                "Single-GPU mode must not submit secondary graphics draw list");
-        assert(renderPlan.PrimaryOwnedPartitions.size() == VoxelAdapterPartitionCount &&
-               "Single-GPU primary draw list must contain both logical voxel partitions");
+        assert(renderPlan.PrimaryOwnedPartitions.size() >= VoxelAdapterPartitionCount &&
+               "Single-GPU primary draw list must contain all logical voxel partitions");
     }
 }
 
@@ -5817,7 +6004,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         auto appendPlanPartition = [&stream](const char* queueName, const VoxelFramePartitionRenderPlan& partition)
         {
             stream << queueName << '{'
-                   << "id=" << PartitionIdName(partition.PartitionId)
+                   << "layer=" << partition.LayerId
+                   << ",id=" << PartitionIdName(partition.PartitionId)
                    << ",owner=" << AdapterOwnerName(partition.AdapterOwner)
                    << ",expected=" << partition.LogicalVoxelCount
                    << ",sceneGen=" << partition.SceneGeneration
@@ -5833,7 +6021,8 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         auto appendResult = [&stream](const char* queueName, const VoxelPartitionRenderResult& result)
         {
             stream << queueName << '{'
-                   << "id=" << PartitionIdName(result.PartitionId)
+                   << "layer=" << result.LayerId
+                   << ",id=" << PartitionIdName(result.PartitionId)
                    << ",owner=" << AdapterOwnerName(result.OwnerAdapter)
                    << ",logical=" << result.LogicalVoxelCount
                    << ",submitted=" << result.SubmittedVoxelCount
@@ -5879,9 +6068,10 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         assert(primaryResultIndex < primaryResults.size() &&
                "Primary voxel command list did not record an expected partition");
         const auto& result = primaryResults[primaryResultIndex++];
-        if (result.PartitionId != partition.PartitionId)
+        if (result.LayerId != partition.LayerId || result.PartitionId != partition.PartitionId)
             emitValidationDiagnostics("Primary voxel render result does not match the expected partition id");
-        assert(result.PartitionId == partition.PartitionId &&
+        assert(result.LayerId == partition.LayerId &&
+               result.PartitionId == partition.PartitionId &&
                "Primary voxel render result does not match the expected partition id");
         if (result.LogicalVoxelCount != partition.LogicalVoxelCount)
             emitValidationDiagnostics("Primary voxel render result does not match the expected logical voxel count");
@@ -5903,9 +6093,10 @@ void VoxelWaterfallApp::ValidateVoxelFrameDrawResultsCheap(
         assert(secondaryResultIndex < secondaryResults.size() &&
                "Secondary voxel command list did not record an expected partition");
         const auto& result = secondaryResults[secondaryResultIndex++];
-        if (result.PartitionId != partition.PartitionId)
+        if (result.LayerId != partition.LayerId || result.PartitionId != partition.PartitionId)
             emitValidationDiagnostics("Secondary voxel render result does not match the expected partition id");
-        assert(result.PartitionId == partition.PartitionId &&
+        assert(result.LayerId == partition.LayerId &&
+               result.PartitionId == partition.PartitionId &&
                "Secondary voxel render result does not match the expected partition id");
         if (result.LogicalVoxelCount != partition.LogicalVoxelCount)
             emitValidationDiagnostics("Secondary voxel render result does not match the expected logical voxel count");
@@ -6439,6 +6630,8 @@ bool VoxelWaterfallApp::RebuildOffscreenVoxelRenderTargets()
     try
     {
         rebuiltAmbientPath = std::make_shared<SSAO>(primeDevice, cmdList, renderWidth, renderHeight);
+        rebuiltAmbientPath->SetPipelineData(*defaultPrimePipelineResources.GetPSO(RenderMode::Ssao),
+                                            *defaultPrimePipelineResources.GetPSO(RenderMode::SsaoBlur));
         rebuiltAntiAliasingPath =
             std::make_shared<SSAA>(primeDevice, SsaaSampleMultiplier, renderWidth, renderHeight);
 
@@ -8009,9 +8202,18 @@ void VoxelWaterfallApp::UpdateSsaoCB(const GameTimer& gt)
         ambientPrimePath->GetOffsetVectors(ssaoCB.OffsetVectors);
 
         auto blurWeights = ambientPrimePath->CalcGaussWeights(2.5f);
-        ssaoCB.BlurWeights[0] = Vector4(&blurWeights[0]);
-        ssaoCB.BlurWeights[1] = Vector4(&blurWeights[4]);
-        ssaoCB.BlurWeights[2] = Vector4(&blurWeights[8]);
+        std::array<float, 12> packedBlurWeights{};
+        assert(blurWeights.size() <= packedBlurWeights.size() &&
+               "SSAO blur weight buffer must fit the shader constant layout");
+        std::copy_n(blurWeights.begin(),
+                    std::min(blurWeights.size(), packedBlurWeights.size()),
+                    packedBlurWeights.begin());
+        ssaoCB.BlurWeights[0] = Vector4(
+            packedBlurWeights[0], packedBlurWeights[1], packedBlurWeights[2], packedBlurWeights[3]);
+        ssaoCB.BlurWeights[1] = Vector4(
+            packedBlurWeights[4], packedBlurWeights[5], packedBlurWeights[6], packedBlurWeights[7]);
+        ssaoCB.BlurWeights[2] = Vector4(
+            packedBlurWeights[8], packedBlurWeights[9], packedBlurWeights[10], packedBlurWeights[11]);
 
         ssaoCB.InvRenderTargetSize = Vector2(1.0f / ambientPrimePath->SsaoMapWidth(),
                                              1.0f / ambientPrimePath->SsaoMapHeight());

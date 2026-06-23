@@ -92,6 +92,7 @@ SSAO::SSAO(
 
     BuildOffsetVectors();
     BuildRandomVectorTexture(cmdList);
+    BuildDescriptors();
 }
 
 SSAO::~SSAO() = default;
@@ -248,6 +249,8 @@ void SSAO::OnResize(const UINT newWidth, const UINT newHeight)
         mScissorRect = {0, 0, static_cast<int>(mRenderTargetWidth), static_cast<int>(mRenderTargetHeight)};
 
         BuildResources();
+        if (randomVectorMap.GetD3D12Resource() != nullptr)
+            RebuildDescriptors();
     }
 }
 
