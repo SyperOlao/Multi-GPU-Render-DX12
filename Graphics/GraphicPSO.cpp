@@ -155,6 +155,7 @@ namespace PEPEngine::Graphics
         const auto result = device->GetDXDevice()->CreateGraphicsPipelineState(&psoDesc,
                                                                                IID_PPV_ARGS(&nativePSO));
         ThrowIfFailed(result);
+        ownerDevice = device;
     }
 
     void GraphicPSO::SetRootSignature(const GRootSignature& rs)

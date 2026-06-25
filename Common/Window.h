@@ -43,6 +43,7 @@ namespace Common
         UINT GetCurrentBackBufferIndex() const;
 
         UINT Present();
+        HRESULT GetLastPresentResult() const noexcept { return lastPresentResult; }
         void Initialize();
 
         GTexture& GetCurrentBackBuffer();
@@ -74,6 +75,7 @@ namespace Common
         void ResetTimer();
 
         virtual void OnResize();
+        void MarkNativeDestroyed();
 
         ComPtr<IDXGISwapChain4> GetSwapChain();
 
@@ -91,6 +93,8 @@ namespace Common
         std::wstring windowName;
         int width;
         int height;
+        UINT actualClientWidth = 0;
+        UINT actualClientHeight = 0;
         bool vSync;
         bool fullscreen;
 
@@ -103,6 +107,7 @@ namespace Common
 
 
         UINT currentBackBufferIndex;
+        HRESULT lastPresentResult = S_OK;
 
         RECT windowRect;
     };

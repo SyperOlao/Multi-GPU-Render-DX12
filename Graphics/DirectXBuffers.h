@@ -4,6 +4,11 @@
 #include "d3dUtil.h"
 #include "GBuffer.h"
 #include "GCommandList.h"
+
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
 using namespace Microsoft::WRL;
 
 namespace PEPEngine::Graphics
@@ -119,16 +124,30 @@ namespace PEPEngine::Graphics
         CounteredStructBuffer(const std::shared_ptr<GDevice>& device, const UINT elementCount,
                               const std::wstring& name = L"") :
             GBuffer(
-                device, (sizeof(T)), elementCount, D3D12_UAV_COUNTER_PLACEMENT_ALIGNMENT, name,
+                device, static_cast<UINT>(sizeof(T)), elementCount, D3D12_UAV_COUNTER_PLACEMENT_ALIGNMENT, name,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
                 CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT))
         {
-            upload = std::make_shared<UploadBuffer>(device, 1, (sizeof(DWORD)), name + L" Upload");
+            upload = std::make_shared<UploadBuffer>(device, 1, static_cast<UINT>(sizeof(DWORD)), name + L" Upload");
             read = std::make_shared<ReadBackBuffer<DWORD>>(device, 1, name + L" ReadBack");
         }
 
         CounteredStructBuffer(const CounteredStructBuffer& rhs) = delete;
         CounteredStructBuffer& operator=(const CounteredStructBuffer& rhs) = delete;
+
+        void LoadElementData(const T* data, const UINT elementCount,
+                             const std::shared_ptr<GCommandList>& cmdList,
+                             const DWORD counterValue = 0) const
+        {
+            std::vector<uint8_t> padded(bufferSize, 0u);
+            const auto clampedCount = std::min(elementCount, count);
+            const auto dataBytes = static_cast<size_t>(clampedCount) * sizeof(T);
+            if (dataBytes > 0)
+                std::memcpy(padded.data(), data, dataBytes);
+
+            std::memcpy(padded.data() + bufferSize - sizeof(DWORD), &counterValue, sizeof(DWORD));
+            GBuffer::LoadData(padded.data(), cmdList);
+        }
 
         void SetCounterValue(const std::shared_ptr<GCommandList>& cmdList, const DWORD value) const
         {

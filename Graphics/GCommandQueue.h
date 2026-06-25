@@ -46,16 +46,21 @@ namespace PEPEngine::Graphics
         void Wait(const ComPtr<ID3D12Fence>& otherFence, UINT64 otherFenceValue) const;
 
         ComPtr<ID3D12CommandQueue>& GetD3D12CommandQueue();
+        D3D12_COMMAND_LIST_TYPE GetType() const noexcept { return type; }
 
         void StartPixEvent(const std::wstring& message) const;
 
         void EndPixEvent() const;
 
         uint64_t GetFenceValue() const;
+        uint64_t GetCompletedFenceValue() const;
+        GCommandQueueLifetimeStats GetLifetimeStats() const;
 
         UINT64 GetTimestampFreq();
 
         UINT64 GetTimestamp(UINT index);
+        bool SupportsTimestampQueries() const noexcept;
+        D3D12_QUERY_HEAP_TYPE GetTimestampQueryHeapType() const noexcept;
 
         ComPtr<ID3D12Fence> GetFence() const;
 
@@ -87,6 +92,8 @@ namespace PEPEngine::Graphics
 
 
         UINT64 queueTimestampFrequencies = 0;
+        bool timestampQueriesSupported = false;
+        D3D12_QUERY_HEAP_TYPE timestampQueryHeapType = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         LARGE_INTEGER cpuTimestampFrequencies;
 
         D3D12_COMMAND_LIST_TYPE type;

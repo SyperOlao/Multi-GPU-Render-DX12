@@ -68,9 +68,9 @@ namespace PEPEngine::Graphics
     {
         if (!IsNull() && page)
         {
-            const auto frameValue = page->GetDevice()->GetCommandQueue()->GetFenceValue();
+            const auto fenceSnapshot = page->GetDevice()->CaptureSubmittedFenceSnapshot();
 
-            page->Free(std::move(*this), frameValue);
+            page->Free(std::move(*this), fenceSnapshot);
 
             cpuBase = CD3DX12_CPU_DESCRIPTOR_HANDLE();
             gpuBase = CD3DX12_GPU_DESCRIPTOR_HANDLE();

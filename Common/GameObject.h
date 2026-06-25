@@ -6,6 +6,8 @@
 #include "MemoryAllocator.h"
 #include "ModelRenderer.h"
 
+#include <algorithm>
+
 using namespace DirectX::SimpleMath;
 
 using namespace PEPEngine;
@@ -54,11 +56,29 @@ public:
         return nullptr;
     }
 
+    template <class T = Component>
+    void RemoveComponentsOfType()
+    {
+        components.erase(
+            std::remove_if(
+                components.begin(),
+                components.end(),
+                [](const std::shared_ptr<Component>& component)
+                {
+                    return dynamic_cast<T*>(component.get()) != nullptr;
+                }),
+            components.end());
+
+        if (renderer && dynamic_cast<T*>(renderer.get()) != nullptr)
+            renderer.reset();
+    }
+
     void SetScale(float scale) const;
 
     void SetScale(const Vector3& scale) const;
 
     std::string& GetName() { return name; }
+    const std::string& GetName() const { return name; }
 
 protected:
     custom_vector<std::shared_ptr<Component>> components = MemoryAllocator::CreateVector<std::shared_ptr<Component>>();

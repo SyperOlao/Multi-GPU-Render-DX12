@@ -28,6 +28,7 @@ namespace PEPEngine::Graphics
         SsaoBlur,
         Debug,
         Quad,
+        FinalSolidColor,
         UI,
         Particle,
         MBVelocity,

@@ -117,13 +117,13 @@ namespace PEPEngine::Graphics
         return static_cast<uint32_t>(handle.ptr - baseCPUPtr.ptr) / descriptorHandleIncrementSize;
     }
 
-    void GDescriptorHeap::Free(GDescriptor&& descriptor, uint64_t frameNumber)
+    void GDescriptorHeap::Free(GDescriptor&& descriptor, const GDeferredFenceSnapshot& fenceSnapshot)
     {
         auto offset = ComputeOffset(descriptor.GetCPUHandle());
 
         std::lock_guard<std::mutex> lock(allocationMutex);
 
-        staleDescriptors.emplace(offset, descriptor.GetDescriptorCount(), frameNumber);
+        staleDescriptors.emplace(offset, descriptor.GetDescriptorCount(), fenceSnapshot);
     }
 
     void GDescriptorHeap::FreeBlock(uint32_t offset, uint32_t descriptorCount)
@@ -164,11 +164,11 @@ namespace PEPEngine::Graphics
         AddNewBlock(offset, descriptorCount);
     }
 
-    void GDescriptorHeap::ReleaseStaleDescriptors(const uint64_t frameNumber)
+    void GDescriptorHeap::ReleaseStaleDescriptors(const uint64_t)
     {
         std::lock_guard<std::mutex> lock(allocationMutex);
 
-        while (!staleDescriptors.empty() && staleDescriptors.front().FrameNumber <= frameNumber)
+        while (!staleDescriptors.empty() && device->IsFenceSnapshotComplete(staleDescriptors.front().FenceSnapshot))
         {
             auto& staleDescriptor = staleDescriptors.front();
 
@@ -179,6 +179,27 @@ namespace PEPEngine::Graphics
 
             staleDescriptors.pop();
         }
+    }
+
+    GDescriptorAllocatorStats GDescriptorHeap::GetStats() const
+    {
+        std::lock_guard<std::mutex> lock(allocationMutex);
+        GDescriptorAllocatorStats stats{};
+        stats.HeapPages = 1;
+        stats.DescriptorCapacity = descriptorCount;
+        stats.FreeDescriptors = freeHandlesCount;
+        stats.StaleRanges = staleDescriptors.size();
+        auto staleCopy = staleDescriptors;
+        while (!staleCopy.empty())
+        {
+            stats.StaleDescriptors += staleCopy.front().Size;
+            staleCopy.pop();
+        }
+        stats.ActiveDescriptors =
+            stats.DescriptorCapacity >= stats.FreeDescriptors + stats.StaleDescriptors
+                ? stats.DescriptorCapacity - stats.FreeDescriptors - stats.StaleDescriptors
+                : 0;
+        return stats;
     }
 
     ID3D12DescriptorHeap* GDescriptorHeap::GetDirectxHeap() const

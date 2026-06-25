@@ -3,6 +3,7 @@
 
 #include "MemoryAllocator.h"
 #include <d3d12.h>
+#include <memory>
 #include <wrl/client.h>
 
 #include "d3dx12.h"
@@ -36,6 +37,7 @@ namespace PEPEngine::Graphics
         uint32_t descriptorTableBitMask;
 
         bool IsInitialize = false;
+        std::shared_ptr<GDevice> ownerDevice;
 
     public:
         GRootSignature() = default;
@@ -69,5 +71,6 @@ namespace PEPEngine::Graphics
                             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         ComPtr<ID3D12RootSignature> GetNativeSignature() const;
+        std::shared_ptr<GDevice> GetDevice() const;
     };
 }

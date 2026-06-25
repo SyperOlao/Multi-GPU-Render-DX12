@@ -1,0 +1,61 @@
+name: MGPU VoxelWaterfall Clean Build
+
+on:
+  push:
+    paths:
+      - "Allocator/**"
+      - "Common/**"
+      - "Graphics/**"
+      - "Utils/**"
+      - "MGPU-VoxelWaterfall/**"
+      - "MGPU-VoxelWaterfall/InternalBuild/**"
+  pull_request:
+    paths:
+      - "Allocator/**"
+      - "Common/**"
+      - "Graphics/**"
+      - "Utils/**"
+      - "MGPU-VoxelWaterfall/**"
+      - "MGPU-VoxelWaterfall/InternalBuild/**"
+
+jobs:
+  windows-clean:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Bootstrap dependencies
+        shell: pwsh
+        run: .\MGPU-VoxelWaterfall\InternalBuild\bootstrap.ps1
+
+      - name: Build and non-GPU tests
+        shell: pwsh
+        run: .\MGPU-VoxelWaterfall\InternalBuild\build.ps1 -Configuration Release -Platform x64
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $pkg = "artifacts/package/MGPU-VoxelWaterfall"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item x64/Release/MGPU-VoxelWaterfall.exe $pkg/
+          Copy-Item x64/Release/*.dll $pkg/ -ErrorAction SilentlyContinue
+          Copy-Item x64/Release/*.cso $pkg/ -ErrorAction SilentlyContinue
+          Copy-Item MGPU-VoxelWaterfall/InternalBuild/artifacts/build/build_manifest.json $pkg/
+          Copy-Item MGPU-VoxelWaterfall/InternalBuild/artifacts/test/hardware_gpu_tests.json $pkg/
+          Copy-Item MGPU-VoxelWaterfall/README.md $pkg/
+          Copy-Item MGPU-VoxelWaterfall/InternalBuild/BUILDING.md $pkg/
+          Copy-Item MGPU-VoxelWaterfall/InternalBuild/THIRD_PARTY_NOTICES.md $pkg/
+          Copy-Item MGPU-VoxelWaterfall/InternalBuild/LICENSE_STATUS.md $pkg/
+          Compress-Archive -Path $pkg -DestinationPath artifacts/package/MGPU-VoxelWaterfall.zip -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MGPU-VoxelWaterfall
+          path: |
+            artifacts/package/MGPU-VoxelWaterfall.zip
+            MGPU-VoxelWaterfall/InternalBuild/artifacts/build/build_manifest.json
+            MGPU-VoxelWaterfall/InternalBuild/artifacts/test/hardware_gpu_tests.json

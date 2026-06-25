@@ -1,6 +1,8 @@
 #include "GDevice.h"
 
 
+#include <d3d12sdklayers.h>
+
 #include "d3dUtil.h"
 #include "GAllocator.h"
 #include "GCommandQueue.h"
@@ -10,6 +12,17 @@
 namespace PEPEngine::Graphics
 {
     using namespace Utils;
+
+    namespace
+    {
+        bool IsStrictD3D12DebugModeRequested()
+        {
+            wchar_t value[8] = {};
+            const DWORD length = GetEnvironmentVariableW(L"MGPU_STRICT_D3D12_DEBUG", value,
+                                                         static_cast<DWORD>(std::size(value)));
+            return length > 0 && length < std::size(value) && value[0] == L'1';
+        }
+    }
 
     UINT GDevice::GetNodeMask() const
     {
@@ -29,6 +42,36 @@ namespace PEPEngine::Graphics
             return false;
         }
         return SUCCEEDED(adapter4->GetDesc3(&outDesc));
+    }
+
+    GVideoMemoryStats GDevice::QueryVideoMemoryStats() const
+    {
+        GVideoMemoryStats stats{};
+        if (!adapter)
+            return stats;
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO localInfo{};
+        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalInfo{};
+        const HRESULT localHr = adapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo);
+        const HRESULT nonLocalHr = adapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalInfo);
+        stats.Valid = SUCCEEDED(localHr) || SUCCEEDED(nonLocalHr);
+        if (SUCCEEDED(localHr))
+        {
+            stats.LocalBudget = localInfo.Budget;
+            stats.LocalCurrentUsage = localInfo.CurrentUsage;
+            stats.LocalAvailableForReservation = localInfo.AvailableForReservation;
+            stats.LocalCurrentReservation = localInfo.CurrentReservation;
+        }
+        if (SUCCEEDED(nonLocalHr))
+        {
+            stats.NonLocalBudget = nonLocalInfo.Budget;
+            stats.NonLocalCurrentUsage = nonLocalInfo.CurrentUsage;
+            stats.NonLocalAvailableForReservation = nonLocalInfo.AvailableForReservation;
+            stats.NonLocalCurrentReservation = nonLocalInfo.CurrentReservation;
+        }
+        return stats;
     }
 
     void GDevice::SharedFence(ComPtr<ID3D12Fence>& primaryFence, const std::shared_ptr<GDevice>& sharedDevice,
@@ -183,7 +226,6 @@ namespace PEPEngine::Graphics
             assert("Cant create device. Null Adapter");
         }
 
-        DXGI_ADAPTER_DESC2 desc;
         ThrowIfFailed(adapter->GetDesc2(&desc));
 
         ThrowIfFailed(D3D12CreateDevice(
@@ -197,39 +239,13 @@ namespace PEPEngine::Graphics
 
 #if defined(DEBUG) || defined(_DEBUG)
 
-        ComPtr<ID3D12InfoQueue> pInfoQueue;
-        if (SUCCEEDED(device.As(&pInfoQueue)))
+        if (SUCCEEDED(device.As(&infoQueue)))
         {
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE));
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE));
-            ThrowIfFailed(pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE));
-
-
-            // Suppress messages based on their severity level
-            D3D12_MESSAGE_SEVERITY Severities[] =
-            {
-                D3D12_MESSAGE_SEVERITY_INFO
-            };
-
-            // Suppress individual messages by their ID
-            D3D12_MESSAGE_ID DenyIds[] = {
-                D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
-                // I'm really not sure how to avoid this message.
-                D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,
-                // This warning occurs when using capture frame while graphics debugging.
-                D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,
-                // This warning occurs when using capture frame while graphics debugging.
-                D3D12_MESSAGE_ID_OBJECT_DELETED_WHILE_STILL_IN_USE,
-                // Can occur during teardown/reinit races; keep app alive while diagnosing lifetime ordering.
-            };
-
-            D3D12_INFO_QUEUE_FILTER NewFilter = {};
-            NewFilter.DenyList.NumSeverities = _countof(Severities);
-            NewFilter.DenyList.pSeverityList = Severities;
-            NewFilter.DenyList.NumIDs = _countof(DenyIds);
-            NewFilter.DenyList.pIDList = DenyIds;
-
-            ThrowIfFailed(pInfoQueue->PushStorageFilter(&NewFilter));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE));
+            ThrowIfFailed(infoQueue->SetBreakOnSeverity(
+                D3D12_MESSAGE_SEVERITY_WARNING,
+                IsStrictD3D12DebugModeRequested() ? TRUE : FALSE));
         }
 #endif
     }
@@ -266,6 +282,11 @@ namespace PEPEngine::Graphics
         return device;
     }
 
+    ComPtr<ID3D12InfoQueue> GDevice::GetInfoQueue() const
+    {
+        return infoQueue;
+    }
+
     GDevice::~GDevice()
     {
         Flush();
@@ -280,17 +301,31 @@ namespace PEPEngine::Graphics
 
     void GDevice::ResetAllocators(uint64_t frameCount) const
     {
+        (void)frameCount;
         for (auto& allocator : graphicAllocators)
         {
-            uint64_t fenceValue = 0;
-
-            for (auto&& queue : queues)
-            {
-                fenceValue = std::max(fenceValue, queue->GetFenceValue());
-            }
-
-            allocator->ReleaseStaleDescriptors(fenceValue);
+            allocator->ReleaseStaleDescriptors(0);
         }
+    }
+
+    GDeferredFenceSnapshot GDevice::CaptureSubmittedFenceSnapshot() const
+    {
+        GDeferredFenceSnapshot snapshot{};
+        for (size_t i = 0; i < queues.size(); ++i)
+            snapshot.QueueFenceValues[i] = queues[i] ? queues[i]->GetFenceValue() : 0;
+        return snapshot;
+    }
+
+    bool GDevice::IsFenceSnapshotComplete(const GDeferredFenceSnapshot& snapshot) const
+    {
+        for (size_t i = 0; i < queues.size(); ++i)
+        {
+            if (snapshot.QueueFenceValues[i] == 0)
+                continue;
+            if (!queues[i] || queues[i]->GetCompletedFenceValue() < snapshot.QueueFenceValues[i])
+                return false;
+        }
+        return true;
     }
 
     GDescriptor GDevice::AllocateDescriptors(const D3D12_DESCRIPTOR_HEAP_TYPE type, const uint32_t descriptorCount) const
@@ -325,5 +360,34 @@ namespace PEPEngine::Graphics
         {
             queue->HardStop();
         }
+    }
+
+    GDeviceLifetimeStats GDevice::GetLifetimeStats() const
+    {
+        GDeviceLifetimeStats stats{};
+        for (size_t i = 0; i < queues.size(); ++i)
+        {
+            if (queues[i])
+                stats.Queues[i] = queues[i]->GetLifetimeStats();
+        }
+        for (size_t i = 0; i < graphicAllocators.size(); ++i)
+        {
+            if (graphicAllocators[i])
+                stats.DescriptorAllocators[i] = graphicAllocators[i]->GetStats();
+        }
+        stats.VideoMemory = QueryVideoMemoryStats();
+        return stats;
+    }
+
+    void GDevice::ReportLiveDeviceObjects() const
+    {
+#if defined(DEBUG) || defined(_DEBUG)
+        ComPtr<ID3D12DebugDevice> debugDevice;
+        if (device && SUCCEEDED(device.As(&debugDevice)))
+        {
+            debugDevice->ReportLiveDeviceObjects(
+                D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL);
+        }
+#endif
     }
 }

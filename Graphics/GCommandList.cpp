@@ -14,6 +14,7 @@
 #include "GDescriptorHeap.h"
 #include "GBuffer.h"
 #include "GRenderTarger.h"
+#include "d3dUtil.h"
 
 namespace PEPEngine::Graphics
 {
@@ -70,16 +71,22 @@ namespace PEPEngine::Graphics
 
     void GCommandList::BeginQuery(const UINT index) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         BeginQuery(queue->timestampQueryHeap.value().Get(), index);
     }
 
     void GCommandList::EndQuery(const UINT index) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         EndQuery(queue->timestampQueryHeap.value().Get(), index);
     }
 
     void GCommandList::ResolveQuery(const UINT index, const UINT quriesCount, const UINT64 aligned) const
     {
+        if (!queue->SupportsTimestampQueries())
+            return;
         ResolveQuery(queue->timestampQueryHeap.value().Get(),
                      queue->timestampResultBuffer.value().GetD3D12Resource().Get(), index,
                      quriesCount, aligned);
@@ -666,9 +673,23 @@ namespace PEPEngine::Graphics
         TrackResource(srcRes.Get());
     }
 
+    void GCommandList::CopyResourceNoBarrier(const ComPtr<ID3D12Resource>& dstRes,
+                                             const ComPtr<ID3D12Resource>& srcRes)
+    {
+        cmdList->CopyResource(dstRes.Get(), srcRes.Get());
+
+        TrackResource(dstRes.Get());
+        TrackResource(srcRes.Get());
+    }
+
     void GCommandList::CopyResource(const GResource& dstRes, const GResource& srcRes)
     {
         CopyResource(dstRes.GetD3D12Resource(), srcRes.GetD3D12Resource());
+    }
+
+    void GCommandList::CopyResourceNoBarrier(const GResource& dstRes, const GResource& srcRes)
+    {
+        CopyResourceNoBarrier(dstRes.GetD3D12Resource(), srcRes.GetD3D12Resource());
     }
 
     void GCommandList::CopyResourceToCubeMap(const GResource& dstCube, const GResource& srcTex, UINT faceIndex)
@@ -795,6 +816,21 @@ namespace PEPEngine::Graphics
         cmdList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
     }
 
+    void GCommandList::ExecuteIndirect(ID3D12CommandSignature* commandSignature,
+                                       const uint32_t maxCommandCount,
+                                       const GBuffer& argumentBuffer,
+                                       const uint64_t argumentBufferOffset) const
+    {
+        TransitionBarrier(argumentBuffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        FlushResourceBarriers();
+
+        cmdList->ExecuteIndirect(commandSignature, maxCommandCount,
+                                 argumentBuffer.GetD3D12Resource().Get(),
+                                 argumentBufferOffset,
+                                 nullptr,
+                                 0);
+    }
+
     void GCommandList::Dispatch(const uint32_t numGroupsX, const uint32_t numGroupsY, const uint32_t numGroupsZ) const
     {
         FlushResourceBarriers();
@@ -838,7 +874,7 @@ namespace PEPEngine::Graphics
         // Flush any remaining barriers.
         FlushResourceBarriers();
 
-        cmdList->Close();
+        ThrowIfFailed(cmdList->Close());
 
         uint32_t numPendingBarriers = 0;
 
@@ -858,7 +894,7 @@ namespace PEPEngine::Graphics
     void GCommandList::Close() const
     {
         FlushResourceBarriers();
-        cmdList->Close();
+        ThrowIfFailed(cmdList->Close());
     }
 
     void GCommandList::SetPrimitiveTopology(const D3D_PRIMITIVE_TOPOLOGY primitiveTopology)
@@ -873,10 +909,7 @@ namespace PEPEngine::Graphics
                                          const D3D12_RECT* rects,
                                          const size_t rectCount) const
     {
-        if (memory == nullptr || memory->IsNull())
-        {
-            assert("Bad Clear Render Target");
-        }
+        assert(memory != nullptr && !memory->IsNull() && "Bad Clear Render Target");
         cmdList->ClearRenderTargetView(memory->GetCPUHandle(offset), rgba, rectCount, rects);
     }
 
@@ -944,6 +977,7 @@ namespace PEPEngine::Graphics
                                          const FLOAT depthValue,
                                          const UINT stencilValue, const D3D12_RECT* rects, const size_t rectCount) const
     {
+        assert(dsvMemory != nullptr && !dsvMemory->IsNull() && "Bad Clear Depth Stencil");
         cmdList->ClearDepthStencilView(dsvMemory->GetCPUHandle(dsvOffset), flags, depthValue, stencilValue,
                                        rectCount,
                                        rects);

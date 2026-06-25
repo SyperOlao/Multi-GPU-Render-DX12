@@ -17,7 +17,8 @@ class SSAA
     GDescriptor rtvMemory;
     GDescriptor dsvMemory;
 
-    UINT ResolutionMultiplier = 1;
+    UINT SsaaSampleMultiplier = 1;
+    UINT LinearScale = 1;
     const DXGI_FORMAT rtvFormat = GetSRGBFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
     DXGI_FORMAT depthStencilFormat = DXGI_FORMAT_D32_FLOAT;
 
@@ -33,7 +34,9 @@ public:
 
     void SetMultiplier(UINT multi, UINT newWidth, UINT newHeight);
 
-    float GetMultiplier();
+    UINT GetSampleMultiplier() const;
+    UINT GetLinearScale() const;
+    float GetMultiplier() const;
 
     GTexture& GetRenderTarget();
 
@@ -43,10 +46,12 @@ public:
 
     GDescriptor* GetSRV();
 
+    GDescriptor* GetDepthSRV();
+
     GDescriptor* GetDSV();
 
     void OnResize(UINT newWidth, UINT newHeight);
 
-    SSAA(const std::shared_ptr<GDevice>& device, UINT multiplier, UINT width, UINT height,
+    SSAA(const std::shared_ptr<GDevice>& device, UINT sampleMultiplier, UINT width, UINT height,
          DXGI_FORMAT depthStencilFormat = DXGI_FORMAT_D32_FLOAT);
 };

@@ -51,6 +51,19 @@ std::shared_ptr<GModel>& AssetsLoader::GenerateSphere(const std::shared_ptr<GCom
     return modelMap[L"sphere"];
 }
 
+std::shared_ptr<GModel>& AssetsLoader::GenerateBox(
+    const std::shared_ptr<GCommandList>& cmdList,
+    const float width,
+    const float height,
+    const float depth)
+{
+    const GeometryGenerator::MeshData box = geoGen.CreateBox(width, height, depth, 0);
+
+    std::shared_ptr<GModel> model = CreateModelFromGenerated(cmdList, box, L"box");
+    modelMap.emplace(L"box", model);
+    return modelMap[L"box"];
+}
+
 std::shared_ptr<GModel>& AssetsLoader::GenerateQuad(const std::shared_ptr<GCommandList>& cmdList, const float x, const float y, const float w,
                                                     const float h, const float depth)
 {
@@ -169,14 +182,14 @@ std::shared_ptr<GTexture> AssetsLoader::LoadTextureByPath(const std::wstring& na
 
     textures.push_back(texture);
 
-    texturesMap[name] = textures.size() - 1;
+    texturesMap[name] = static_cast<UINT>(textures.size() - 1);
 
     return texture;
 }
 
 void AssetsLoader::LoadTextureForModel(const std::shared_ptr<GModel>& model, const std::shared_ptr<GCommandList>& cmdList)
 {
-    for (int i = 0; i < model->GetMeshesCount(); ++i)
+    for (UINT i = 0; i < model->GetMeshesCount(); ++i)
     {
         auto nativeMesh = model->GetMesh(i)->GetMeshData();
 
@@ -196,8 +209,8 @@ void AssetsLoader::LoadTextureForModel(const std::shared_ptr<GModel>& model, con
         if (it == materialsMap.end())
         {
             material = std::make_shared<Material>(materialName);
-            material->FresnelR0 = Vector3::One * 0.05;
-            material->Roughness = 0.95;
+            material->FresnelR0 = Vector3::One * 0.05f;
+            material->Roughness = 0.95f;
 
             const auto modelDirectory = model->GetName().substr(0, model->GetName().find_last_of('\\'));
 
@@ -272,7 +285,8 @@ static void RecursivlyLoadMeshes(const std::shared_ptr<NativeModel>& model, cons
 std::shared_ptr<GModel>& AssetsLoader::CreateModelFromFile(const std::shared_ptr<GCommandList>& cmdList,
                                                            const std::string& filePath)
 {
-    auto it = modelMap.find(AnsiToWString(filePath));
+    const auto key = AnsiToWString(filePath);
+    auto it = modelMap.find(key);
     if (it != modelMap.end())
     {
         return it->second;
@@ -294,8 +308,8 @@ std::shared_ptr<GModel>& AssetsLoader::CreateModelFromFile(const std::shared_ptr
     LoadTextureForModel(renderModel, cmdList);
     loadedAiMaterialForMesh.clear();
     loadedTexturesForMesh.clear();
-    modelMap[AnsiToWString(filePath)] = renderModel;
-    return renderModel;
+    modelMap[key] = renderModel;
+    return modelMap[key];
 }
 
 
@@ -341,13 +355,13 @@ size_t AssetsLoader::GetLoadTexturesCount() const
 
 void AssetsLoader::AddMaterial(const std::shared_ptr<Material>& material)
 {
-    materialsMap[material->GetName()] = materials.size();
+    materialsMap[material->GetName()] = static_cast<UINT>(materials.size());
     materials.push_back((material));
 }
 
 void AssetsLoader::AddTexture(const std::shared_ptr<GTexture>& texture)
 {
-    texturesMap[texture->GetName()] = textures.size();
+    texturesMap[texture->GetName()] = static_cast<UINT>(textures.size());
     textures.push_back((texture));
 }
 

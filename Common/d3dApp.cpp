@@ -315,63 +315,53 @@ namespace Common
                 }
                 return 0;
 
-            // WM_SIZE is sent when the user resizes the window.  
+            // WM_SIZE is sent when the user resizes the window.
             case WM_SIZE:
                 {
-                    // Save the new client area dimensions.
-
-                    int width = static_cast<short>(LOWORD(lParam));
-                    int height = static_cast<short>(HIWORD(lParam));
-
-                    pWindow->SetWidth(width);
-                    pWindow->SetHeight(height);
-
+                    if (wParam == SIZE_MINIMIZED)
                     {
-                        if (wParam == SIZE_MINIMIZED)
-                        {
-                            isAppPaused = true;
-                            isMinimized = true;
-                            isMaximized = false;
-                        }
-                        else if (wParam == SIZE_MAXIMIZED)
+                        isAppPaused = true;
+                        isMinimized = true;
+                        isMaximized = false;
+                        return 0;
+                    }
+
+                    const UINT width = LOWORD(lParam);
+                    const UINT height = HIWORD(lParam);
+                    if (width == 0 || height == 0)
+                        return 0;
+
+                    pWindow->SetWidth(static_cast<int>(width));
+                    pWindow->SetHeight(static_cast<int>(height));
+
+                    if (wParam == SIZE_MAXIMIZED)
+                    {
+                        isAppPaused = false;
+                        isMinimized = false;
+                        isMaximized = true;
+                        OnResize();
+                    }
+                    else if (wParam == SIZE_RESTORED)
+                    {
+                        if (isMinimized)
                         {
                             isAppPaused = false;
                             isMinimized = false;
-                            isMaximized = true;
                             OnResize();
                         }
-                        else if (wParam == SIZE_RESTORED)
+                        else if (isMaximized)
                         {
-                            // Restoring from minimized state?
-                            if (isMinimized)
-                            {
-                                isAppPaused = false;
-                                isMinimized = false;
-                                OnResize();
-                            }
-
-                            // Restoring from maximized state?
-                            else if (isMaximized)
-                            {
-                                isAppPaused = false;
-                                isMaximized = false;
-                                OnResize();
-                            }
-                            else if (isResizing)
-                            {
-                                // If user is dragging the resize bars, we do not resize 
-                                // the buffers here because as the user continuously 
-                                // drags the resize bars, a stream of WM_SIZE messages are
-                                // sent to the window, and it would be pointless (and slow)
-                                // to resize for each WM_SIZE message received from dragging
-                                // the resize bars.  So instead, we reset after the user is 
-                                // done resizing the window and releases the resize bars, which 
-                                // sends a WM_EXITSIZEMOVE message.
-                            }
-                            else // API call such as SetWindowPos or swapChain->SetFullscreenState.
-                            {
-                                OnResize();
-                            }
+                            isAppPaused = false;
+                            isMaximized = false;
+                            OnResize();
+                        }
+                        else if (isResizing)
+                        {
+                            // Defer swapchain resize until WM_EXITSIZEMOVE.
+                        }
+                        else
+                        {
+                            OnResize();
                         }
                     }
                     return 0;
@@ -393,10 +383,10 @@ namespace Common
                 OnResize();
                 return 0;
 
-            // WM_DESTROY is sent when the window is being destroyed.
             case WM_DESTROY:
 
                 Flush();
+                pWindow->MarkNativeDestroyed();
 
                 // If a window is being destroyed, remove it from the 
                 // window maps.

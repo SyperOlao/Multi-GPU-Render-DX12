@@ -1,0 +1,776 @@
+#include "Source/UI/VoxelWaterfallDebugPanel.h"
+
+#include "GCommandList.h"
+#include "GDescriptor.h"
+#include "Source/Rendering/RenderPipeline.h"
+#include "Source/Voxels/VoxelParticleSpawner.h"
+#include "imgui.h"
+#include "imgui_impl_dx12.h"
+#include "imgui_impl_win32.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace
+{
+    const char* ExecutionModeName(const VoxelExecutionMode mode)
+    {
+        switch (mode)
+        {
+        case VoxelExecutionMode::SingleGpuFull:
+            return "SingleGpuFull";
+        case VoxelExecutionMode::MultiGpuFull:
+            return "MultiGpuFull";
+        case VoxelExecutionMode::SingleGpuTemporalDecimation:
+            return "SingleGpuTemporalDecimation";
+        case VoxelExecutionMode::MultiGpuTemporalDecimation:
+            return "MultiGpuTemporalDecimation";
+        default:
+            return "Unknown";
+        }
+    }
+
+    bool UsesMultiGpuExecution(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::MultiGpuFull ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
+    const char* ProfileName(const VoxelResearchWorkloadProfile profile)
+    {
+        switch (profile)
+        {
+        case VoxelResearchWorkloadProfile::StaticRenderOnly:
+            return "StaticRenderOnly";
+        case VoxelResearchWorkloadProfile::DynamicSimulationAndRender:
+            return "DynamicSimulationAndRender";
+        case VoxelResearchWorkloadProfile::MixedStaticAndDynamic:
+            return "MixedStaticAndDynamic";
+        case VoxelResearchWorkloadProfile::OcclusionValidation:
+            return "OcclusionValidation";
+        case VoxelResearchWorkloadProfile::SpatialLodDemonstration:
+            return "SpatialLodDemonstration";
+        case VoxelResearchWorkloadProfile::DemoMixed:
+            return "DemoMixed";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* TemporalPolicyName(const VoxelTemporalPolicy policy)
+    {
+        return policy == VoxelTemporalPolicy::Decimated ? "Decimated" : "Full";
+    }
+
+    const char* CameraModeName(const VoxelResearchCameraMode mode)
+    {
+        switch (mode)
+        {
+        case VoxelResearchCameraMode::Interactive:
+            return "Interactive";
+        case VoxelResearchCameraMode::FixedOverview:
+            return "FixedOverview";
+        case VoxelResearchCameraMode::FixedOcclusion:
+            return "FixedOcclusion";
+        case VoxelResearchCameraMode::WaterfallCloseup:
+            return "WaterfallCloseup";
+        case VoxelResearchCameraMode::LodSweepRoute:
+            return "LodSweepRoute";
+        case VoxelResearchCameraMode::BenchmarkRoute:
+            return "BenchmarkRoute";
+        case VoxelResearchCameraMode::DemoMixedOverview:
+            return "DemoMixedOverview";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* CompositeViewName(const VoxelCompositeDebugView view)
+    {
+        switch (view)
+        {
+        case VoxelCompositeDebugView::FinalComposite:
+            return "Final Composite";
+        case VoxelCompositeDebugView::PrimaryOnly:
+            return "Primary Only";
+        case VoxelCompositeDebugView::SecondaryColorOnly:
+            return "Secondary Color Only";
+        case VoxelCompositeDebugView::SecondaryLinearDepth:
+            return "Secondary Linear Depth";
+        case VoxelCompositeDebugView::PrimaryLinearDepth:
+            return "Primary Linear Depth";
+        case VoxelCompositeDebugView::PartitionOwnershipColors:
+            return "Partition Ownership";
+        case VoxelCompositeDebugView::SpatialLodColors:
+            return "Spatial LOD";
+        case VoxelCompositeDebugView::DepthDifference:
+            return "Depth Difference";
+        default:
+            return "Unknown";
+        }
+    }
+
+    const char* FinalResolveSourceName(const FinalResolveSource source)
+    {
+        switch (source)
+        {
+        case FinalResolveSource::SolidColor:
+            return "SolidColor";
+        case FinalResolveSource::PrimaryBase:
+            return "PrimaryBase";
+        case FinalResolveSource::PrimaryComposite:
+            return "PrimaryComposite";
+        case FinalResolveSource::ReceivedSecondary:
+            return "ReceivedSecondary";
+        default:
+            return "Unknown";
+        }
+    }
+
+    std::string HexU64(const uint64_t value)
+    {
+        char buffer[32]{};
+        std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(value));
+        return buffer;
+    }
+
+    const char* SpatialLodStatusName(const VoxelSceneWorkload& workload)
+    {
+        if (workload.SpatialLod.Mode == VoxelSpatialLodMode::Off)
+            return "Off";
+        if (workload.SpatialLod.FreezeCamera)
+            return "ThreeLevel frozen";
+        return "ThreeLevel";
+    }
+
+    const char* ResearchSuiteName(const ResearchRunnerSuite suite)
+    {
+        switch (suite)
+        {
+        case ResearchRunnerSuite::Validation: return "Validation";
+        case ResearchRunnerSuite::TwoGpuVerify: return "Two-GPU Verify";
+        case ResearchRunnerSuite::Smoke: return "Smoke";
+        case ResearchRunnerSuite::Full: return "Full";
+        case ResearchRunnerSuite::ProfileSweep: return "Profile Sweep";
+        case ResearchRunnerSuite::MemorySoak: return "Memory Soak";
+        case ResearchRunnerSuite::RebuildStress: return "Rebuild Stress";
+        default: return "Unknown";
+        }
+    }
+
+    bool UsesTemporalExecution(const VoxelExecutionMode mode)
+    {
+        return mode == VoxelExecutionMode::SingleGpuTemporalDecimation ||
+            mode == VoxelExecutionMode::MultiGpuTemporalDecimation;
+    }
+
+    const char* BenchmarkClassName(const VoxelSceneWorkload& workload, const VoxelExecutionMode requestedMode)
+    {
+        const bool requestedTemporal = UsesTemporalExecution(requestedMode);
+        const bool workloadTemporal = workload.TemporalPolicy == VoxelTemporalPolicy::Decimated;
+        if (requestedTemporal != workloadTemporal)
+            return "Invalid mixed-quality configuration";
+        if (workload.BenchmarkConfigClass == VoxelBenchmarkConfigClass::Diagnostic ||
+            workload.Profile == VoxelResearchWorkloadProfile::OcclusionValidation ||
+            workload.Profile == VoxelResearchWorkloadProfile::DemoMixed ||
+            workload.CameraMode == VoxelResearchCameraMode::Interactive ||
+            workload.SpatialLod.FreezeCamera ||
+            workload.SecondaryShare <= 0.0f ||
+            workload.SecondaryShare >= 1.0f ||
+            workload.StaticStorageMode == StaticVoxelStorageMode::DenseSolidStress)
+            return "Diagnostic configuration";
+        return "Valid matching benchmark configuration";
+    }
+
+    uint32_t CountOwnedVoxels(const VoxelSceneWorkload& workload, const VoxelAdapterOwner owner)
+    {
+        uint32_t count = 0;
+        for (const auto& partition : workload.Partitions)
+        {
+            if (partition.AdapterOwner == owner)
+                count += partition.VoxelCount();
+        }
+        return count;
+    }
+
+    uint32_t TotalChunkCount(const VoxelSceneWorkload& workload)
+    {
+        uint32_t count = 0;
+        for (const auto& layer : workload.Layers)
+            count += static_cast<uint32_t>(layer.ChunkIds.size());
+        return count;
+    }
+
+    uint32_t SeedForScene(const VoxelSceneWorkload& workload)
+    {
+        return workload.ActualStaticVoxelCount > 0
+            ? workload.StaticGenerationSeed
+            : workload.Parameters.Seed;
+    }
+
+    float MetricValueColumnX(const char* label)
+    {
+        constexpr float BaseColumnX = 170.0f;
+        const float scaledBaseColumnX = BaseColumnX * ImGui::GetIO().FontGlobalScale;
+        const float labelRightX = ImGui::GetCursorPosX() + ImGui::CalcTextSize(label).x;
+        const float labelSafeColumnX = labelRightX + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        return std::max(scaledBaseColumnX, labelSafeColumnX);
+    }
+
+    void DrawMetricLabel(const char* label)
+    {
+        const float valueColumnX = MetricValueColumnX(label);
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(valueColumnX);
+    }
+
+    void DrawMetric(const char* label, const char* value)
+    {
+        DrawMetricLabel(label);
+        ImGui::TextUnformatted(value);
+    }
+
+    void DrawMetricU32(const char* label, const uint32_t value)
+    {
+        DrawMetricLabel(label);
+        ImGui::Text("%u", value);
+    }
+
+    void DrawMetricU64(const char* label, const uint64_t value)
+    {
+        DrawMetricLabel(label);
+        ImGui::Text("%llu", static_cast<unsigned long long>(value));
+    }
+
+    void DrawMetricF32(const char* label, const float value, const char* format = "%.2f")
+    {
+        DrawMetricLabel(label);
+        ImGui::Text(format, value);
+    }
+
+    void DrawMetricVec3(const char* label, const DirectX::SimpleMath::Vector3& value)
+    {
+        DrawMetricLabel(label);
+        ImGui::Text("%.2f, %.2f, %.2f", value.x, value.y, value.z);
+    }
+
+    void DrawMetricF64(const char* label, const double value, const char* format = "%.6f")
+    {
+        DrawMetricLabel(label);
+        ImGui::Text(format, value);
+    }
+
+    struct SpawnHistogram
+    {
+        uint32_t Width = 0;
+        uint32_t Depth = 0;
+        uint32_t OccupiedX = 0;
+        uint32_t OccupiedZ = 0;
+        uint32_t OccupiedXZ = 0;
+        uint32_t MinX = 0;
+        uint32_t MaxX = 0;
+        uint32_t MinZ = 0;
+        uint32_t MaxZ = 0;
+    };
+
+    SpawnHistogram BuildSpawnHistogram(const VoxelSceneWorkload& workload)
+    {
+        SpawnHistogram histogram{};
+        if (workload.ActualDynamicVoxelCount == 0)
+            return histogram;
+
+        const auto firstCell = VoxelParticleSpawner::ComputeSpawnGridCell(0, workload.Parameters);
+        histogram.Width = firstCell.Width;
+        histogram.Depth = firstCell.Depth;
+        std::vector<uint32_t> xBins(histogram.Width, 0);
+        std::vector<uint32_t> zBins(histogram.Depth, 0);
+        std::vector<uint8_t> xzOccupied(static_cast<size_t>(histogram.Width) * histogram.Depth, 0);
+
+        for (uint32_t i = 0; i < workload.ActualDynamicVoxelCount; ++i)
+        {
+            const auto cell = VoxelParticleSpawner::ComputeSpawnGridCell(i, workload.Parameters);
+            ++xBins[cell.X];
+            ++zBins[cell.Z];
+            xzOccupied[static_cast<size_t>(cell.X) + static_cast<size_t>(histogram.Width) * cell.Z] = 1;
+        }
+
+        histogram.MinX = workload.ActualDynamicVoxelCount;
+        histogram.MinZ = workload.ActualDynamicVoxelCount;
+        for (const auto count : xBins)
+        {
+            if (count > 0)
+            {
+                ++histogram.OccupiedX;
+                histogram.MinX = std::min(histogram.MinX, count);
+                histogram.MaxX = std::max(histogram.MaxX, count);
+            }
+        }
+        for (const auto count : zBins)
+        {
+            if (count > 0)
+            {
+                ++histogram.OccupiedZ;
+                histogram.MinZ = std::min(histogram.MinZ, count);
+                histogram.MaxZ = std::max(histogram.MaxZ, count);
+            }
+        }
+        histogram.OccupiedXZ = static_cast<uint32_t>(
+            std::count(xzOccupied.begin(), xzOccupied.end(), static_cast<uint8_t>(1)));
+        if (histogram.OccupiedX == 0)
+            histogram.MinX = 0;
+        if (histogram.OccupiedZ == 0)
+            histogram.MinZ = 0;
+        return histogram;
+    }
+}
+
+void VoxelWaterfallDebugPanel::Draw(const VoxelWaterfallDebugPanelContext& context) const
+{
+    if (!context.ImGuiInitialized)
+        return;
+
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    const auto* telemetry = context.FrameGraphTelemetry;
+    const VoxelExecutionMode actualMode = telemetry ? telemetry->ActualMode : context.ExecutionMode;
+    const uint32_t primaryOwnedVoxels = CountOwnedVoxels(context.Workload, VoxelAdapterOwner::Primary);
+    const uint32_t secondaryOwnedVoxels = CountOwnedVoxels(context.Workload, VoxelAdapterOwner::Secondary);
+    const uint32_t primaryRenderedCount =
+        telemetry ? telemetry->PrimarySpatialLodStats.TotalRendered() : 0;
+    const uint32_t secondaryRenderedCount =
+        telemetry ? telemetry->SecondarySpatialLodStats.TotalRendered() : 0;
+    const uint32_t lod0Count =
+        telemetry ? telemetry->PrimarySpatialLodStats.Lod0Rendered + telemetry->SecondarySpatialLodStats.Lod0Rendered : 0;
+    const uint32_t lod1Count =
+        telemetry ? telemetry->PrimarySpatialLodStats.Lod1Rendered + telemetry->SecondarySpatialLodStats.Lod1Rendered : 0;
+    const uint32_t lod2Count =
+        telemetry ? telemetry->PrimarySpatialLodStats.Lod2Rendered + telemetry->SecondarySpatialLodStats.Lod2Rendered : 0;
+    const bool inputLocked = context.Workload.CameraMode != VoxelResearchCameraMode::Interactive ||
+        context.BenchmarkProfiler.IsActive() ||
+        context.AutomaticBenchmarkActive;
+    const double routeTime = static_cast<double>(context.SimulationFrameIndex) / 60.0;
+
+    ImGui::SetNextWindowPos(ImVec2(10.0f, 8.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.58f);
+    const ImGuiWindowFlags overlayFlags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("VoxelResearchOverlay", nullptr, overlayFlags))
+    {
+        ImGui::Text("%s | voxels %u | %s | P/S %u/%u | LOD %s",
+                    context.Workload.ScenePreset.c_str(),
+                    context.Workload.TotalVoxelCount,
+                    ExecutionModeName(actualMode),
+                    primaryOwnedVoxels,
+                    secondaryOwnedVoxels,
+                    SpatialLodStatusName(context.Workload));
+    }
+    ImGui::End();
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 performancePivot(1.0f, 0.0f);
+    const ImVec2 performancePos(viewport->WorkPos.x + viewport->WorkSize.x - 10.0f,
+                                viewport->WorkPos.y + 8.0f);
+    ImGui::SetNextWindowPos(performancePos, ImGuiCond_Always, performancePivot);
+    ImGui::SetNextWindowBgAlpha(0.66f);
+    if (ImGui::Begin("VoxelPerformanceOverlay", nullptr, overlayFlags))
+    {
+        const double instantFps = context.LastPresentToPresentMs > 0.0
+                                      ? 1000.0 / context.LastPresentToPresentMs
+                                      : 0.0;
+        ImGui::Text("FPS %.1f", context.OverlayFps);
+        ImGui::Text("Frame %.2f ms", context.OverlayFrameTimeMs);
+        ImGui::Text("Last %.2f ms / %.1f FPS", context.LastPresentToPresentMs, instantFps);
+    }
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2(10.0f, 42.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("MGPU Voxel Research", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+    const char* executionModes[] = {
+        "SingleGpuFull",
+        "MultiGpuFull",
+        "SingleGpuTemporalDecimation",
+        "MultiGpuTemporalDecimation"
+    };
+    int selectedMode = 0;
+    if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuFull)
+        selectedMode = 1;
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::SingleGpuTemporalDecimation)
+        selectedMode = 2;
+    else if (context.RequestedExecutionMode == VoxelExecutionMode::MultiGpuTemporalDecimation)
+        selectedMode = 3;
+    if (ImGui::Combo("Mode", &selectedMode, executionModes, IM_ARRAYSIZE(executionModes)) &&
+        context.ApplyExecutionMode)
+    {
+        VoxelExecutionMode requestedMode = VoxelExecutionMode::SingleGpuFull;
+        if (selectedMode == 1)
+            requestedMode = VoxelExecutionMode::MultiGpuFull;
+        else if (selectedMode == 2)
+            requestedMode = VoxelExecutionMode::SingleGpuTemporalDecimation;
+        else if (selectedMode == 3)
+            requestedMode = VoxelExecutionMode::MultiGpuTemporalDecimation;
+        context.ApplyExecutionMode(requestedMode);
+    }
+
+    const char* profiles[] = {
+        "StaticRenderOnly",
+        "DynamicSimulationAndRender",
+        "MixedStaticAndDynamic",
+        "OcclusionValidation",
+        "SpatialLodDemonstration",
+        "DemoMixed"
+    };
+    int selectedProfile = static_cast<int>(context.Workload.Profile);
+    if (ImGui::Combo("Profile", &selectedProfile, profiles, IM_ARRAYSIZE(profiles)) &&
+        context.ApplyWorkloadProfile)
+    {
+        context.ApplyWorkloadProfile(
+            static_cast<VoxelResearchWorkloadProfile>(
+                           std::clamp(selectedProfile, 0,
+                           static_cast<int>(VoxelResearchWorkloadProfile::DemoMixed))));
+    }
+
+    const char* compositeDebugViews[] = {
+        "Final Composite",
+        "Primary Only",
+        "Secondary Color Only",
+        "Secondary Linear Depth",
+        "Primary Linear Depth",
+        "Partition Ownership Colors",
+        "Spatial LOD Colors",
+        "Depth Difference"
+    };
+    int selectedCompositeView = static_cast<int>(context.CompositeDebugView);
+    if (ImGui::Combo("View", &selectedCompositeView, compositeDebugViews, IM_ARRAYSIZE(compositeDebugViews)))
+    {
+        context.CompositeDebugView =
+            static_cast<VoxelCompositeDebugView>(
+                std::clamp(selectedCompositeView, 0,
+                           static_cast<int>(VoxelCompositeDebugView::DepthDifference)));
+    }
+
+    const char* finalResolveSources[] = {
+        "SolidColor",
+        "PrimaryBase",
+        "PrimaryComposite",
+        "ReceivedSecondary"
+    };
+    int selectedFinalResolveSource = static_cast<int>(context.FinalResolveSourceMode);
+    if (ImGui::Combo("Final source", &selectedFinalResolveSource, finalResolveSources,
+                     IM_ARRAYSIZE(finalResolveSources)))
+    {
+        if (context.ApplyFinalResolveSource)
+        {
+            context.ApplyFinalResolveSource(
+                static_cast<FinalResolveSource>(
+                    std::clamp(selectedFinalResolveSource, 0,
+                               static_cast<int>(FinalResolveSource::ReceivedSecondary))));
+        }
+    }
+
+    ImGui::TextDisabled("Hotkeys: F1 static, F2 dynamic, F3 mixed, F4 occlusion, F5 LOD, F9 demo, F6 ownership, F7 secondary, F8 composite");
+
+    if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawMetric("active preset", context.Workload.ScenePreset.c_str());
+        DrawMetric("workload profile", ProfileName(context.Workload.Profile));
+        DrawMetricU32("static voxel count", context.Workload.ActualStaticVoxelCount);
+        DrawMetricU32("dynamic voxel count", context.Workload.ActualDynamicVoxelCount);
+        DrawMetricU32("total voxel count", context.Workload.TotalVoxelCount);
+        DrawMetricF32("static voxel size", context.Workload.StaticVoxelSize);
+        DrawMetricVec3("static bounds min", context.Workload.StaticTelemetry.BoundsMin);
+        DrawMetricVec3("static bounds max", context.Workload.StaticTelemetry.BoundsMax);
+        DrawMetricU32("chunk count", TotalChunkCount(context.Workload));
+        DrawMetricU32("seed", SeedForScene(context.Workload));
+        if (context.Workload.DynamicVoxelBudget > 0)
+        {
+            constexpr uint32_t MaxRuntimeDynamicVoxelBudget = 2'000'000u;
+            int dynamicVoxelBudget = static_cast<int>(
+                std::min(context.Workload.DynamicVoxelBudget, MaxRuntimeDynamicVoxelBudget));
+            if (ImGui::SliderInt("dynamic particles", &dynamicVoxelBudget, 1,
+                                 static_cast<int>(MaxRuntimeDynamicVoxelBudget)) &&
+                context.ApplyDynamicVoxelBudget)
+            {
+                context.ApplyDynamicVoxelBudget(static_cast<uint32_t>(dynamicVoxelBudget));
+            }
+
+            const uint32_t dynamicBudget = std::max(1u, context.Workload.DynamicVoxelBudget);
+            int spawnBatchSize = static_cast<int>(
+                context.Workload.Parameters.DynamicSpawnBatchSize > 0
+                    ? std::min<uint32_t>(context.Workload.Parameters.DynamicSpawnBatchSize, dynamicBudget)
+                    : std::max(1u, dynamicBudget / 16u));
+            if (ImGui::SliderInt("spawn batch", &spawnBatchSize, 1, static_cast<int>(dynamicBudget)) &&
+                context.ApplyDynamicSpawnBatchSize)
+            {
+                context.ApplyDynamicSpawnBatchSize(static_cast<uint32_t>(spawnBatchSize));
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Multi-GPU", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawMetric("requested mode", ExecutionModeName(context.RequestedExecutionMode));
+        DrawMetric("actual mode", ExecutionModeName(actualMode));
+        DrawMetricLabel("primary adapter");
+        ImGui::Text("%S", context.PrimaryAdapterName.c_str());
+        DrawMetricLabel("secondary adapter");
+        ImGui::Text("%S", context.SecondaryAdapterName.c_str());
+        DrawMetric("transfer mode", context.TransferMode.c_str());
+        DrawMetric("publication eligible", context.PublicationEligible ? "true" : "false");
+        DrawMetricU32("primary-owned voxels", primaryOwnedVoxels);
+        DrawMetricU32("secondary-owned voxels", secondaryOwnedVoxels);
+        if (UsesMultiGpuExecution(context.RequestedExecutionMode) || UsesMultiGpuExecution(actualMode))
+        {
+            float secondaryShare = context.Workload.SecondaryShare;
+            if (ImGui::SliderFloat("secondary share", &secondaryShare, 0.0f, 1.0f, "%.2f",
+                                   ImGuiSliderFlags_AlwaysClamp) &&
+                context.ApplySecondaryShare)
+            {
+                context.ApplySecondaryShare(secondaryShare);
+            }
+        }
+        ImGui::TextWrapped("Status: %S", context.MultiGpuStatus.c_str());
+    }
+
+    if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawMetricU32("primary rendered count", primaryRenderedCount);
+        DrawMetricU32("secondary rendered count", secondaryRenderedCount);
+        DrawMetricU32("actual secondary draw calls", telemetry ? telemetry->SecondaryDrawCalls : 0);
+        DrawMetric("Spatial LOD status", SpatialLodStatusName(context.Workload));
+        DrawMetricU32("LOD0 count", lod0Count);
+        DrawMetricU32("LOD1 count", lod1Count);
+        DrawMetricU32("LOD2 count", lod2Count);
+        DrawMetric("Temporal policy", TemporalPolicyName(context.Workload.TemporalPolicy));
+        DrawMetricU32("simulation update interval", telemetry ? telemetry->SecondaryEffectiveUpdateInterval : context.Workload.TemporalDecimationInterval);
+        DrawMetric("debug view", CompositeViewName(context.CompositeDebugView));
+        DrawMetricU32("actual client width", telemetry ? telemetry->ActualClientWidth : 0);
+        DrawMetricU32("actual client height", telemetry ? telemetry->ActualClientHeight : 0);
+        DrawMetricU32("swapchain width", telemetry ? telemetry->SwapchainWidth : 0);
+        DrawMetricU32("swapchain height", telemetry ? telemetry->SwapchainHeight : 0);
+        DrawMetricU32("render width", telemetry ? telemetry->RenderWidth : context.Workload.RenderResolutionWidth);
+        DrawMetricU32("render height", telemetry ? telemetry->RenderHeight : context.Workload.RenderResolutionHeight);
+        DrawMetricU32("SSAA width", telemetry ? telemetry->SsaaWidth : 0);
+        DrawMetricU32("SSAA height", telemetry ? telemetry->SsaaHeight : 0);
+        DrawMetricU32("SSAA sample multiplier", telemetry ? telemetry->SsaaSampleMultiplier : 1);
+        DrawMetricU32("SSAA linear scale", telemetry ? telemetry->SsaaLinearScale : 1);
+        DrawMetricU64("estimated render memory", telemetry ? telemetry->EstimatedOffscreenMemoryBytes : 0);
+        DrawMetricU64("estimated cross-adapter bytes/frame",
+                      telemetry ? telemetry->EstimatedCrossAdapterBytesPerFrame : 0);
+        DrawMetric("final source", telemetry ? telemetry->FinalResolveSourceName.c_str()
+                                             : FinalResolveSourceName(context.FinalResolveSourceMode));
+        DrawMetric("final resource pointer",
+                   telemetry ? HexU64(telemetry->FinalResolveSourceResourcePointer).c_str() : "0x0");
+        DrawMetricU64("final generation", telemetry ? telemetry->FinalResolveSourceGeneration : 0);
+        DrawMetricU32("final source width", telemetry ? telemetry->FinalResolveSourceWidth : 0);
+        DrawMetricU32("final source height", telemetry ? telemetry->FinalResolveSourceHeight : 0);
+        DrawMetricU32("final source format",
+                      telemetry ? static_cast<uint32_t>(telemetry->FinalResolveSourceFormat) : 0);
+        DrawMetric("final descriptor GPU",
+                   telemetry ? HexU64(telemetry->FinalResolveSourceDescriptorGpuHandle).c_str() : "0x0");
+    }
+
+    if (ImGui::CollapsingHeader("Spawn Grid", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const auto histogram = BuildSpawnHistogram(context.Workload);
+        DrawMetricU32("X bins occupied", histogram.OccupiedX);
+        DrawMetricU32("Z bins occupied", histogram.OccupiedZ);
+        DrawMetricU32("XZ cells occupied", histogram.OccupiedXZ);
+        DrawMetricF32("X coverage", histogram.Width > 0
+                                      ? 100.0f * static_cast<float>(histogram.OccupiedX) /
+                                        static_cast<float>(histogram.Width)
+                                      : 0.0f, "%.1f%%");
+        ImGui::Text("X bin count min/max: %u / %u", histogram.MinX, histogram.MaxX);
+        ImGui::Text("Z bin count min/max: %u / %u", histogram.MinZ, histogram.MaxZ);
+    }
+
+    if (ImGui::CollapsingHeader("Transfer", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawMetricU64("color bytes", telemetry ? telemetry->ColorBytesTransferred : 0);
+        DrawMetricU64("depth bytes", telemetry ? telemetry->DepthBytesTransferred : 0);
+        DrawMetricU64("render-output bytes", telemetry ? telemetry->RenderOutputTransferBytes : 0);
+        DrawMetricU64("particle-transfer bytes", telemetry ? telemetry->ParticleTransferBytes : 0);
+    }
+
+    if (ImGui::CollapsingHeader("Validation", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const bool hasValidation = telemetry && telemetry->VisualValidationHasResult;
+        DrawMetricF64("color MAE", telemetry ? telemetry->VisualValidationColorMAE : 0.0);
+        DrawMetricF64("color RMSE", telemetry ? telemetry->VisualValidationColorRMSE : 0.0);
+        DrawMetricF64("PSNR", telemetry ? telemetry->VisualValidationPSNR : 0.0, "%.2f");
+        DrawMetricF64("depth RMSE", telemetry ? telemetry->VisualValidationDepthRMSE : 0.0);
+        DrawMetricF64("mismatched pixels", telemetry ? telemetry->VisualValidationMismatchedPixelPercent : 0.0, "%.3f%%");
+        DrawMetric("validation", hasValidation ? (telemetry->VisualValidationPassed ? "pass" : "fail") : "not run");
+        DrawMetric("benchmark config", BenchmarkClassName(context.Workload, context.RequestedExecutionMode));
+        DrawMetricU64("provenance file hashes", context.ProvenanceFileHashCount);
+        DrawMetricU64("git process spawns", context.GitProcessSpawnCount);
+        DrawMetricU64("slow validation runs", context.SlowFrameValidationCount);
+        DrawMetricU64("metadata builds", context.BenchmarkMetadataBuildCount);
+        if (telemetry && !telemetry->VisualValidationFailReason.empty())
+            ImGui::TextWrapped("Reason: %s", telemetry->VisualValidationFailReason.c_str());
+    }
+
+    if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        DrawMetric("camera mode", CameraModeName(context.Workload.CameraMode));
+        DrawMetric("camera route", context.Workload.CameraPath.c_str());
+        DrawMetricF64("route time", routeTime, "%.3f s");
+        DrawMetric("input locked", inputLocked ? "yes" : "no");
+        DrawMetricLabel("resolution");
+        ImGui::Text("%u x %u", context.Workload.RenderResolutionWidth, context.Workload.RenderResolutionHeight);
+    }
+
+    if (ImGui::CollapsingHeader("Controls"))
+    {
+        if (!context.BenchmarkProfiler.IsActive() && !context.AutomaticBenchmarkActive)
+        {
+            if (ImGui::Button("Start benchmark") && context.StartBenchmark)
+                context.StartBenchmark();
+        }
+        else if (!context.AutomaticBenchmarkActive)
+        {
+            if (ImGui::Button("Stop benchmark") && context.StopBenchmark)
+                context.StopBenchmark();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Run validation") && context.RunVisualValidation)
+            context.RunVisualValidation();
+
+        if (!context.AutomaticBenchmarkActive)
+        {
+            if (ImGui::Button("Start auto benchmark") && context.StartAutomaticBenchmark)
+                context.StartAutomaticBenchmark();
+        }
+        else if (ImGui::Button("Stop auto benchmark") && context.StopAutomaticBenchmark)
+        {
+            context.StopAutomaticBenchmark();
+        }
+
+        const char* cameraModes[] = {
+            "Interactive",
+            "FixedOverview",
+            "FixedOcclusion",
+            "WaterfallCloseup",
+            "LodSweepRoute",
+            "BenchmarkRoute",
+            "DemoMixedOverview"
+        };
+        int cameraMode = static_cast<int>(context.Workload.CameraMode);
+        if (ImGui::Combo("Camera", &cameraMode, cameraModes, IM_ARRAYSIZE(cameraModes)) &&
+            context.ApplyCameraMode)
+        {
+            context.ApplyCameraMode(
+                static_cast<VoxelResearchCameraMode>(
+                    std::clamp(cameraMode, 0, static_cast<int>(VoxelResearchCameraMode::DemoMixedOverview))));
+        }
+
+        const char* resolutionPresets[] = {"1280x720", "1920x1080", "2560x1440", "3840x2160"};
+        int resolutionPreset = static_cast<int>(context.Workload.ResolutionPreset);
+        if (ImGui::Combo("Resolution", &resolutionPreset, resolutionPresets, IM_ARRAYSIZE(resolutionPresets)) &&
+            context.ApplyRenderResolutionPreset)
+        {
+            context.ApplyRenderResolutionPreset(
+                static_cast<VoxelRenderResolutionPreset>(
+                    std::clamp(resolutionPreset, 0,
+                               static_cast<int>(VoxelRenderResolutionPreset::R3840x2160))));
+        }
+
+        ImGui::Checkbox("Freeze LOD camera", &context.Workload.SpatialLod.FreezeCamera);
+        if (ImGui::Button("Apply workload") && context.RequestApplyWorkloadSettings)
+            context.RequestApplyWorkloadSettings();
+
+        ImGui::Text("Benchmark progress: %.1f%%", context.BenchmarkProfiler.GetProgress() * 100.0f);
+        ImGui::Text("Rows: %u/%u",
+                    context.BenchmarkProfiler.GetRowsWritten(),
+                    context.BenchmarkProfiler.GetRecordedFrameCount());
+    }
+
+    if (ImGui::CollapsingHeader("Research Runner", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static int selectedSuite = static_cast<int>(ResearchRunnerSuite::Smoke);
+        static int seed = 0;
+        static int warmupFrames = 30;
+        static int measuredFrames = 120;
+        static int repetitions = 1;
+        static std::array<char, 260> outputDirectory = {"VoxelResearchRuns"};
+
+        const char* suiteNames[] = {
+            "Validation",
+            "Two-GPU Verify",
+            "Smoke",
+            "Full",
+            "Profile Sweep",
+            "Memory Soak",
+            "Rebuild Stress"
+        };
+        ImGui::Combo("Suite", &selectedSuite, suiteNames, IM_ARRAYSIZE(suiteNames));
+        ImGui::InputInt("Seed", &seed);
+        ImGui::InputText("Output directory", outputDirectory.data(), outputDirectory.size());
+        ImGui::InputInt("Warmup frames", &warmupFrames);
+        ImGui::InputInt("Measured frames", &measuredFrames);
+        ImGui::InputInt("Repetitions", &repetitions);
+        warmupFrames = std::max(0, warmupFrames);
+        measuredFrames = std::max(1, measuredFrames);
+        repetitions = std::max(1, repetitions);
+
+        const auto buildRequest = [&](const bool prerequisites)
+        {
+            ResearchRunnerRequest request{};
+            request.Suite = static_cast<ResearchRunnerSuite>(
+                std::clamp(selectedSuite, 0, static_cast<int>(ResearchRunnerSuite::RebuildStress)));
+            request.Seed = static_cast<uint32_t>(std::max(0, seed));
+            request.WarmupFrames = static_cast<uint32_t>(warmupFrames);
+            request.MeasuredFrames = static_cast<uint32_t>(measuredFrames);
+            request.Repetitions = static_cast<uint32_t>(repetitions);
+            request.OutputDirectory = outputDirectory.data();
+            request.RunPrerequisites = prerequisites;
+            return request;
+        };
+
+        const bool canSubmit = !context.ResearchRunnerActive && context.RequestResearchRunner;
+        if (!canSubmit)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Run prerequisites"))
+            context.RequestResearchRunner(buildRequest(true));
+        ImGui::SameLine();
+        if (ImGui::Button("Run selected suite"))
+            context.RequestResearchRunner(buildRequest(false));
+        if (!canSubmit)
+            ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (!context.ResearchRunnerActive)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Cancel") && context.CancelResearchRunner)
+            context.CancelResearchRunner();
+        if (!context.ResearchRunnerActive)
+            ImGui::EndDisabled();
+
+        DrawMetric("selected", ResearchSuiteName(static_cast<ResearchRunnerSuite>(
+                       std::clamp(selectedSuite, 0, static_cast<int>(ResearchRunnerSuite::RebuildStress)))));
+        DrawMetric("phase", context.ResearchRunnerPhase.empty() ? "Idle" : context.ResearchRunnerPhase.c_str());
+        ImGui::Text("config %u / %u", context.ResearchRunnerConfigIndex, context.ResearchRunnerConfigTotal);
+        if (!context.ResearchRunnerReason.empty())
+            ImGui::TextWrapped("Reason: %s", context.ResearchRunnerReason.c_str());
+        if (!context.ResearchRunnerOutputPath.empty())
+            ImGui::TextWrapped("Output: %s", context.ResearchRunnerOutputPath.string().c_str());
+    }
+
+    ImGui::End();
+
+    ImGui::Render();
+    context.CommandList->SetDescriptorsHeap(context.ImGuiSrvMemory);
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), context.CommandList->GetGraphicsCommandList().Get());
+}

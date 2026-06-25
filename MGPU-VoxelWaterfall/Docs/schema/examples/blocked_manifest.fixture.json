@@ -1,0 +1,21 @@
+{
+  "schema": "mgpu_voxel_benchmark_manifest.v2",
+  "fixture_only": true,
+  "note": "Fixture/test only. BLOCKED artifact intentionally contains no performance results.",
+  "suite": "Full",
+  "run_id": "fixture_blocked_run",
+  "status": "BLOCKED",
+  "reason": "missing matching PASS visual validation case for benchmark config: fixture_config",
+  "created_utc": "2026-06-22T00:00:00Z",
+  "start_utc": "",
+  "end_utc": "2026-06-22T00:00:01Z",
+  "primary_endpoint": "present_to_present_ms",
+  "provenance": {
+    "schema": "mgpu_research_provenance.v1",
+    "fields": {
+      "build.executable_sha256": "fixture_sha256",
+      "build.shader_bytecode_set_sha256": "fixture_shader_set_sha256"
+    }
+  },
+  "configs": []
+}

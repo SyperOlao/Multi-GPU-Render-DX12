@@ -31,7 +31,7 @@ GModel::GModel(const std::shared_ptr<NativeModel>& model, std::shared_ptr<GComma
         meshesMaterials.resize(model->GetMeshesCount());
     }
 
-    for (int i = 0; i < model->GetMeshesCount(); ++i)
+    for (UINT i = 0; i < model->GetMeshesCount(); ++i)
     {
         auto nativeMesh = model->GetMesh(i);
         gmeshes.push_back(std::make_shared<GMesh>(nativeMesh, uploadCmdList));
@@ -47,7 +47,7 @@ GModel::GModel(const GModel& copy) : model(copy.model)
 {
     gmeshes.resize(copy.gmeshes.size());
 
-    for (int i = 0; i < gmeshes.size(); ++i)
+    for (size_t i = 0; i < gmeshes.size(); ++i)
     {
         gmeshes[i] = std::move(std::make_shared<GMesh>(*copy.gmeshes[i]));
     }

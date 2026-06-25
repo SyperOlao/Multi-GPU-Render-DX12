@@ -179,6 +179,7 @@ namespace PEPEngine::Graphics
         void FlushResourceBarriers() const;
 
         void CopyResource(const GResource& dstRes, const GResource& srcRes);
+        void CopyResourceNoBarrier(const GResource& dstRes, const GResource& srcRes);
         void CopyResourceToCubeMap(const GResource& dstCube, const GResource& srcTex, UINT faceIndex);
         void CopyResourceToCubeMap(const ComPtr<ID3D12Resource>& dstCube, const ComPtr<ID3D12Resource>& srcTex, UINT faceIndex);
         void CopyResourceFromCubeMap(const GResource& dstTex, const GResource& srcCube, UINT faceIndex);
@@ -189,6 +190,8 @@ namespace PEPEngine::Graphics
                               UINT SrcOffset,
                               UINT numBytes, bool copyBarier = true);
         void CopyResource(const ComPtr<ID3D12Resource>& dstRes, const ComPtr<ID3D12Resource>& srcRes);
+        void CopyResourceNoBarrier(const ComPtr<ID3D12Resource>& dstRes,
+                                   const ComPtr<ID3D12Resource>& srcRes);
 
         /**
              * Resolve a multisampled resource into a non-multisampled resource.
@@ -201,6 +204,8 @@ namespace PEPEngine::Graphics
         void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t startIndex = 0,
                          int32_t baseVertex = 0,
                          uint32_t startInstance = 0) const;
+        void ExecuteIndirect(ID3D12CommandSignature* commandSignature, uint32_t maxCommandCount,
+                             const GBuffer& argumentBuffer, uint64_t argumentBufferOffset = 0) const;
 
         void Dispatch(uint32_t numGroupsX, uint32_t numGroupsY = 1, uint32_t numGroupsZ = 1) const;
 

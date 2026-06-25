@@ -64,6 +64,9 @@ public:
     std::shared_ptr<GModel>& GenerateSphere(const std::shared_ptr<GCommandList>& cmdList, float radius = 1.0f,
                                             UINT sliceCount = 20, UINT stackCount = 20);
 
+    std::shared_ptr<GModel>& GenerateBox(const std::shared_ptr<GCommandList>& cmdList, float width = 1.0f,
+                                         float height = 1.0f, float depth = 1.0f);
+
     std::shared_ptr<GModel>& GenerateQuad(const std::shared_ptr<GCommandList>& cmdList, float x = 1.0f, float y = 1.0f,
                                           float w = 1.0f, float h = 1.0f, float depth = 0.0);
 

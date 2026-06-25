@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{69BA047A-3927-447C-8758-323D8D4BB4E7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{33841289-C54D-4BA4-9378-A1FEED8DC07C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{298D3519-772B-4B16-AC8F-A95E60E01C35}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IMGUI">
+      <UniqueIdentifier>{9B609F1F-6CB2-4A80-A68A-4F2AA0EFCC68}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Assets">
+      <UniqueIdentifier>{59605A69-94C1-449B-A5C0-98D9667B260C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Benchmark">
+      <UniqueIdentifier>{E6F54D13-B95D-4985-8DD8-B4DAE97DB946}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Devices">
+      <UniqueIdentifier>{CF608ABF-FD95-44F6-9167-47949ACAA688}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Platform">
+      <UniqueIdentifier>{03143010-0755-4E96-9022-494FE1A32118}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Rendering">
+      <UniqueIdentifier>{B0D0254D-723E-4898-A03F-41CECA2E19EF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Scene">
+      <UniqueIdentifier>{6678DF50-A9B2-459B-8737-A72E6670D0A7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\UI">
+      <UniqueIdentifier>{34380DC0-2B26-4721-97BF-485FF55569BD}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Validation">
+      <UniqueIdentifier>{C5429B49-5F88-4D78-995A-3869B20D0F49}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Voxels">
+      <UniqueIdentifier>{8E8B6E5E-42A8-4386-8C76-76583F062856}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Assets">
+      <UniqueIdentifier>{8C87D6D6-3FD1-4376-9522-1F6A534C27E3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Benchmark">
+      <UniqueIdentifier>{A67D8611-1F96-4175-85B7-7893A76D48CB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Devices">
+      <UniqueIdentifier>{476F128F-1D3E-4E53-9757-4315E4EED557}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Platform">
+      <UniqueIdentifier>{1B1AA320-9DA8-430C-9F65-6582D4243616}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Rendering">
+      <UniqueIdentifier>{7E6DF55F-7855-48B6-A080-5C6BE484EC83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Scene">
+      <UniqueIdentifier>{1428566D-7232-472D-B977-814C594B743A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\UI">
+      <UniqueIdentifier>{9DA2B091-C47F-4C1D-B0FC-8FA69CA71BEA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Validation">
+      <UniqueIdentifier>{D3E1297D-A163-4EC6-98B4-D05686EA4582}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Voxels">
+      <UniqueIdentifier>{C7FA1F54-783A-4D77-B08B-B220B76DB6BA}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Source.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="FrameResource.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="VoxelWaterfallApp.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Source\Assets\SampleAssetManifest.cpp"><Filter>Source Files\Assets</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\AutomaticBenchmarkRunner.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\BenchmarkController.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\BenchmarkCsvWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\ResearchProvenance.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\ResearchArtifactWriter.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Benchmark\VoxelBenchmarkProfiler.cpp"><Filter>Source Files\Benchmark</Filter></ClCompile>
+    <ClCompile Include="Source\Devices\DeviceSelectionPolicy.cpp"><Filter>Source Files\Devices</Filter></ClCompile>
+    <ClCompile Include="Source\Platform\Win32InputRouter.cpp"><Filter>Source Files\Platform</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\RenderPipeline.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\MultiGpuVoxelRenderTargets.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\VoxelCompositePass.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Rendering\VoxelRenderPasses.cpp"><Filter>Source Files\Rendering</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\VoxelResearchCameraController.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\Scene\VoxelResearchSceneManager.cpp"><Filter>Source Files\Scene</Filter></ClCompile>
+    <ClCompile Include="Source\UI\VoxelWaterfallDebugPanel.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Source\Validation\TwoAdapterVerification.cpp"><Filter>Source Files\Validation</Filter></ClCompile>
+    <ClCompile Include="Source\Validation\VoxelVisualValidationRunner.cpp"><Filter>Source Files\Validation</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelPartitionGpuResources.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelParticleSpawner.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelResearchEnvironmentGenerator.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSimulationScheduler.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSimulationSchedulerReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSceneWorkload.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelGpuPartition.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelSpatialLodReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="Source\Voxels\VoxelWaterfallDynamicReferenceTests.cpp"><Filter>Source Files\Voxels</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_demo.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_draw.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_tables.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\imgui_widgets.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\backends\imgui_impl_dx12.cpp"><Filter>IMGUI</Filter></ClCompile>
+    <ClCompile Include="..\Submodule\imgui\backends\imgui_impl_win32.cpp"><Filter>IMGUI</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="FrameResource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VoxelWaterfallApp.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Source\Assets\SampleAssetManifest.h"><Filter>Header Files\Assets</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\AutomaticBenchmarkRunner.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\BenchmarkController.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\BenchmarkCsvWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\ResearchProvenance.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\ResearchArtifactWriter.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Benchmark\VoxelBenchmarkProfiler.h"><Filter>Header Files\Benchmark</Filter></ClInclude>
+    <ClInclude Include="Source\Devices\DeviceSelectionPolicy.h"><Filter>Header Files\Devices</Filter></ClInclude>
+    <ClInclude Include="Source\Platform\Win32InputRouter.h"><Filter>Header Files\Platform</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\RenderPipeline.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\MultiGpuVoxelRenderTargets.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\VoxelCompositePass.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Rendering\VoxelRenderPasses.h"><Filter>Header Files\Rendering</Filter></ClInclude>
+    <ClInclude Include="Source\Research\ResearchRunnerTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\VoxelResearchCameraController.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\Scene\VoxelResearchSceneManager.h"><Filter>Header Files\Scene</Filter></ClInclude>
+    <ClInclude Include="Source\UI\VoxelWaterfallDebugPanel.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Source\Validation\TwoAdapterVerification.h"><Filter>Header Files\Validation</Filter></ClInclude>
+    <ClInclude Include="Source\Validation\VoxelVisualValidationRunner.h"><Filter>Header Files\Validation</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelPartitionGpuResources.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelParticleSpawner.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelResearchEnvironmentGenerator.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSimulationScheduler.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSimulationSchedulerReferenceTests.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelTypes.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSceneWorkload.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelGpuPartition.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelSpatialLodReferenceTests.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+    <ClInclude Include="Source\Voxels\VoxelWaterfallDynamicReferenceTests.h"><Filter>Header Files\Voxels</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="Tools\analyze_benchmark.py" />
+    <None Include="Tools\plot_benchmark.py" />
+    <None Include="Docs\Methodology.md" />
+    <None Include="Docs\ThreatsToValidity.md" />
+    <None Include="Docs\Reproduction.md" />
+    <None Include="packages.config" />
+    <None Include="Shaders\Common.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Default.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\DrawNormals.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\LightingUtil.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\MipMapCS.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ParticleCommon.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Quad.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\FinalResolveSolidColor.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shadows.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SkyBoxShader.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Ssao.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SsaoBlur.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VoxelComposite.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\BuildLodRenderList.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VoxelValidationCompare.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VoxelValidationDepthLinearize.hlsl"><Filter>Shaders</Filter></None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Shaders\ComputeParticle.hlsl"><Filter>Shaders</Filter></FxCompile>
+    <FxCompile Include="Shaders\ParticleDraw.hlsl"><Filter>Shaders</Filter></FxCompile>
+  </ItemGroup>
+</Project>

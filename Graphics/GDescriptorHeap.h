@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 #include "d3dx12.h"
 #include "GDescriptor.h"
+#include "GDevice.h"
 #include "MemoryAllocator.h"
 
 namespace PEPEngine::Graphics
@@ -28,9 +29,10 @@ namespace PEPEngine::Graphics
 
         GDescriptor Allocate(uint32_t descriptorCount);
 
-        void Free(GDescriptor&& descriptorHandle, uint64_t frameNumber);
+        void Free(GDescriptor&& descriptorHandle, const GDeferredFenceSnapshot& fenceSnapshot);
 
         void ReleaseStaleDescriptors(uint64_t frameNumber);
+        GDescriptorAllocatorStats GetStats() const;
 
         ID3D12DescriptorHeap* GetDirectxHeap() const;
 
@@ -64,16 +66,16 @@ namespace PEPEngine::Graphics
 
         struct DescriptorInfo
         {
-            DescriptorInfo(const OffsetType offset, const SizeType size, const uint64_t frame)
+            DescriptorInfo(const OffsetType offset, const SizeType size, const GDeferredFenceSnapshot& snapshot)
                 : Offset(offset)
                   , Size(size)
-                  , FrameNumber(frame)
+                  , FenceSnapshot(snapshot)
             {
             }
 
             OffsetType Offset;
             SizeType Size;
-            uint64_t FrameNumber;
+            GDeferredFenceSnapshot FenceSnapshot;
         };
 
         custom_map<OffsetType, FreeBlockInfo> freeListByOffset = MemoryAllocator::CreateMap<
@@ -93,7 +95,7 @@ namespace PEPEngine::Graphics
         uint32_t descriptorCount;
         uint32_t freeHandlesCount;
 
-        std::mutex allocationMutex;
+        mutable std::mutex allocationMutex;
 
         std::shared_ptr<GDevice> device;
     };
